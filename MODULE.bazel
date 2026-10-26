@@ -1,0 +1,66 @@
+module(
+    name = "orcaslicer_webconfig",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_rust", version = "0.69.0")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+
+RUST_EDITION = "2021"
+RUST_VERSION = "1.92.0"
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = RUST_EDITION,
+    extra_target_triples = [
+        "wasm32-unknown-unknown",
+        "x86_64-unknown-linux-gnu",
+    ],
+    versions = [RUST_VERSION],
+)
+
+crate_index = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate_index.from_cargo(
+    name = "crate_index",
+    cargo_lockfile = "//:Cargo.lock",
+    generate_binaries = True,
+    manifests = [
+        "//:Cargo.toml",
+        "//server:Cargo.toml",
+    ],
+)
+use_repo(
+    crate_index,
+    "crate_index",
+)
+
+rust_host_tools = use_extension("@rules_rust//rust:extensions.bzl", "rust_host_tools")
+rust_host_tools.host_tools(
+    name = "rust_host_tools_nightly",
+    version = "nightly",
+)
+use_repo(
+    rust_host_tools,
+    "rust_host_tools_nightly",
+)
+
+bazel_dep(name = "rules_rust_wasm_bindgen", version = "0.69.0")
+
+bindeps = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+bindeps.spec(
+    artifact = "bin",
+    package = "wasm-bindgen-cli",
+    version = "=0.2.126",
+)
+bindeps.annotation(
+    crate = "wasm-bindgen-cli",
+    gen_all_binaries = True,
+)
+bindeps.from_specs(
+    name = "bindeps",
+    host_tools = "@rust_host_tools_nightly",
+)
+use_repo(bindeps, "bindeps")
+
+register_toolchains("//toolchains:wasm_bindgen_toolchain")

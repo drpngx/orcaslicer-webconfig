@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>Orca Studio Configurator</title>
+    <link href="https://fonts.googleapis.com" rel="preconnect"/>
+    <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary-fixed-dim": "#ffb690",
+                        "surface-container-low": "#131b2e",
+                        "secondary-fixed": "#acedff",
+                        "on-tertiary-container": "#003b26",
+                        "inverse-surface": "#dae2fd",
+                        "tertiary": "#4edea3",
+                        "on-surface": "#dae2fd",
+                        "primary-container": "#f97316",
+                        "surface-tint": "#ffb690",
+                        "secondary-container": "#03b5d3",
+                        "on-background": "#dae2fd",
+                        "on-tertiary": "#003824",
+                        "on-primary-container": "#582200",
+                        "on-secondary-container": "#00424e",
+                        "surface-dim": "#0b1326",
+                        "on-error-container": "#ffdad6",
+                        "primary": "#ffb690",
+                        "tertiary-fixed-dim": "#4edea3",
+                        "surface-container-high": "#222a3d",
+                        "surface-container-highest": "#2d3449",
+                        "on-primary-fixed": "#341100",
+                        "outline-variant": "#584237",
+                        "surface-bright": "#31394d",
+                        "background": "#0b1326",
+                        "surface-container-lowest": "#060e20",
+                        "on-error": "#690005",
+                        "on-secondary-fixed": "#001f26",
+                        "inverse-primary": "#9d4300",
+                        "on-primary": "#552100",
+                        "tertiary-fixed": "#6ffbbe",
+                        "on-primary-fixed-variant": "#783200",
+                        "on-secondary-fixed-variant": "#004e5c",
+                        "on-tertiary-fixed": "#002113",
+                        "outline": "#a78b7d",
+                        "primary-fixed": "#ffdbca",
+                        "tertiary-container": "#00b07a",
+                        "on-secondary": "#003640",
+                        "on-tertiary-fixed-variant": "#005236",
+                        "on-surface-variant": "#e0c0b1",
+                        "inverse-on-surface": "#283044",
+                        "secondary-fixed-dim": "#4cd7f6",
+                        "surface-variant": "#2d3449",
+                        "secondary": "#4cd7f6",
+                        "error-container": "#93000a",
+                        "error": "#ffb4ab",
+                        "surface": "#0b1326",
+                        "surface-container": "#171f33"
+                    },
+                    borderRadius: {
+                        DEFAULT: "0.125rem",
+                        lg: "0.25rem",
+                        xl: "0.5rem",
+                        full: "0.75rem"
+                    },
+                    spacing: {
+                        "space-lg": "0.75rem",
+                        "space-md": "0.5rem",
+                        "margin": "0.75rem",
+                        "space-xs": "0.125rem",
+                        "space-sm": "0.25rem",
+                        "gutter": "0.5rem",
+                        "gutter-desktop": "0.75rem",
+                        "margin-desktop": "1rem",
+                        "space-xl": "1rem"
+                    },
+                    fontFamily: {
+                        "code-md": ["JetBrains Mono"],
+                        "headline-xl": ["Geist"],
+                        "headline-sm": ["Geist"],
+                        "body-sm": ["Geist"],
+                        "code-sm": ["JetBrains Mono"],
+                        "label-caps": ["JetBrains Mono"],
+                        "headline-lg": ["Geist"],
+                        "body-md": ["Geist"],
+                        "code-lg": ["JetBrains Mono"]
+                    }
+                }
+            }
+        };
+    </script>
+    <style>
+        body {
+            background-color: #0b1326;
+            color: #dae2fd;
+            font-family: 'Geist', sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+            animation: fadeIn 0.2s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface">
+    <div id="yew-app"></div>
+    <script type="module">
+        import init from '/app_wasm.js';
+        init();
+    </script>
+</body>
+</html>

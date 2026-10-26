@@ -1,0 +1,8 @@
+/target
+/bazel-*
+*.wasm
+node_modules/
+dist/
+.DS_Store
+*.zip
+*.zip:Zone.Identifier
