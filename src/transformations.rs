@@ -1,4 +1,5 @@
 use crate::lua_engine::execute_transformation_lua;
+use crate::models::{FilamentSpool, MachineRig};
 use crate::orca_profile::{DiffItem, OrcaProfile};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -715,4 +716,454 @@ end
     serde_json::from_str::<FullExportPackage>(json_str)
       .map_err(|e| format!("Failed to parse imported transformations JSON: {}", e))
   }
+
+  /// Evaluates all imported disk conflicts, filament profiles, flushing matrices, and live Lua-derived
+  /// output parameters for unsafe (`Danger`) or weird/anomalous (`Warning`) values.
+  pub fn evaluate_safety_warnings(
+    rig: &MachineRig,
+    filaments: &[FilamentSpool],
+    derived_profile: &OrcaProfile,
+    external_conflicts: &[ExternalConflict],
+    disk_flush_matrix: &[String],
+  ) -> Vec<SafetyWarning> {
+    let mut warnings = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    let mut push_warn = |w: SafetyWarning| {
+      if seen_ids.insert(w.id.clone()) {
+        warnings.push(w);
+      }
+    };
+
+    // 1. Check unresolved external disk conflicts
+    for conflict in external_conflicts {
+      if conflict.json_field_key == "retraction_speed" {
+        let val_num = conflict.disk_raw_value.parse::<f32>().unwrap_or(0.0);
+        let severity = if !(15.0..=55.0).contains(&val_num) {
+          SafetySeverity::Danger
+        } else {
+          SafetySeverity::Warning
+        };
+        push_warn(SafetyWarning {
+          id: format!("conflict:{}", conflict.param_key),
+          severity,
+          scope_label: "Machine Profile (Disk Conflict)".to_string(),
+          param_key: conflict.param_label.clone(),
+          current_value: conflict.actual_external_value.clone(),
+          safe_range: "25–45 mm/s (Direct Drive)".to_string(),
+          explanation: format!(
+            "Disk file '{}' sets retraction_speed to {} (expected {}). High direct-drive retraction speeds (>55 mm/s) grind filament and skip extruder steps.",
+            conflict.source_relative_path,
+            conflict.actual_external_value,
+            conflict.expected_derived_value
+          ),
+        });
+      } else if conflict.json_field_key == "inherits" {
+        push_warn(SafetyWarning {
+          id: format!("conflict:{}", conflict.param_key),
+          severity: SafetySeverity::Danger,
+          scope_label: "Filament Inheritance (Disk Conflict)".to_string(),
+          param_key: conflict.param_label.clone(),
+          current_value: conflict.actual_external_value.clone(),
+          safe_range: conflict.expected_derived_value.clone(),
+          explanation: format!(
+            "Cross-polymer inheritance mismatch in '{}': inherits '{}' instead of '{}'. Inheriting the wrong polymer pulls unsafe nozzle/bed temperatures and cooling schedules.",
+            conflict.source_relative_path,
+            conflict.actual_external_value,
+            conflict.expected_derived_value
+          ),
+        });
+      } else if conflict.json_field_key == "fan_max_speed_HS" {
+        push_warn(SafetyWarning {
+          id: format!("conflict:{}", conflict.param_key),
+          severity: SafetySeverity::Danger,
+          scope_label: "Filament Cooling (Disk Conflict)".to_string(),
+          param_key: conflict.param_label.clone(),
+          current_value: conflict.actual_external_value.clone(),
+          safe_range: "0–30% (Warp-Prone ABS/PA/PC)".to_string(),
+          explanation: format!(
+            "File '{}' sets Hardened Steel max cooling fan to {} while Brass is {}. High fan speed on ABS/PA Nylon causes severe warping off the bed and interlayer delamination.",
+            conflict.source_relative_path,
+            conflict.actual_external_value,
+            conflict.base_value
+          ),
+        });
+      } else {
+        push_warn(SafetyWarning {
+          id: format!("conflict:{}", conflict.param_key),
+          severity: SafetySeverity::Warning,
+          scope_label: "Unresolved Disk Drift".to_string(),
+          param_key: conflict.param_label.clone(),
+          current_value: conflict.actual_external_value.clone(),
+          safe_range: conflict.expected_derived_value.clone(),
+          explanation: format!(
+            "Disk file '{}' has '{}' = {} which diverges from rule '{}' ({}).",
+            conflict.source_relative_path,
+            conflict.json_field_key,
+            conflict.actual_external_value,
+            conflict.modifying_rule_id,
+            conflict.expected_derived_value
+          ),
+        });
+      }
+    }
+
+    // 2. Check all filament spools for hardware compatibility, raw JSON anomalies, and polymer bounds
+    let (_, rig_hrc) = rig.orca_machine_nozzle_type_and_hrc();
+    for spool in filaments {
+      if let Some(compat_msg) = spool.compatibility_warning(&rig.nozzle_type, rig_hrc) {
+        let is_hrc_danger = spool.required_nozzle_hrc > rig_hrc;
+        push_warn(SafetyWarning {
+          id: format!("spool_compat:{}", spool.id),
+          severity: if is_hrc_danger {
+            SafetySeverity::Danger
+          } else {
+            SafetySeverity::Warning
+          },
+          scope_label: format!("Filament: {}", spool.name),
+          param_key: "Nozzle Compatibility / Hardness (HRC)".to_string(),
+          current_value: format!(
+            "{} (Req ≥{} HRC) on {} ({} HRC)",
+            spool.material_type, spool.required_nozzle_hrc, rig.nozzle_material, rig_hrc
+          ),
+          safe_range: format!("Nozzle ≥{} HRC", spool.required_nozzle_hrc),
+          explanation: compat_msg,
+        });
+      }
+
+      // Check TPU loaded in ACE Pro multi-material hub
+      if spool.is_loaded
+        && rig.ace_pro_units > 0
+        && spool.material_type.to_uppercase().contains("TPU")
+      {
+        push_warn(SafetyWarning {
+          id: format!("spool_tpu_ace:{}", spool.id),
+          severity: SafetySeverity::Warning,
+          scope_label: format!("ACE Pro Slot ({})", spool.color_name),
+          param_key: "Flexible TPU in Motorized AMS/ACE Hub".to_string(),
+          current_value: format!("{} ({})", spool.name, spool.material_type),
+          safe_range: "Direct Spool Holder Bypass Recommended".to_string(),
+          explanation: "Flexible 95A TPU loaded in an active ACE Pro Bowden slot frequently buckles inside the motorized filament buffer and long PTFE path. Feed TPU via direct bypass unless using rigid high-Shore TPU.".to_string(),
+        });
+      }
+
+      // Check non-reconstructed deltas on the filament (e.g. inverted initial layer temp, Brass < min range, PA = 0.08)
+      for delta in &spool.deltas_from_base {
+        if !delta.reconstructed_by_lua {
+          let is_danger = delta.param_key == "inherits"
+            || delta.param_key == "fan_max_speed_HS"
+            || delta.param_key == "nozzle_temperature_BRASS";
+          push_warn(SafetyWarning {
+            id: format!("spool_delta:{}:{}", spool.id, delta.param_key),
+            severity: if is_danger {
+              SafetySeverity::Danger
+            } else {
+              SafetySeverity::Warning
+            },
+            scope_label: format!("Filament: {}", spool.name),
+            param_key: delta.param_key.clone(),
+            current_value: delta.disk_value.clone(),
+            safe_range: delta.base_value.clone(),
+            explanation: delta.rule_explanation.clone(),
+          });
+        }
+      }
+
+      // Check raw disk JSON for Carbon Fiber HRC mismatch, Brass < range_low, and inverted initial-layer temperatures
+      if let Some(raw_str) = &spool.raw_disk_json {
+        if (spool.material_type.contains("-CF")
+          || spool.material_type.contains("-GF")
+          || spool.finish_type.contains("Carbon"))
+          && raw_str.contains("\"required_nozzle_HRC\"")
+          && raw_str.contains("\"3\"")
+        {
+          push_warn(SafetyWarning {
+            id: format!("spool_raw_hrc:{}", spool.id),
+            severity: SafetySeverity::Warning,
+            scope_label: format!("Filament Disk JSON: {}", spool.name),
+            param_key: "required_nozzle_HRC (On Disk)".to_string(),
+            current_value: "3 HRC on disk (Auto-healed to 55 HRC on Save)".to_string(),
+            safe_range: "≥55 HRC (Hardened Steel / Ruby / DiamondBack)".to_string(),
+            explanation: format!(
+              "Raw disk file for abrasive {} had `required_nozzle_HRC = 3` (soft Brass allowed) and lacked `nozzle_temperature_HS`. WebConfig upgrades this to 55 HRC and {}°C HS upon save.",
+              spool.name, spool.print_temp
+            ),
+          });
+        }
+
+        if let Ok(raw_val) = serde_json::from_str::<serde_json::Value>(raw_str) {
+          let extract_i32 = |k: &str| -> Option<i32> {
+            raw_val
+              .get(k)
+              .and_then(|v| {
+                v.as_str().map(|s| s.to_string()).or_else(|| {
+                  v.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string())
+                })
+              })
+              .and_then(|s| s.parse::<i32>().ok())
+          };
+
+          if let (Some(brass_t), Some(range_low)) = (
+            extract_i32("nozzle_temperature_BRASS").or_else(|| extract_i32("nozzle_temperature")),
+            extract_i32("nozzle_temperature_range_low"),
+          ) {
+            if brass_t < range_low {
+              push_warn(SafetyWarning {
+                id: format!("spool_raw_brass_low:{}", spool.id),
+                severity: SafetySeverity::Danger,
+                scope_label: format!("Filament Disk JSON: {}", spool.name),
+                param_key: "nozzle_temperature_BRASS vs range_low".to_string(),
+                current_value: format!("{}°C Brass (< {}°C Min Range)", brass_t, range_low),
+                safe_range: format!("≥{}°C (nozzle_temperature_range_low)", range_low),
+                explanation: format!(
+                  "{} defines Brass nozzle temperature at {}°C, which is {}°C below its own `nozzle_temperature_range_low` ({}°C) and {}°C below its HS temperature ({}°C). Slicing on a Brass nozzle risks cold extrusion.",
+                  spool.name,
+                  brass_t,
+                  range_low - brass_t,
+                  range_low,
+                  spool.print_temp - brass_t,
+                  spool.print_temp
+                ),
+              });
+            }
+          }
+
+          if let (Some(init_hs), Some(cont_hs)) = (
+            extract_i32("nozzle_temperature_initial_layer_HS"),
+            extract_i32("nozzle_temperature_HS"),
+          ) {
+            if init_hs < cont_hs {
+              push_warn(SafetyWarning {
+                id: format!("spool_raw_inv_init_nozzle:{}", spool.id),
+                severity: SafetySeverity::Warning,
+                scope_label: format!("Filament Disk JSON: {}", spool.name),
+                param_key: "nozzle_temperature_initial_layer_HS".to_string(),
+                current_value: format!("{}°C initial < {}°C continuous", init_hs, cont_hs),
+                safe_range: format!("≥{}°C (≥ Continuous Print Temp)", cont_hs),
+                explanation: format!(
+                  "{} sets initial layer nozzle temp ({}°C) cooler than continuous printing temp ({}°C). First layers normally require equal or higher temperature for bed adhesion.",
+                  spool.name, init_hs, cont_hs
+                ),
+              });
+            }
+          }
+
+          if let (Some(init_bed), Some(cont_bed)) = (
+            extract_i32("textured_plate_temp_initial_layer"),
+            extract_i32("textured_plate_temp"),
+          ) {
+            if init_bed < cont_bed {
+              push_warn(SafetyWarning {
+                id: format!("spool_raw_inv_init_bed:{}", spool.id),
+                severity: SafetySeverity::Warning,
+                scope_label: format!("Filament Disk JSON: {}", spool.name),
+                param_key: "textured_plate_temp_initial_layer".to_string(),
+                current_value: format!("{}°C initial < {}°C continuous", init_bed, cont_bed),
+                safe_range: format!("≥{}°C (≥ Continuous Bed Temp)", cont_bed),
+                explanation: format!(
+                  "{} sets initial layer bed temp ({}°C) cooler than continuous bed temp ({}°C), which can trigger thermal stress and corner lifting.",
+                  spool.name, init_bed, cont_bed
+                ),
+              });
+            }
+          }
+        }
+      }
+
+      if spool.pressure_advance > 0.065 {
+        push_warn(SafetyWarning {
+          id: format!("spool_pa_high:{}", spool.id),
+          severity: SafetySeverity::Warning,
+          scope_label: format!("Filament: {}", spool.name),
+          param_key: "pressure_advance".to_string(),
+          current_value: format!("{:.3}", spool.pressure_advance),
+          safe_range: "0.025–0.055 (Direct Drive)".to_string(),
+          explanation: format!(
+            "{} sets direct-drive Pressure Advance to {:.3} (nearly 2× the typical 0.035–0.050 range), which can cause corner thinning and extruder stepper clicking.",
+            spool.name, spool.pressure_advance
+          ),
+        });
+      }
+
+      // Check polymer temperature bounds on the spool
+      let mat = spool.material_type.as_str();
+      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = match mat {
+        "PLA" | "PLA+" | "PLA-CF" => (190, 240, 228, 70),
+        "PETG" | "PETG-CF" => (220, 265, 255, 90),
+        "PCTG" => (240, 280, 272, 95),
+        "TPU" => (200, 245, 235, 65),
+        "ABS" | "ASA" => (235, 285, 275, 115),
+        "PA" | "PA12" | "PA6-CF" | "PC" => (255, 310, 295, 120),
+        _ => (185, 300, 285, 115),
+      };
+
+      if spool.print_temp < min_nozzle || spool.print_temp > max_nozzle {
+        push_warn(SafetyWarning {
+          id: format!("spool_temp_danger:{}", spool.id),
+          severity: SafetySeverity::Danger,
+          scope_label: format!("Filament: {}", spool.name),
+          param_key: "print_temp".to_string(),
+          current_value: format!("{}°C", spool.print_temp),
+          safe_range: format!("{}–{}°C ({})", min_nozzle, max_nozzle, mat),
+          explanation: format!(
+            "{} nozzle temperature ({}°C) is outside safe polymer limits ({}–{}°C); risks cold-extrusion clogs or thermal degradation.",
+            spool.name, spool.print_temp, min_nozzle, max_nozzle
+          ),
+        });
+      } else if spool.print_temp >= warn_nozzle {
+        push_warn(SafetyWarning {
+          id: format!("spool_temp_warn:{}", spool.id),
+          severity: SafetySeverity::Warning,
+          scope_label: format!("Filament: {}", spool.name),
+          param_key: "print_temp".to_string(),
+          current_value: format!("{}°C", spool.print_temp),
+          safe_range: format!("{}–{}°C ({})", min_nozzle, warn_nozzle - 1, mat),
+          explanation: format!(
+            "{} nozzle temperature ({}°C) is near the upper limit for {}; increases stringing, oozing, and heat-creep risk in an enclosed chamber.",
+            spool.name, spool.print_temp, mat
+          ),
+        });
+      }
+
+      if spool.bed_temp > max_bed {
+        push_warn(SafetyWarning {
+          id: format!("spool_bed_warn:{}", spool.id),
+          severity: SafetySeverity::Warning,
+          scope_label: format!("Filament: {}", spool.name),
+          param_key: "bed_temp".to_string(),
+          current_value: format!("{}°C", spool.bed_temp),
+          safe_range: format!("≤{}°C ({})", max_bed, mat),
+          explanation: format!(
+            "{} bed temperature ({}°C) exceeds typical {} softening range (≤{}°C); can cause elephant's foot or deform first layers.",
+            spool.name, spool.bed_temp, mat, max_bed
+          ),
+        });
+      }
+    }
+
+    // 3. Check raw disk `flush_volumes_matrix` for non-zero diagonal self-purge entries
+    if !disk_flush_matrix.is_empty() {
+      let n = (disk_flush_matrix.len() as f64).sqrt().round() as usize;
+      if n > 0 && n * n == disk_flush_matrix.len() {
+        let mut nonzero_diags = Vec::new();
+        for i in 0..n {
+          let diag_val = disk_flush_matrix[i * n + i]
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            .round() as i32;
+          if diag_val != 0 {
+            nonzero_diags.push(format!("[{},{}]={}", i + 1, i + 1, diag_val));
+          }
+        }
+        if !nonzero_diags.is_empty() {
+          push_warn(SafetyWarning {
+            id: "flush_matrix_nonzero_diagonal".to_string(),
+            severity: SafetySeverity::Warning,
+            scope_label: "AnycubicSlicerNext.conf (Flushing Matrix)".to_string(),
+            param_key: "flush_volumes_matrix (Diagonal Cells)".to_string(),
+            current_value: nonzero_diags.join(", "),
+            safe_range: "0 mm³ on all diagonal [i,i] self-transitions".to_string(),
+            explanation: "The imported `flush_volumes_matrix` on disk has non-zero diagonal self-purge values (likely shifted when a slot was inserted/removed). Saving to disk will overwrite it with a clean physics-derived matrix (`0 mm³` diagonals).".to_string(),
+          });
+        }
+      }
+    }
+
+    // 4. Check live Lua-derived output profile parameters for out-of-range values
+    let get_num = |key: &str| -> Option<f64> {
+      derived_profile
+        .get_str(key)
+        .and_then(|s| s.parse::<f64>().ok())
+    };
+
+    if let Some(retract_spd) = get_num("filament_retraction_speed") {
+      if !(15.0..=55.0).contains(&retract_spd) {
+        push_warn(SafetyWarning {
+          id: "derived:filament_retraction_speed".to_string(),
+          severity: SafetySeverity::Danger,
+          scope_label: "Derived Output Profile".to_string(),
+          param_key: "filament_retraction_speed".to_string(),
+          current_value: format!("{:.1} mm/s", retract_spd),
+          safe_range: "25–50 mm/s (Direct Drive)".to_string(),
+          explanation: "Derived retraction speed is outside the safe 15–55 mm/s direct-drive envelope; speeds above 55 mm/s can strip filament or stall the extruder stepper.".to_string(),
+        });
+      }
+    }
+
+    if let Some(retract_len) = get_num("filament_retraction_length") {
+      if retract_len > 2.5 {
+        push_warn(SafetyWarning {
+          id: "derived:filament_retraction_length".to_string(),
+          severity: SafetySeverity::Danger,
+          scope_label: "Derived Output Profile".to_string(),
+          param_key: "filament_retraction_length".to_string(),
+          current_value: format!("{:.2} mm", retract_len),
+          safe_range: "0.40–1.50 mm (Direct Drive)".to_string(),
+          explanation: "Retraction length >2.5 mm on an all-metal direct-drive hotend pulls molten polymer up into the cold heat-break, causing severe heat-creep jams.".to_string(),
+        });
+      }
+    }
+
+    let nozzle_diam_mm = rig.nozzle_diameter.parse::<f64>().unwrap_or(0.4);
+    if let Some(lh) = get_num("layer_height") {
+      let max_lh = nozzle_diam_mm * 0.78;
+      let min_lh = nozzle_diam_mm * 0.12;
+      if lh > max_lh || lh < min_lh {
+        push_warn(SafetyWarning {
+          id: "derived:layer_height".to_string(),
+          severity: SafetySeverity::Danger,
+          scope_label: "Derived Output Profile".to_string(),
+          param_key: "layer_height".to_string(),
+          current_value: format!("{:.2} mm", lh),
+          safe_range: format!("{:.2}–{:.2} mm ({:.1}mm Nozzle)", min_lh, max_lh, nozzle_diam_mm),
+          explanation: format!(
+            "Layer height {:.2} mm exceeds safe extrusion geometry for a {:.1} mm nozzle (12%–75% of nozzle diameter).",
+            lh, nozzle_diam_mm
+          ),
+        });
+      }
+    }
+
+    if let Some(flow) = get_num("filament_flow_ratio") {
+      if !(0.85..=1.12).contains(&flow) {
+        push_warn(SafetyWarning {
+          id: "derived:filament_flow_ratio".to_string(),
+          severity: if !(0.75..=1.20).contains(&flow) {
+            SafetySeverity::Danger
+          } else {
+            SafetySeverity::Warning
+          },
+          scope_label: "Derived Output Profile".to_string(),
+          param_key: "filament_flow_ratio".to_string(),
+          current_value: format!("{:.3}", flow),
+          safe_range: "0.900–1.050".to_string(),
+          explanation: "Derived flow ratio is outside the normal 0.85–1.12 range; extreme values cause severe under-extrusion gaps or over-extrusion nozzle collisions.".to_string(),
+        });
+      }
+    }
+
+    warnings
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SafetySeverity {
+  /// Unsafe value that risks hardware damage, clogs, skipped steps, or print failure.
+  Danger,
+  /// Weird, drifted, or suboptimal value that merits user review before saving/exporting.
+  Warning,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SafetyWarning {
+  pub id: String,
+  pub severity: SafetySeverity,
+  pub scope_label: String,
+  pub param_key: String,
+  pub current_value: String,
+  pub safe_range: String,
+  pub explanation: String,
 }

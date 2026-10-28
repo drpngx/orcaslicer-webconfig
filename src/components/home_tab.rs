@@ -1,7 +1,9 @@
 use crate::components::nav::ActiveTab;
 use crate::models::{MachineRig, ProcessProfile};
 use crate::orca_profile::DiffItem;
-use crate::transformations::{ExternalConflict, PendingDiskUpdate, TransformationRule};
+use crate::transformations::{
+  ExternalConflict, PendingDiskUpdate, SafetySeverity, SafetyWarning, TransformationRule,
+};
 use yew::prelude::*;
 
 #[derive(Properties, PartialEq)]
@@ -26,6 +28,7 @@ pub struct HomeTabProps {
   pub rules: Vec<TransformationRule>,
   pub on_toggle_rule: Callback<String>,
   pub conflicts: Vec<ExternalConflict>,
+  pub safety_warnings: Vec<SafetyWarning>,
   pub pending_updates: Vec<PendingDiskUpdate>,
   pub on_resolve_conflict: Callback<(String, bool)>,
   pub show_diff_drawer: bool,
@@ -72,6 +75,17 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
     .iter()
     .filter(|u| u.has_value_change())
     .collect();
+
+  let danger_count = props
+    .safety_warnings
+    .iter()
+    .filter(|w| w.severity == SafetySeverity::Danger)
+    .count();
+  let warning_count = props
+    .safety_warnings
+    .iter()
+    .filter(|w| w.severity == SafetySeverity::Warning)
+    .count();
 
   html! {
     <div class="flex flex-col w-full gap-space-lg">
@@ -144,6 +158,101 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
           </button>
         </div>
       </div>
+
+      // Safety & Weird Value Validator Panel
+      if !props.safety_warnings.is_empty() {
+        <div class={format!(
+          "p-space-lg rounded-xl shadow-lg flex flex-col gap-space-sm border-2 {}",
+          if danger_count > 0 {
+            "bg-error-container/15 border-error"
+          } else {
+            "bg-secondary/10 border-secondary/70"
+          }
+        )}>
+          <div class="flex items-center justify-between flex-wrap gap-space-sm">
+            <div class="flex items-center gap-space-sm">
+              <span class={format!(
+                "material-symbols-outlined {}",
+                if danger_count > 0 { "text-error" } else { "text-secondary" }
+              )}>
+                {"health_and_safety"}
+              </span>
+              <span class="font-headline-sm text-headline-sm font-bold text-on-surface">
+                {"Safety & Weird Value Audit (Checked Across Imported Files & Active Stack)"}
+              </span>
+            </div>
+            <div class="flex items-center gap-space-xs font-mono text-xs">
+              if danger_count > 0 {
+                <span class="bg-error text-on-error px-2.5 py-0.5 rounded-full font-bold">
+                  {format!("{} UNSAFE", danger_count)}
+                </span>
+              }
+              if warning_count > 0 {
+                <span class="bg-secondary/25 text-secondary border border-secondary/50 px-2.5 py-0.5 rounded-full font-bold">
+                  {format!("{} WEIRD / ANOMALY", warning_count)}
+                </span>
+              }
+              <span class="text-[11px] text-on-surface-variant ml-1">
+                {"Requires confirmation before Save / Export"}
+              </span>
+            </div>
+          </div>
+
+          <p class="text-body-sm text-on-surface-variant">
+            {"Automated safety check across all imported machine/filament/process diffs, AnycubicSlicerNext.conf flushing matrices, and active Lua outputs. Any Export or Save to Disk will prompt a confirmation dialog while unsafe or weird values remain."}
+          </p>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-space-sm mt-space-xs">
+            {for props.safety_warnings.iter().map(|w| {
+              let is_danger = w.severity == SafetySeverity::Danger;
+              html! {
+                <div class={format!(
+                  "bg-surface-container p-space-md rounded-lg border flex flex-col justify-between gap-space-xs {}",
+                  if is_danger { "border-error/70" } else { "border-secondary/50" }
+                )}>
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="flex flex-col">
+                      <span class="text-[10px] font-mono uppercase text-on-surface-variant">
+                        {&w.scope_label}
+                      </span>
+                      <span class="font-code-md text-code-md text-on-surface font-bold">
+                        {&w.param_key}
+                      </span>
+                    </div>
+                    <span class={format!(
+                      "text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold shrink-0 {}",
+                      if is_danger {
+                        "bg-error text-on-error"
+                      } else {
+                        "bg-secondary/20 text-secondary border border-secondary/40"
+                      }
+                    )}>
+                      {if is_danger { "UNSAFE" } else { "WEIRD / REVIEW" }}
+                    </span>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-space-xs bg-surface-container-lowest p-2 rounded font-mono text-xs">
+                    <div class="flex flex-col">
+                      <span class="text-[10px] uppercase text-on-surface-variant">{"Flagged Value:"}</span>
+                      <span class={if is_danger { "text-error font-bold" } else { "text-secondary font-bold" }}>
+                        {&w.current_value}
+                      </span>
+                    </div>
+                    <div class="flex flex-col">
+                      <span class="text-[10px] uppercase text-on-surface-variant">{"Safe / Expected Range:"}</span>
+                      <span class="text-tertiary font-bold">{&w.safe_range}</span>
+                    </div>
+                  </div>
+
+                  <p class="text-[11px] text-on-surface-variant leading-relaxed">
+                    {&w.explanation}
+                  </p>
+                </div>
+              }
+            })}
+          </div>
+        </div>
+      }
 
       // Re-Created Configs vs Disk Differences Banner (Requirement #4)
       if !props.conflicts.is_empty() {

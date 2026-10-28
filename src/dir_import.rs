@@ -191,6 +191,11 @@ pub fn import_scanned_directory(
       }
 
       if entry.relative_path.contains("/filament/") {
+        if entry.relative_path.contains("/filament/base/") {
+          system_filaments
+            .entry(name.clone())
+            .or_insert_with(|| val.clone());
+        }
         user_filament_files.push((entry.relative_path.clone(), val, text.to_string()));
       } else if entry.relative_path.contains("/machine/") {
         user_machine_files.push((entry.relative_path.clone(), val));
@@ -537,7 +542,13 @@ pub fn import_scanned_directory(
       "TPU" => "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle",
       "ABS" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle",
       "ASA" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle",
-      "PA" | "PA12" | "PA6-CF" => "Anycubic PA @Anycubic Kobra S1 Max 0.4 nozzle",
+      "PA" | "PA12" | "PA6-CF" => {
+        if system_filaments.contains_key("yxpoler PA @Anycubic Kobra S1 0.4 nozzle") {
+          "yxpoler PA @Anycubic Kobra S1 0.4 nozzle"
+        } else {
+          "Anycubic PA @Anycubic Kobra S1 Max 0.4 nozzle"
+        }
+      }
       "PC" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle",
       _ => {
         if name.contains("PLA+") {
@@ -801,6 +812,73 @@ pub fn import_scanned_directory(
           clean_raw_value: expected_bed_adhesion.to_string(),
           disk_raw_value: disk_bed_temp.to_string(),
         });
+      }
+    }
+
+    // Flag cross-polymer inheritance mismatch (e.g. `yxpoler Nylon blue PA6` (`PA`) inheriting from `yxpoler ABS blue` (`ABS`))
+    if !is_standalone_base_file && !raw_inherits.is_empty() && !inherited_mat_matches {
+      let wrong_parent_mat = inherited_sys
+        .and_then(|b| extract_str(b, "filament_type"))
+        .unwrap_or_else(|| "Mismatched Base".to_string());
+      deltas.push(FilamentDeltaEntry {
+        param_key: "inherits".to_string(),
+        base_value: format!("{} ({})", canonical_base_name, mat_type),
+        disk_value: format!("{} ({})", raw_inherits, wrong_parent_mat),
+        reconstructed_by_lua: false,
+        rule_explanation: format!(
+          "Unsafe cross-polymer inheritance on disk: {} filament inherits from {} ({}) profile!",
+          mat_type, raw_inherits, wrong_parent_mat
+        ),
+      });
+      conflicts.push(ExternalConflict {
+        param_key: format!("filament:{}:inherits", name),
+        param_label: format!("{} — Inherited Base Profile (Polymer Mismatch)", name),
+        base_value: format!("{} ({} Base)", canonical_base_name, mat_type),
+        expected_derived_value: canonical_base_name.to_string(),
+        actual_external_value: format!("{} ({})", raw_inherits, wrong_parent_mat),
+        modifying_rule_id: "Polymer Compatibility & Inheritance Guard".to_string(),
+        source_relative_path: rel_path.clone(),
+        json_field_key: "inherits".to_string(),
+        clean_raw_value: canonical_base_name.to_string(),
+        disk_raw_value: raw_inherits.clone(),
+      });
+    }
+
+    // Flag excessive part cooling fan on warp-prone engineering polymers (ABS / ASA / PA / PC)
+    if matches!(
+      mat_type.as_str(),
+      "ABS" | "ASA" | "PA" | "PA12" | "PA6-CF" | "PC"
+    ) {
+      if let Some(fan_hs) =
+        extract_str(f_val, "fan_max_speed_HS").and_then(|s| s.parse::<i32>().ok())
+      {
+        let fan_brass = extract_str(f_val, "fan_max_speed_BRASS")
+          .and_then(|s| s.parse::<i32>().ok())
+          .unwrap_or(20);
+        if fan_hs > 35 && fan_brass <= 35 {
+          deltas.push(FilamentDeltaEntry {
+            param_key: "fan_max_speed_HS".to_string(),
+            base_value: format!("{}% (Brass Base)", fan_brass),
+            disk_value: format!("{}% (Unsafe HS Fan)", fan_hs),
+            reconstructed_by_lua: false,
+            rule_explanation: format!(
+              "Unsafe {}% max cooling fan on Hardened Steel for warp-prone {} (causes severe warping & layer delamination; Brass is {}%)",
+              fan_hs, mat_type, fan_brass
+            ),
+          });
+          conflicts.push(ExternalConflict {
+            param_key: format!("filament:{}:fan_max_speed_HS", name),
+            param_label: format!("{} — Max Cooling Fan (HS)", name),
+            base_value: format!("{}% ({} Safe Max)", fan_brass, mat_type),
+            expected_derived_value: format!("{}% (Matches Brass Cooling Schedule)", fan_brass),
+            actual_external_value: format!("{}% (Warping Hazard)", fan_hs),
+            modifying_rule_id: "Rig Hardware Add-Ons & Cooling Schedule Rule".to_string(),
+            source_relative_path: rel_path.clone(),
+            json_field_key: "fan_max_speed_HS".to_string(),
+            clean_raw_value: fan_brass.to_string(),
+            disk_raw_value: fan_hs.to_string(),
+          });
+        }
       }
     }
 
@@ -1543,8 +1621,11 @@ pub fn build_reference_anycubic_entries() -> Vec<ScannedFileEntry> {
         "filament_type": ["PETG"],
         "filament_vendor": ["CHCKX"],
         "nozzle_temperature": ["230"],
+        "nozzle_temperature_BRASS": ["230"],
         "nozzle_temperature_HS": ["260"],
+        "nozzle_temperature_range_low": ["250"],
         "textured_plate_temp": ["85"],
+        "textured_plate_temp_initial_layer": ["80"],
         "filament_flow_ratio": ["0.96"],
         "pressure_advance": ["0.08"]
       }"#
@@ -1564,7 +1645,67 @@ pub fn build_reference_anycubic_entries() -> Vec<ScannedFileEntry> {
         "nozzle_temperature": ["205"],
         "textured_plate_temp": ["55"],
         "filament_flow_ratio": ["0.98"],
-        "pressure_advance": ["0.035"]
+        "pressure_advance": ["0.035"],
+        "required_nozzle_HRC": ["3"]
+      }"#
+        .to_vec(),
+    },
+    ScannedFileEntry {
+      relative_path:
+        "user/434139/filament/base/yxpoler ABS blue @Anycubic Kobra S1 0.4 nozzle.json"
+          .to_string(),
+      filename: "yxpoler ABS blue @Anycubic Kobra S1 0.4 nozzle.json".to_string(),
+      bytes: br#"{
+        "from": "User",
+        "inherits": "",
+        "name": "yxpoler ABS blue @Anycubic Kobra S1 0.4 nozzle",
+        "filament_type": ["ABS"],
+        "filament_vendor": ["yxpoler"],
+        "nozzle_temperature": ["250"],
+        "nozzle_temperature_BRASS": ["260"],
+        "nozzle_temperature_HS": ["260"],
+        "nozzle_temperature_initial_layer_HS": ["265"],
+        "textured_plate_temp": ["88"],
+        "textured_plate_temp_initial_layer": ["90"],
+        "fan_max_speed_BRASS": ["20"],
+        "fan_max_speed_HS": ["80"],
+        "filament_flow_ratio": ["0.93"],
+        "pressure_advance": ["0.04"]
+      }"#
+        .to_vec(),
+    },
+    ScannedFileEntry {
+      relative_path: "user/434139/filament/base/yxpoler PA @Anycubic Kobra S1 0.4 nozzle.json"
+        .to_string(),
+      filename: "yxpoler PA @Anycubic Kobra S1 0.4 nozzle.json".to_string(),
+      bytes: br#"{
+        "from": "User",
+        "inherits": "",
+        "name": "yxpoler PA @Anycubic Kobra S1 0.4 nozzle",
+        "filament_type": ["PA"],
+        "filament_vendor": ["yxpoler"],
+        "nozzle_temperature": ["250"],
+        "nozzle_temperature_BRASS": ["260"],
+        "nozzle_temperature_HS": ["275"],
+        "nozzle_temperature_initial_layer_HS": ["270"],
+        "textured_plate_temp": ["95"],
+        "textured_plate_temp_initial_layer": ["95"],
+        "fan_max_speed_BRASS": ["20"],
+        "fan_max_speed_HS": ["80"],
+        "filament_flow_ratio": ["0.93"],
+        "pressure_advance": ["0.04"]
+      }"#
+        .to_vec(),
+    },
+    ScannedFileEntry {
+      relative_path: "user/434139/filament/yxpoler PA @Anycubic Kobra S1 0.4 nozzle.json"
+        .to_string(),
+      filename: "yxpoler PA @Anycubic Kobra S1 0.4 nozzle.json".to_string(),
+      bytes: br#"{
+        "from": "User",
+        "inherits": "yxpoler ABS blue @Anycubic Kobra S1 0.4 nozzle",
+        "name": "yxpoler Nylon blue PA6 @Anycubic Kobra S1 0.4 nozzle",
+        "filament_type": ["PA"]
       }"#
         .to_vec(),
     },
@@ -1725,6 +1866,40 @@ mod tests {
 
     // Verify conflicts were flagged (e.g. retraction_speed = 35 vs 40, textured_plate_temp = 82 vs 80)
     assert!(!summary.conflicts.is_empty());
+
+    // Verify Safety & Weird Value Validator catches all unsafe (Danger) and weird (Warning) items
+    let active_rig = summary.machines.first().unwrap();
+    let safety_warnings = crate::transformations::TransformationEngine::evaluate_safety_warnings(
+      active_rig,
+      &summary.filaments,
+      &summary.base_profile,
+      &summary.conflicts,
+      &summary.disk_flush_matrix,
+    );
+    assert!(safety_warnings.iter().any(|w| {
+      w.severity == crate::transformations::SafetySeverity::Danger
+        && w
+          .param_key
+          .contains("Inherited Base Profile (Polymer Mismatch)")
+    }));
+    assert!(safety_warnings.iter().any(|w| {
+      w.severity == crate::transformations::SafetySeverity::Danger
+        && w.param_key.contains("Max Cooling Fan (HS)")
+    }));
+    assert!(safety_warnings.iter().any(|w| {
+      w.severity == crate::transformations::SafetySeverity::Danger
+        && w
+          .param_key
+          .contains("nozzle_temperature_BRASS vs range_low")
+    }));
+    assert!(safety_warnings.iter().any(|w| {
+      w.severity == crate::transformations::SafetySeverity::Warning
+        && w.param_key.contains("pressure_advance")
+    }));
+    assert!(safety_warnings.iter().any(|w| {
+      w.severity == crate::transformations::SafetySeverity::Warning
+        && w.param_key.contains("required_nozzle_HRC (On Disk)")
+    }));
 
     // Verify ZIP backup contains all scanned files and round-trips through extract_directory_backup_zip
     let backup_zip = build_directory_backup_zip(&entries);

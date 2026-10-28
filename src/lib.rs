@@ -31,8 +31,32 @@ use crate::models::{FilamentSpool, MachineRig, ProcessProfile, WebConfigStateSna
 use crate::orca_profile::OrcaProfile;
 use crate::threemf::{build_3mf_project_container, export_standalone_filament_json};
 use crate::transformations::{
-  PendingDiskUpdate, StackEvaluationResult, TransformationEngine, TransformationRule,
+  PendingDiskUpdate, SafetySeverity, SafetyWarning, StackEvaluationResult, TransformationEngine,
+  TransformationRule,
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PendingConfirmedAction {
+  SaveToDisk,
+  Export3mf,
+  ExportWebConfigJson,
+  BackupZip,
+  ExportStandaloneJson,
+  ExportLuaPackage,
+}
+
+impl PendingConfirmedAction {
+  pub fn label(&self) -> &'static str {
+    match self {
+      Self::SaveToDisk => "Save Changes to Local Slicer Disk",
+      Self::Export3mf => "Export Multi-Material .3mf Project Container",
+      Self::ExportWebConfigJson => "Export Orca WebConfig (.json)",
+      Self::BackupZip => "Download Full Directory Backup (.zip)",
+      Self::ExportStandaloneJson => "Export Standalone OrcaSlicer Preset (.json)",
+      Self::ExportLuaPackage => "Export Lua Transformation Stack (.json)",
+    }
+  }
+}
 
 #[function_component]
 pub fn App() -> Html {
@@ -296,6 +320,16 @@ pub fn App() -> Html {
   // Evaluate Lua Stack
   let eval_result: StackEvaluationResult =
     TransformationEngine::evaluate_stack(&working_base, &rules, &eval_context);
+
+  // Evaluate Safety & Weird Value Warnings across imported files, conflicts, flushing matrix, and derived profile
+  let safety_warnings: Vec<SafetyWarning> = TransformationEngine::evaluate_safety_warnings(
+    &active_rig,
+    &filaments,
+    &eval_result.resulting_profile,
+    &conflicts,
+    &disk_flush_matrix,
+  );
+  let pending_confirmed_action = use_state(|| None::<PendingConfirmedAction>);
 
   // Compute JSON diff preview
   let base_json_str = working_base.to_json_pretty();
@@ -1670,6 +1704,112 @@ pub fn App() -> Html {
     })
   };
 
+  // Guard Save / Export actions with a confirmation modal whenever unsafe or weird values exist
+  let has_safety_warnings = !safety_warnings.is_empty();
+  let danger_warning_count = safety_warnings
+    .iter()
+    .filter(|w| w.severity == SafetySeverity::Danger)
+    .count();
+  let anomaly_warning_count = safety_warnings
+    .iter()
+    .filter(|w| w.severity == SafetySeverity::Warning)
+    .count();
+
+  let on_commit_save_guarded = {
+    let pca = pending_confirmed_action.clone();
+    let direct = on_commit_save.clone();
+    Callback::from(move |_| {
+      if has_safety_warnings {
+        pca.set(Some(PendingConfirmedAction::SaveToDisk));
+      } else {
+        direct.emit(());
+      }
+    })
+  };
+
+  let on_export_3mf_guarded = {
+    let pca = pending_confirmed_action.clone();
+    let direct = on_export_3mf.clone();
+    Callback::from(move |_| {
+      if has_safety_warnings {
+        pca.set(Some(PendingConfirmedAction::Export3mf));
+      } else {
+        direct.emit(());
+      }
+    })
+  };
+
+  let on_export_webconfig_json_guarded = {
+    let pca = pending_confirmed_action.clone();
+    let direct = on_export_webconfig_json.clone();
+    Callback::from(move |_| {
+      if has_safety_warnings {
+        pca.set(Some(PendingConfirmedAction::ExportWebConfigJson));
+      } else {
+        direct.emit(());
+      }
+    })
+  };
+
+  let on_backup_zip_guarded = {
+    let pca = pending_confirmed_action.clone();
+    let direct = on_backup_zip.clone();
+    Callback::from(move |_| {
+      if has_safety_warnings {
+        pca.set(Some(PendingConfirmedAction::BackupZip));
+      } else {
+        direct.emit(());
+      }
+    })
+  };
+
+  let on_export_standalone_json_guarded = {
+    let pca = pending_confirmed_action.clone();
+    let direct = on_export_standalone_json.clone();
+    Callback::from(move |_| {
+      if has_safety_warnings {
+        pca.set(Some(PendingConfirmedAction::ExportStandaloneJson));
+      } else {
+        direct.emit(());
+      }
+    })
+  };
+
+  let on_export_package_guarded = {
+    let pca = pending_confirmed_action.clone();
+    let direct = on_export_package.clone();
+    Callback::from(move |_| {
+      if has_safety_warnings {
+        pca.set(Some(PendingConfirmedAction::ExportLuaPackage));
+      } else {
+        direct.emit(());
+      }
+    })
+  };
+
+  let on_confirm_pending_action = {
+    let pca = pending_confirmed_action.clone();
+    let save_cb = on_commit_save.clone();
+    let export_3mf_cb = on_export_3mf.clone();
+    let export_json_cb = on_export_webconfig_json.clone();
+    let backup_zip_cb = on_backup_zip.clone();
+    let standalone_cb = on_export_standalone_json.clone();
+    let pkg_cb = on_export_package.clone();
+    Callback::from(move |_| {
+      if let Some(act) = (*pca).clone() {
+        pca.set(None);
+        match act {
+          PendingConfirmedAction::SaveToDisk => save_cb.emit(()),
+          PendingConfirmedAction::Export3mf => export_3mf_cb.emit(()),
+          PendingConfirmedAction::ExportWebConfigJson => export_json_cb.emit(()),
+          PendingConfirmedAction::BackupZip => backup_zip_cb.emit(()),
+          PendingConfirmedAction::ExportStandaloneJson => standalone_cb.emit(()),
+          PendingConfirmedAction::ExportLuaPackage => pkg_cb.emit(()),
+        }
+      }
+    })
+  };
+
   let modal_os = *selected_modal_os;
 
   html! {
@@ -1682,10 +1822,10 @@ pub fn App() -> Html {
         bound_filename={(*bound_filename).clone()}
         active_rig_name={active_rig.name.clone()}
         ace_pro_units={active_rig.ace_pro_units}
-        on_commit_save={on_commit_save.clone()}
-        on_export_3mf={on_export_3mf.clone()}
+        on_commit_save={on_commit_save_guarded.clone()}
+        on_export_3mf={on_export_3mf_guarded.clone()}
         on_import_zip={on_import_zip.clone()}
-        on_backup_zip={on_backup_zip.clone()}
+        on_backup_zip={on_backup_zip_guarded.clone()}
         on_toggle_diff={
           let sdd = show_diff_drawer.clone();
           Callback::from(move |_| sdd.set(!*sdd))
@@ -1694,6 +1834,105 @@ pub fn App() -> Html {
         has_unapplied_changes={!pending_updates.is_empty()}
         pending_save_count={pending_updates.len()}
       />
+
+      // Safety & Weird Value Confirmation Modal Dialog at Export / Save
+      if let Some(pending_act) = &*pending_confirmed_action {
+        <div class="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4 overflow-y-auto">
+          <div class="bg-surface-container-low border-2 border-error rounded-2xl max-w-3xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
+            <div class="flex items-start justify-between gap-space-md">
+              <div class="flex flex-col gap-1">
+                <div class="flex items-center gap-space-xs">
+                  <span class="bg-error text-on-error text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
+                    {"Safety & Weird Value Confirmation"}
+                  </span>
+                  if danger_warning_count > 0 {
+                    <span class="bg-error/20 text-error text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
+                      {format!("{} Unsafe Value(s)", danger_warning_count)}
+                    </span>
+                  }
+                  if anomaly_warning_count > 0 {
+                    <span class="bg-secondary/20 text-secondary text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
+                      {format!("{} Weird / Drifted Value(s)", anomaly_warning_count)}
+                    </span>
+                  }
+                </div>
+                <h2 class="font-headline-lg text-headline-sm text-on-surface font-bold mt-1">
+                  {format!("Confirm Action: {}", pending_act.label())}
+                </h2>
+                <p class="text-xs text-on-surface-variant">
+                  {"Our safety validator flagged unsafe or weird parameter values in the current configuration or imported disk profiles. Review the flagged items below before writing to disk or exporting."}
+                </p>
+              </div>
+              <button
+                class="text-on-surface-variant hover:text-on-surface p-1 cursor-pointer"
+                onclick={
+                  let pca = pending_confirmed_action.clone();
+                  Callback::from(move |_| pca.set(None))
+                }
+              >
+                <span class="material-symbols-outlined">{"close"}</span>
+              </button>
+            </div>
+
+            <div class="max-h-80 overflow-y-auto flex flex-col gap-space-xs pr-1">
+              {for safety_warnings.iter().map(|w| {
+                let is_danger = w.severity == SafetySeverity::Danger;
+                html! {
+                  <div class={format!(
+                    "bg-surface-container p-space-sm rounded-lg border flex flex-col gap-1 {}",
+                    if is_danger { "border-error/80" } else { "border-secondary/50" }
+                  )}>
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-2">
+                        <span class={format!(
+                          "text-[10px] font-mono uppercase px-1.5 py-0.5 rounded font-bold {}",
+                          if is_danger { "bg-error text-on-error" } else { "bg-secondary/20 text-secondary" }
+                        )}>
+                          {if is_danger { "UNSAFE" } else { "WEIRD" }}
+                        </span>
+                        <span class="font-mono text-xs text-on-surface font-bold">
+                          {format!("{} — {}", w.scope_label, w.param_key)}
+                        </span>
+                      </div>
+                      <span class="font-mono text-xs text-tertiary">
+                        {format!("Safe: {}", w.safe_range)}
+                      </span>
+                    </div>
+                    <div class="flex items-center gap-2 font-mono text-xs">
+                      <span class="text-on-surface-variant">{"Current:"}</span>
+                      <span class={if is_danger { "text-error font-bold" } else { "text-secondary font-bold" }}>
+                        {&w.current_value}
+                      </span>
+                    </div>
+                    <p class="text-[11px] text-on-surface-variant">
+                      {&w.explanation}
+                    </p>
+                  </div>
+                }
+              })}
+            </div>
+
+            <div class="flex items-center justify-end gap-space-sm pt-space-sm border-t border-surface-container">
+              <button
+                class="bg-surface-container-highest hover:bg-surface-bright text-on-surface px-space-lg py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                onclick={
+                  let pca = pending_confirmed_action.clone();
+                  Callback::from(move |_| pca.set(None))
+                }
+              >
+                {"Cancel & Review Values"}
+              </button>
+              <button
+                class="bg-error hover:opacity-90 text-on-error px-space-lg py-2 rounded-lg text-xs font-mono font-bold shadow-lg transition-opacity cursor-pointer flex items-center gap-1.5"
+                onclick={on_confirm_pending_action}
+              >
+                <span class="material-symbols-outlined text-[16px]">{"warning"}</span>
+                {format!("Proceed with {} Anyway", pending_act.label())}
+              </button>
+            </div>
+          </div>
+        </div>
+      }
 
       // Startup & Reset Modal (Import Existing Directory OR Start From Scratch Wizard!)
       if *show_bind_modal {
@@ -2044,13 +2283,13 @@ pub fn App() -> Html {
               last_saved_time={(*last_saved_time).clone()}
               on_load_reference_snapshot={on_load_reference_snapshot}
               on_import_zip={on_import_zip}
-              on_backup_zip={on_backup_zip}
-              on_export_webconfig_json={on_export_webconfig_json}
+              on_backup_zip={on_backup_zip_guarded}
+              on_export_webconfig_json={on_export_webconfig_json_guarded}
               on_import_webconfig_json={on_import_webconfig_json}
               on_reset_all={on_reset_all}
-              on_commit_save={on_commit_save}
-              on_export_3mf={on_export_3mf}
-              on_export_standalone_json={on_export_standalone_json}
+              on_commit_save={on_commit_save_guarded.clone()}
+              on_export_3mf={on_export_3mf_guarded.clone()}
+              on_export_standalone_json={on_export_standalone_json_guarded}
               on_switch_tab={
                 let at = active_tab.clone();
                 Callback::from(move |tab: ActiveTab| at.set(tab))
@@ -2059,6 +2298,7 @@ pub fn App() -> Html {
               rules={(*rules).clone()}
               on_toggle_rule={on_toggle_rule.clone()}
               conflicts={(*conflicts).clone()}
+              safety_warnings={safety_warnings.clone()}
               pending_updates={(*pending_updates).clone()}
               on_resolve_conflict={on_resolve_conflict}
               show_diff_drawer={*show_diff_drawer}
@@ -2196,7 +2436,7 @@ pub fn App() -> Html {
               on_change_ace_units={on_change_ace_units}
               on_update_spool={on_update_spool}
               on_export_spool_json={on_export_spool_json}
-              on_export_3mf={on_export_3mf}
+              on_export_3mf={on_export_3mf_guarded}
               on_open_bind_modal={on_open_bind_modal}
             />
           },
@@ -2213,8 +2453,8 @@ pub fn App() -> Html {
               on_update_rule_lua={on_update_rule_lua}
               on_create_rule={on_create_rule}
               on_delete_rule={on_delete_rule}
-              on_export_package={on_export_package}
-              on_commit_save={on_commit_save}
+              on_export_package={on_export_package_guarded}
+              on_commit_save={on_commit_save_guarded}
               on_open_bind_modal={on_open_bind_modal}
               execution_logs={eval_result.execution_logs.clone()}
               on_clear_logs={on_clear_logs}
