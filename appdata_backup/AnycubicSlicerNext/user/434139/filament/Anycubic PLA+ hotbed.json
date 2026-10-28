@@ -1,0 +1,23 @@
+{
+    "filament_settings_id": [
+        "Anycubic PLA+ hotbed"
+    ],
+    "filament_timestamp": "2026-09-13 10:06:01",
+    "from": "User",
+    "inherits": "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle",
+    "is_custom_defined": "0",
+    "name": "Anycubic PLA+ hotbed",
+    "nozzle_temperature_HS": [
+        "230"
+    ],
+    "nozzle_temperature_initial_layer_HS": [
+        "230"
+    ],
+    "textured_plate_temp": [
+        "60"
+    ],
+    "textured_plate_temp_initial_layer": [
+        "60"
+    ],
+    "version": "1.3.2609.02"
+}
