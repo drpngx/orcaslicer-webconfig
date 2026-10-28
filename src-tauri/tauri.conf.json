@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "orcaslicer-webconfig",
+  "version": "0.1.0",
+  "identifier": "com.orcaslicer.webconfig",
+  "build": {
+    "beforeDevCommand": "bazel build //:app_wasm && ./scripts/stage_tauri_dist.sh",
+    "devUrl": "http://127.0.0.1:8003",
+    "beforeBuildCommand": "bazel build -c opt //:app_wasm && ./scripts/stage_tauri_dist.sh",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.icns",
+      "icons/128x128.png"
+    ]
+  }
+}

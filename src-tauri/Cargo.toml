@@ -1,0 +1,23 @@
+[package]
+name = "orcaslicer-webconfig-desktop"
+version = "0.1.0"
+description = "OrcaSlicer WebConfig — Transformation-Based Slicer Configurator (Tauri v2 Desktop App)"
+edition = "2021"
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros"] }
+axum = "0.5"
+server = { path = "../server" }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

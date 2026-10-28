@@ -64,3 +64,25 @@ bindeps.from_specs(
 use_repo(bindeps, "bindeps")
 
 register_toolchains("//toolchains:wasm_bindgen_toolchain")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "orcaslicer_repo",
+    build_file_content = """
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "profiles",
+    srcs = glob(["resources/profiles/**/*.json"]),
+)
+
+exports_files([
+    "resources/profiles/OrcaFilamentLibrary.json",
+])
+""",
+    sha256 = "d97244baf15eb9377aa86714cb042d537ff3b1db13b7c2657cf865b820701cf0",
+    strip_prefix = "OrcaSlicer-2.4.2",
+    urls = ["https://github.com/OrcaSlicer/OrcaSlicer/archive/refs/tags/v2.4.2.tar.gz"],
+)
+

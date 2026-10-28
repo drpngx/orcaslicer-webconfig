@@ -54,6 +54,30 @@ rust_binary(
     ],
 )
 
+rust_binary(
+    name = "generate_orca_catalog",
+    srcs = ["src/bin/generate_orca_catalog.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+    ),
+)
+
+genrule(
+    name = "orcaslicer_catalog_gen",
+    srcs = [
+        "@orcaslicer_repo//:profiles",
+        "@orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json",
+    ],
+    outs = ["orcaslicer_generated_catalog.json"],
+    cmd = "$(location :generate_orca_catalog) $@ $$(dirname $(location @orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json))",
+    tools = [":generate_orca_catalog"],
+)
+
 rust_library(
     name = "orcaslicer_webconfig",
     srcs = glob(
@@ -65,10 +89,20 @@ rust_library(
         ],
     ),
     aliases = aliases(),
+    compile_data = glob(["transformations/**/*.lua"]) + [
+        "additional_catalog.json",
+        ":orcaslicer_generated_catalog.json",
+    ],
+    data = [
+        ":orcaslicer_generated_catalog.json",
+    ],
     edition = "2021",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
+    rustc_env = {
+        "ORCASLICER_GENERATED_CATALOG": "$(execpath :orcaslicer_generated_catalog.json)",
+    },
     deps = all_crate_deps(
         normal = True,
     ),
@@ -76,10 +110,20 @@ rust_library(
 
 rust_test(
     name = "orcaslicer_webconfig_test",
+    compile_data = glob(["transformations/**/*.lua"]) + [
+        "additional_catalog.json",
+        ":orcaslicer_generated_catalog.json",
+    ],
     crate = ":orcaslicer_webconfig",
+    data = [
+        ":orcaslicer_generated_catalog.json",
+    ],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
+    rustc_env = {
+        "ORCASLICER_GENERATED_CATALOG": "$(execpath :orcaslicer_generated_catalog.json)",
+    },
     deps = all_crate_deps(
         normal = True,
     ),
@@ -93,6 +137,11 @@ rust_wasm_bindgen(
 
 filegroup(
     name = "static_files",
-    srcs = glob(["static/**"]),
+    srcs = glob(["static/**"]) + ["local_slicer_config.json"],
     visibility = ["//visibility:public"],
 )
+
+exports_files([
+    "local_slicer_config.json",
+    "static/index.html",
+])

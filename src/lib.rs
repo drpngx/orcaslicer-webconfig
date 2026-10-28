@@ -1,11 +1,15 @@
+#![recursion_limit = "512"]
+
+pub mod catalog;
 pub mod components;
+pub mod dir_import;
 pub mod fs_access;
 pub mod lua_engine;
 pub mod models;
 pub mod orca_profile;
+pub mod threemf;
 pub mod transformations;
 
-use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
@@ -13,565 +17,2212 @@ use crate::components::filament_tab::FilamentTab;
 use crate::components::home_tab::HomeTab;
 use crate::components::machine_tab::MachineTab;
 use crate::components::nav::{ActiveTab, NavigationBar};
+use crate::components::scratch_wizard::{ScratchWizard, ScratchWizardOutput};
 use crate::components::wizard_tab::WizardTab;
-use crate::fs_access::{show_open_file_picker, FileSystemFileHandle, FsManager};
-use crate::models::{FilamentSpool, MachineRig};
+use crate::dir_import::{
+  apply_pending_updates_to_entries, build_directory_backup_zip, build_reference_anycubic_entries,
+  build_user_disk_config_summary_json, extract_directory_backup_zip, import_scanned_directory,
+};
+use crate::fs_access::{
+  DetectedClientOs, FsManager, LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload,
+  LocalFsScanProgress, ScannedFileEntry,
+};
+use crate::models::{FilamentSpool, MachineRig, ProcessProfile, WebConfigStateSnapshot};
 use crate::orca_profile::OrcaProfile;
-use crate::transformations::{ExternalConflict, StackEvaluationResult, TransformationEngine, TransformationRule};
+use crate::threemf::{build_3mf_project_container, export_standalone_filament_json};
+use crate::transformations::{
+  PendingDiskUpdate, StackEvaluationResult, TransformationEngine, TransformationRule,
+};
 
 #[function_component]
 pub fn App() -> Html {
-    let active_tab = use_state(|| ActiveTab::Home);
+  let saved_state = use_memo((), |_| FsManager::load_state_from_storage());
+  let active_tab = use_state(|| ActiveTab::Home);
 
-    // Machine Rigs
-    let machines = use_state(|| vec![
-        MachineRig::default_kobra_diamondback(),
-        MachineRig::default_kobra_stock(),
-        MachineRig::default_voron_24(),
-    ]);
-    let active_machine_id = use_state(|| "kobra_s1_diamondback".to_string());
+  // Requirement #1 & #3: Default to nothing loaded on fresh startup, or restore saved WebConfig state from browser localStorage!
+  let is_config_loaded = use_state(|| saved_state.is_some());
+  let show_bind_modal = use_state(|| saved_state.is_none());
+  let modal_start_from_scratch = use_state(|| false);
+  let selected_modal_os = use_state(FsManager::detect_client_os);
 
-    // Filaments
-    let filaments = use_state(FilamentSpool::get_default_spools);
-    let active_filament_type = use_state(|| "PETG".to_string());
+  // Pillar 1: Hardware / Hotend Rigs
+  let machines = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.machines.clone())
+      .unwrap_or_default()
+  });
+  let active_machine_id = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.active_machine_id.clone())
+      .unwrap_or_else(|| "kobra_s1_hardened_png".to_string())
+  });
 
-    // Profiles & Rules
-    let base_profile = use_state(OrcaProfile::get_stock_kobra_s1);
-    let rules = use_state(TransformationEngine::get_default_rules);
+  // Pillar 2: Filaments & ACE Pro Spools
+  let filaments = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.filaments.clone())
+      .unwrap_or_default()
+  });
+  let active_filament_type = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.active_filament_type.clone())
+      .unwrap_or_else(|| "PETG".to_string())
+  });
 
-    // File Access State
-    let file_handle = use_state(|| None::<FileSystemFileHandle>);
-    let bound_filename = use_state(|| "kobra_s1_diamondback_0.4.json".to_string());
-    let bound_path_hint = use_state(|| "~/AppData/Roaming/OrcaSlicer/system/kobra_s1_diamondback_0.4.json".to_string());
-    let last_saved_time = use_state(|| "Not saved in session".to_string());
-    let disconnect_after_save = use_state(|| true);
+  // Pillar 3: Process / Speed Profiles
+  let processes = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.processes.clone())
+      .unwrap_or_default()
+  });
+  let active_process_id = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.active_process_id.clone())
+      .unwrap_or_else(|| "proc_020_std_png".to_string())
+  });
 
-    // UI state
-    let show_diff_drawer = use_state(|| false);
-    let toast_message = use_state(|| None::<String>);
-    let conflicts = use_state(|| Vec::<ExternalConflict>::new());
-    let execution_logs = use_state(|| Vec::<String>::new());
+  // Scanned directory files for full .zip backup
+  let scanned_entries = use_state(Vec::<ScannedFileEntry>::new);
+  let detected_hardware_summary = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.detected_hardware_summary.clone())
+      .unwrap_or_else(|| "Unconnected".to_string())
+  });
 
-    // Context for Lua Evaluation
-    let active_rig = machines.iter().find(|m| m.id == *active_machine_id).cloned().unwrap_or_else(MachineRig::default_kobra_diamondback);
-    let eval_context = serde_json::json!({
-        "printer_model": active_rig.printer_model,
-        "nozzle_type": active_rig.nozzle_type,
-        "nozzle_diameter": active_rig.nozzle_diameter,
-        "filament_type": *active_filament_type,
+  // Base Profile & Lua Transformation Stack
+  let base_profile = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.base_profile.clone())
+      .unwrap_or_else(OrcaProfile::get_stock_kobra_s1)
+  });
+  let rules = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.rules.clone())
+      .unwrap_or_default()
+  });
+
+  // Local Disk & ZIP Source Metadata State
+  let bound_filename = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.bound_filename.clone())
+      .unwrap_or_else(|| "No Config Loaded".to_string())
+  });
+  let bound_path_hint = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.bound_path_hint.clone())
+      .unwrap_or_else(|| {
+        "Import from Local Filesystem, Load WebConfig JSON, Start From Scratch, or Import a Backup .zip"
+          .to_string()
+      })
+  });
+  let last_saved_time = use_state(|| {
+    if saved_state.is_some() {
+      "Restored from browser site data".to_string()
+    } else {
+      "Not yet synced".to_string()
+    }
+  });
+
+  // UI & Flushing Matrix / Multiplier state
+  let show_diff_drawer = use_state(|| false);
+  let toast_message = use_state(|| None::<String>);
+  let conflicts = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.conflicts.clone())
+      .unwrap_or_default()
+  });
+  let pending_updates = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.pending_updates.clone())
+      .unwrap_or_default()
+  });
+  let execution_logs = use_state(Vec::<String>::new);
+  let import_progress = use_state(|| None::<LocalFsScanProgress>);
+  let disk_flush_matrix = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.disk_flush_matrix.clone())
+      .unwrap_or_default()
+  });
+  let disk_flush_slot_count = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.disk_flush_slot_count)
+      .unwrap_or(0usize)
+  });
+  let disk_flush_multiplier = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.disk_flush_multiplier)
+      .unwrap_or(1.0f64)
+  });
+  let flush_multiplier = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.flush_multiplier)
+      .unwrap_or(1.0f64)
+  });
+  let conf_relative_path = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.conf_relative_path.clone())
+      .unwrap_or_else(|| "AnycubicSlicerNext.conf".to_string())
+  });
+
+  // Requirement #3: Automatically persist full site state to browser localStorage whenever a config is loaded
+  {
+    let is_loaded = *is_config_loaded;
+    let snap = WebConfigStateSnapshot {
+      schema_version: "1.0".to_string(),
+      bound_filename: (*bound_filename).clone(),
+      bound_path_hint: (*bound_path_hint).clone(),
+      detected_hardware_summary: (*detected_hardware_summary).clone(),
+      machines: (*machines).clone(),
+      active_machine_id: (*active_machine_id).clone(),
+      filaments: (*filaments).clone(),
+      active_filament_type: (*active_filament_type).clone(),
+      processes: (*processes).clone(),
+      active_process_id: (*active_process_id).clone(),
+      base_profile: (*base_profile).clone(),
+      rules: (*rules).clone(),
+      conflicts: (*conflicts).clone(),
+      pending_updates: (*pending_updates).clone(),
+      flush_multiplier: *flush_multiplier,
+      disk_flush_multiplier: *disk_flush_multiplier,
+      disk_flush_matrix: (*disk_flush_matrix).clone(),
+      disk_flush_slot_count: *disk_flush_slot_count,
+      conf_relative_path: (*conf_relative_path).clone(),
+    };
+    use_effect_with((is_loaded, snap), move |(loaded, snapshot)| {
+      if *loaded {
+        let _ = FsManager::save_state_to_storage(snapshot);
+      }
+      || ()
     });
+  }
 
-    // Evaluate Stack
-    let eval_result: StackEvaluationResult = TransformationEngine::evaluate_stack(&base_profile, &rules, &eval_context);
+  // Active Rig & Process
+  let active_rig = machines
+    .iter()
+    .find(|m| m.id == *active_machine_id)
+    .cloned()
+    .or_else(|| machines.first().cloned())
+    .unwrap_or_else(MachineRig::kobra_s1_hardened_steel_png);
 
-    // Compute JSON diff preview
-    let base_json_str = base_profile.to_json_pretty();
-    let derived_json_str = eval_result.resulting_profile.to_json_pretty();
+  let active_proc = processes
+    .iter()
+    .find(|p| p.id == *active_process_id)
+    .cloned()
+    .or_else(|| processes.first().cloned())
+    .unwrap_or_else(|| ProcessProfile::get_default_processes().remove(1));
 
-    let mut diff_lines = Vec::new();
-    let base_lines: Vec<&str> = base_json_str.lines().collect();
-    let derived_lines: Vec<&str> = derived_json_str.lines().collect();
+  let slot_count = (active_rig.ace_pro_units * 4).min(filaments.len());
+  let active_slots: Vec<FilamentSpool> = filaments.iter().take(slot_count).cloned().collect();
 
-    for (b_line, d_line) in base_lines.iter().zip(derived_lines.iter()) {
-        if b_line == d_line {
-            diff_lines.push(format!("  {}", b_line));
-        } else {
-            diff_lines.push(format!("- {}", b_line));
-            diff_lines.push(format!("+ {}", d_line));
+  // Minimum filament max volumetric speed across active slots
+  let active_filament_max_flow = filaments
+    .iter()
+    .find(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
+    .map(|s| s.max_volumetric_speed as f64)
+    .unwrap_or(12.0);
+
+  let slots_json: Vec<serde_json::Value> = active_slots
+    .iter()
+    .map(|s| {
+      serde_json::json!({
+        "name": s.name,
+        "material_type": s.material_type,
+        "color_hex": s.color_hex,
+        "opacity": s.opacity,
+        "pigment_stickiness": s.pigment_stickiness
+      })
+    })
+    .collect();
+
+  let all_filament_types: Vec<String> = filaments.iter().map(|s| s.material_type.clone()).collect();
+
+  // Context for Lua Evaluation (includes rig addons & flush_multiplier!)
+  let eval_context = serde_json::json!({
+    "printer_model": active_rig.printer_model,
+    "nozzle_type": active_rig.nozzle_type,
+    "nozzle_material": active_rig.nozzle_material,
+    "nozzle_diameter": active_rig.nozzle_diameter,
+    "hotend_max_flow": active_rig.max_volumetric_flow_limit,
+    "filament_max_flow": active_filament_max_flow,
+    "melt_zone_multiplier": active_rig.melt_zone_multiplier,
+    "flush_multiplier": *flush_multiplier,
+    "layer_height": active_proc.layer_height,
+    "line_width": active_proc.line_width,
+    "filament_type": *active_filament_type,
+    "all_filament_types": all_filament_types,
+    "addons": active_rig.addons,
+    "slots": slots_json,
+  });
+
+  // Prepare base profile with active process speeds so Lua can cap them
+  let mut working_base = (*base_profile).clone();
+  working_base.set_str("layer_height", &format!("{:.2}", active_proc.layer_height));
+  working_base.set_str(
+    "outer_wall_line_width",
+    &format!("{:.2}", active_proc.line_width),
+  );
+  working_base.set_str(
+    "outer_wall_speed",
+    &format!("{:.0}", active_proc.outer_wall_speed),
+  );
+  working_base.set_str(
+    "inner_wall_speed",
+    &format!("{:.0}", active_proc.inner_wall_speed),
+  );
+  working_base.set_str(
+    "sparse_infill_speed",
+    &format!("{:.0}", active_proc.sparse_infill_speed),
+  );
+  working_base.set_str("flush_multiplier", &format!("{:.2}", *flush_multiplier));
+
+  // Evaluate Lua Stack
+  let eval_result: StackEvaluationResult =
+    TransformationEngine::evaluate_stack(&working_base, &rules, &eval_context);
+
+  // Compute JSON diff preview
+  let base_json_str = working_base.to_json_pretty();
+  let derived_json_str = eval_result.resulting_profile.to_json_pretty();
+
+  let mut diff_lines = Vec::new();
+  let base_lines: Vec<&str> = base_json_str.lines().collect();
+  let derived_lines: Vec<&str> = derived_json_str.lines().collect();
+
+  for (b_line, d_line) in base_lines.iter().zip(derived_lines.iter()) {
+    if b_line == d_line {
+      diff_lines.push(format!("  {}", b_line));
+    } else {
+      diff_lines.push(format!("- {}", b_line));
+      diff_lines.push(format!("+ {}", d_line));
+    }
+  }
+  let json_diff_text = diff_lines.join("\n");
+
+  // Build Our Internal Config Data Structure JSON vs User Disk Config JSON
+  let our_internal_config_json = serde_json::to_string_pretty(&serde_json::json!({
+    "architecture": "Transformation-Based Config State (Not Absolute Values)",
+    "active_rig": {
+      "id": active_rig.id,
+      "name": active_rig.name,
+      "concise_title": active_rig.format_concise_title(),
+      "machine_type": active_rig.printer_model,
+      "nozzle": {
+        "type": active_rig.nozzle_type,
+        "material": active_rig.nozzle_material,
+        "diameter_mm": active_rig.nozzle_diameter,
+      },
+      "addons": active_rig.addons,
+      "printer_notes": active_rig.notes,
+      "source_disk_profile": active_rig.source_disk_profile,
+    },
+    "active_process": {
+      "id": active_proc.id,
+      "name": active_proc.name,
+      "concise_title": active_proc.format_concise_title(&active_rig.short_model_tag()),
+      "quality_tier": active_proc.quality_tier(),
+      "notes": active_proc.notes,
+    },
+    "active_lua_transformations": rules
+      .iter()
+      .filter(|r| r.enabled)
+      .map(|r| serde_json::json!({
+        "id": r.id,
+        "name": r.name,
+        "category": r.category,
+        "priority": r.priority,
+      }))
+      .collect::<Vec<_>>(),
+    "staged_pending_disk_saves": (*pending_updates).clone(),
+    "imported_filament_deltas": filaments
+      .iter()
+      .take(4)
+      .map(|f| serde_json::json!({
+        "name": f.name,
+        "inherits_system_base": f.inherits,
+        "deltas_from_base": f.deltas_from_base,
+      }))
+      .collect::<Vec<_>>(),
+  }))
+  .unwrap_or_default();
+
+  // User Disk Config JSON reflects the ACTUAL files on disk (does NOT mirror our derived state until saved!)
+  let user_disk_config_json = build_user_disk_config_summary_json(&scanned_entries);
+
+  // Handlers
+  let on_select_tab = {
+    let active_tab = active_tab.clone();
+    Callback::from(move |tab: ActiveTab| {
+      active_tab.set(tab);
+    })
+  };
+
+  let on_open_bind_modal = {
+    let show_bind_modal = show_bind_modal.clone();
+    Callback::from(move |_| {
+      show_bind_modal.set(true);
+    })
+  };
+
+  let on_copy_path = {
+    let toast = toast_message.clone();
+    Callback::from(move |path_str: String| {
+      FsManager::copy_to_clipboard(&path_str);
+      toast.set(Some(format!(
+        "Copied directory path '{}' to clipboard!",
+        path_str
+      )));
+    })
+  };
+
+  // Fetch and import the real local directory configured in `local_slicer_config.json` via `/api/local-slicer-scan`
+  let on_load_reference_snapshot = {
+    let is_config_loaded = is_config_loaded.clone();
+    let show_bind_modal = show_bind_modal.clone();
+    let import_progress = import_progress.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let base_profile = base_profile.clone();
+    let rules = rules.clone();
+    let conflicts = conflicts.clone();
+    let pending_updates = pending_updates.clone();
+    let scanned_entries = scanned_entries.clone();
+    let detected_hardware_summary = detected_hardware_summary.clone();
+    let bound_filename = bound_filename.clone();
+    let bound_path_hint = bound_path_hint.clone();
+    let last_saved_time = last_saved_time.clone();
+    let disk_flush_matrix = disk_flush_matrix.clone();
+    let disk_flush_slot_count = disk_flush_slot_count.clone();
+    let disk_flush_multiplier = disk_flush_multiplier.clone();
+    let flush_multiplier = flush_multiplier.clone();
+    let conf_relative_path = conf_relative_path.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |_| {
+      let icl = is_config_loaded.clone();
+      let sbm = show_bind_modal.clone();
+      let ip_state = import_progress.clone();
+      let mach_state = machines.clone();
+      let amid = active_machine_id.clone();
+      let fil_state = filaments.clone();
+      let proc_state = processes.clone();
+      let apid = active_process_id.clone();
+      let bp_state = base_profile.clone();
+      let rules_state = rules.clone();
+      let conf_state = conflicts.clone();
+      let pu_state = pending_updates.clone();
+      let se_state = scanned_entries.clone();
+      let dhs = detected_hardware_summary.clone();
+      let bfn = bound_filename.clone();
+      let bph = bound_path_hint.clone();
+      let lst = last_saved_time.clone();
+      let dfm = disk_flush_matrix.clone();
+      let dfsc = disk_flush_slot_count.clone();
+      let dfmult = disk_flush_multiplier.clone();
+      let fmult = flush_multiplier.clone();
+      let crp = conf_relative_path.clone();
+      let t = toast.clone();
+
+      ip_state.set(Some(LocalFsScanProgress {
+        running: true,
+        done: false,
+        phase: "Starting local filesystem scan...".to_string(),
+        files_read: 0,
+        total_files: 0,
+        current_file: "/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext".to_string(),
+      }));
+
+      spawn_local(async move {
+        let _ = gloo_net::http::Request::get(&FsManager::api_url("/api/local-slicer-scan/start"))
+          .send()
+          .await;
+
+        let mut final_total = 0usize;
+        for _ in 0..1200 {
+          FsManager::sleep_ms(50).await;
+          if let Ok(resp) =
+            gloo_net::http::Request::get(&FsManager::api_url("/api/local-slicer-scan/status"))
+              .send()
+              .await
+          {
+            if resp.ok() {
+              if let Ok(prog) = resp.json::<LocalFsScanProgress>().await {
+                final_total = prog.total_files;
+                let is_done = prog.done;
+                ip_state.set(Some(prog));
+                if is_done {
+                  break;
+                }
+              }
+            }
+          }
         }
-    }
-    let json_diff_text = diff_lines.join("\n");
 
-    // Handlers
-    let on_select_tab = {
-        let active_tab = active_tab.clone();
-        Callback::from(move |tab: ActiveTab| {
-            active_tab.set(tab);
-        })
-    };
+        ip_state.set(Some(LocalFsScanProgress {
+          running: true,
+          done: false,
+          phase: "Parsing files & reconstructing hardware/filament delta transformations..."
+            .to_string(),
+          files_read: final_total,
+          total_files: final_total,
+          current_file: "Analyzing Kobra S1 rig, nozzles, and user filament deltas...".to_string(),
+        }));
+        FsManager::sleep_ms(30).await;
 
-    let on_toggle_rule = {
-        let rules = rules.clone();
-        Callback::from(move |rule_id: String| {
-            let mut list = (*rules).clone();
-            if let Some(r) = list.iter_mut().find(|r| r.id == rule_id) {
-                r.enabled = !r.enabled;
+        let mut cfg_path = "/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext".to_string();
+        let mut entries =
+          match gloo_net::http::Request::get(&FsManager::api_url("/api/local-slicer-scan"))
+            .send()
+            .await
+          {
+            Ok(resp) if resp.ok() => match resp.json::<LocalFsScanPayload>().await {
+              Ok(payload) => {
+                cfg_path = payload.configured_path;
+                payload.entries
+              }
+              Err(_) => Vec::new(),
+            },
+            _ => Vec::new(),
+          };
+
+        if entries.is_empty() {
+          entries = build_reference_anycubic_entries();
+        }
+
+        match import_scanned_directory(&entries) {
+          Ok(imported) => {
+            let active_mach = imported
+              .machines
+              .iter()
+              .find(|m| m.id == imported.active_machine_id)
+              .or_else(|| imported.machines.first());
+            let hw_summary = active_mach
+              .map(|m| {
+                format!(
+                  "{} ({}) with {} ({}mm) Nozzle — user/{}",
+                  m.printer_model,
+                  m.name,
+                  m.nozzle_material,
+                  m.nozzle_diameter,
+                  imported.user_folder_id
+                )
+              })
+              .unwrap_or_else(|| "Anycubic Kobra S1 with Hardened Steel Nozzle".to_string());
+
+            se_state.set(entries);
+            dhs.set(hw_summary.clone());
+            amid.set(imported.active_machine_id.clone());
+            apid.set(imported.active_process_id.clone());
+            dfm.set(imported.disk_flush_matrix.clone());
+            dfsc.set(imported.disk_flush_slot_count);
+            dfmult.set(imported.disk_flush_multiplier);
+            fmult.set(imported.disk_flush_multiplier);
+            crp.set(imported.conf_relative_path.clone());
+            bp_state.set(imported.base_profile);
+            let mut default_rules = TransformationEngine::get_default_rules();
+            if let Some(m) = active_mach {
+              TransformationEngine::sync_rules_for_rig(
+                &mut default_rules,
+                &m.nozzle_type,
+                &m.nozzle_material,
+                m.ace_pro_units,
+              );
             }
-            rules.set(list);
-        })
-    };
+            rules_state.set(default_rules);
+            mach_state.set(imported.machines);
+            fil_state.set(imported.filaments);
+            proc_state.set(imported.processes);
+            conf_state.set(imported.conflicts.clone());
+            pu_state.set(Vec::new());
+            bfn.set(format!(
+              "AnycubicSlicerNext/user/{}/",
+              imported.user_folder_id
+            ));
+            bph.set(format!(
+              "{} (Imported via local_slicer_config.json • {} files scanned)",
+              cfg_path, imported.total_files_scanned
+            ));
+            lst.set("Imported from Local FS".to_string());
+            ip_state.set(None);
+            icl.set(true);
+            sbm.set(false);
 
-    let on_update_rule_lua = {
-        let rules = rules.clone();
-        Callback::from(move |(rule_id, new_lua): (String, String)| {
-            let mut list = (*rules).clone();
-            if let Some(r) = list.iter_mut().find(|r| r.id == rule_id) {
-                r.lua_code = new_lua;
-            }
-            rules.set(list);
-        })
-    };
+            t.set(Some(format!(
+              "Read {} files from '{}' (local_slicer_config.json): {}! Flagged {} one-off differences.",
+              imported.total_files_scanned,
+              cfg_path,
+              hw_summary,
+              imported.conflicts.len()
+            )));
+          }
+          Err(e) => {
+            ip_state.set(None);
+            t.set(Some(format!("Import error: {}", e)));
+          }
+        }
+      });
+    })
+  };
 
-    let on_change_nozzle = {
-        let machines = machines.clone();
-        let active_machine_id = active_machine_id.clone();
-        let rules = rules.clone();
-        let toast = toast_message.clone();
+  // Import a `.zip` backup archive via `<input type="file" accept=".zip">`
+  let on_import_zip = {
+    let is_config_loaded = is_config_loaded.clone();
+    let show_bind_modal = show_bind_modal.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let base_profile = base_profile.clone();
+    let rules = rules.clone();
+    let conflicts = conflicts.clone();
+    let pending_updates = pending_updates.clone();
+    let scanned_entries = scanned_entries.clone();
+    let detected_hardware_summary = detected_hardware_summary.clone();
+    let bound_filename = bound_filename.clone();
+    let bound_path_hint = bound_path_hint.clone();
+    let last_saved_time = last_saved_time.clone();
+    let disk_flush_matrix = disk_flush_matrix.clone();
+    let disk_flush_slot_count = disk_flush_slot_count.clone();
+    let disk_flush_multiplier = disk_flush_multiplier.clone();
+    let flush_multiplier = flush_multiplier.clone();
+    let conf_relative_path = conf_relative_path.clone();
+    let toast = toast_message.clone();
 
-        Callback::from(move |new_nozzle_type: String| {
-            let mut mach_list = (*machines).clone();
-            if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
-                m.nozzle_type = new_nozzle_type.clone();
-                if new_nozzle_type == "diamondback" {
-                    m.nozzle_name = "Diamondback PCD Diamond 0.40mm".to_string();
-                    // Auto-enable Diamondback transformation rule
-                    let mut r_list = (*rules).clone();
-                    if let Some(r) = r_list.iter_mut().find(|r| r.id == "diamondback_nozzle") {
-                        r.enabled = true;
-                    }
-                    rules.set(r_list);
-                    toast.set(Some("Installed Diamondback PCD Nozzle: auto-activated Diamondback thermal tuning!".to_string()));
-                } else if new_nozzle_type == "brass" {
-                    m.nozzle_name = "Standard Volcano Brass 0.40mm".to_string();
-                    // Disable Diamondback rule
-                    let mut r_list = (*rules).clone();
-                    if let Some(r) = r_list.iter_mut().find(|r| r.id == "diamondback_nozzle") {
-                        r.enabled = false;
-                    }
-                    rules.set(r_list);
-                    toast.set(Some("Installed Standard Brass Nozzle: reverted to stock thermal profile.".to_string()));
-                } else {
-                    m.nozzle_name = "Hardened Steel Wear-Resistant 0.40mm".to_string();
-                    toast.set(Some("Installed Hardened Steel Nozzle.".to_string()));
+    Callback::from(move |e: Event| {
+      let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+      let icl = is_config_loaded.clone();
+      let sbm = show_bind_modal.clone();
+      let mach_state = machines.clone();
+      let amid = active_machine_id.clone();
+      let fil_state = filaments.clone();
+      let proc_state = processes.clone();
+      let apid = active_process_id.clone();
+      let bp_state = base_profile.clone();
+      let rules_state = rules.clone();
+      let conf_state = conflicts.clone();
+      let pu_state = pending_updates.clone();
+      let se_state = scanned_entries.clone();
+      let dhs = detected_hardware_summary.clone();
+      let bfn = bound_filename.clone();
+      let bph = bound_path_hint.clone();
+      let lst = last_saved_time.clone();
+      let dfm = disk_flush_matrix.clone();
+      let dfsc = disk_flush_slot_count.clone();
+      let dfmult = disk_flush_multiplier.clone();
+      let fmult = flush_multiplier.clone();
+      let crp = conf_relative_path.clone();
+      let t = toast.clone();
+
+      spawn_local(async move {
+        match FsManager::read_input_file_bytes(&input).await {
+          Ok((zip_name, bytes)) => match extract_directory_backup_zip(&bytes) {
+            Ok(entries) => match import_scanned_directory(&entries) {
+              Ok(imported) => {
+                let active_mach = imported
+                  .machines
+                  .iter()
+                  .find(|m| m.id == imported.active_machine_id)
+                  .or_else(|| imported.machines.first());
+                let hw_summary = active_mach
+                  .map(|m| {
+                    format!(
+                      "{} ({}) with {} ({}mm) Nozzle — user/{}",
+                      m.printer_model,
+                      m.name,
+                      m.nozzle_material,
+                      m.nozzle_diameter,
+                      imported.user_folder_id
+                    )
+                  })
+                  .unwrap_or_else(|| "Anycubic Kobra S1 with Hardened Steel Nozzle".to_string());
+
+                se_state.set(entries);
+                dhs.set(hw_summary.clone());
+                amid.set(imported.active_machine_id.clone());
+                apid.set(imported.active_process_id.clone());
+                dfm.set(imported.disk_flush_matrix.clone());
+                dfsc.set(imported.disk_flush_slot_count);
+                dfmult.set(imported.disk_flush_multiplier);
+                fmult.set(imported.disk_flush_multiplier);
+                crp.set(imported.conf_relative_path.clone());
+                bp_state.set(imported.base_profile);
+                let mut default_rules = TransformationEngine::get_default_rules();
+                if let Some(m) = active_mach {
+                  TransformationEngine::sync_rules_for_rig(
+                    &mut default_rules,
+                    &m.nozzle_type,
+                    &m.nozzle_material,
+                    m.ace_pro_units,
+                  );
                 }
+                rules_state.set(default_rules);
+                mach_state.set(imported.machines);
+                fil_state.set(imported.filaments);
+                proc_state.set(imported.processes);
+                conf_state.set(imported.conflicts.clone());
+                pu_state.set(Vec::new());
+
+                bfn.set(format!("{} (user/{})", zip_name, imported.user_folder_id));
+                bph.set(format!(
+                  "Imported ZIP Archive: {} ({} config files • {})",
+                  zip_name, imported.total_files_scanned, hw_summary
+                ));
+                lst.set("Imported from .zip".to_string());
+                icl.set(true);
+                sbm.set(false);
+
+                t.set(Some(format!(
+                  "Imported '{}' ({} files): {}! Flagged {} one-off differences.",
+                  zip_name,
+                  imported.total_files_scanned,
+                  hw_summary,
+                  imported.conflicts.len()
+                )));
+              }
+              Err(err) => {
+                t.set(Some(format!("ZIP directory import failed: {}", err)));
+              }
+            },
+            Err(err) => {
+              t.set(Some(format!("Failed to extract .zip backup: {}", err)));
             }
-            machines.set(mach_list);
-        })
-    };
+          },
+          Err(err) => {
+            t.set(Some(format!("Failed to read .zip file: {}", err)));
+          }
+        }
+      });
+    })
+  };
 
-    let on_select_active_filament = {
-        let active_filament_type = active_filament_type.clone();
-        let toast = toast_message.clone();
-        Callback::from(move |mat: String| {
-            active_filament_type.set(mat.clone());
-            toast.set(Some(format!("Active slicing material set to {}. Slicing rules updated!", mat)));
-        })
-    };
+  // Requirement #1: Zip the entire loaded directory and save as a .zip backup!
+  let on_backup_zip = {
+    let scanned_entries = scanned_entries.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |_| {
+      let entries = if scanned_entries.is_empty() {
+        build_reference_anycubic_entries()
+      } else {
+        (*scanned_entries).clone()
+      };
+      let zip_bytes = build_directory_backup_zip(&entries);
+      let filename = "AnycubicSlicerNext_Config_Backup.zip";
+      match FsManager::trigger_binary_download(filename, &zip_bytes, "application/zip") {
+        Ok(()) => {
+          toast.set(Some(format!(
+            "Created full directory backup '{}' ({} files archived, {} bytes)!",
+            filename,
+            entries.len(),
+            zip_bytes.len()
+          )));
+        }
+        Err(e) => {
+          toast.set(Some(format!("Backup ZIP error: {}", e)));
+        }
+      }
+    })
+  };
 
-    let on_set_active_machine = {
-        let active_machine_id = active_machine_id.clone();
-        let machines = machines.clone();
-        let toast = toast_message.clone();
-        Callback::from(move |mid: String| {
-            active_machine_id.set(mid.clone());
-            let mut list = (*machines).clone();
-            for m in &mut list {
-                m.is_active = m.id == mid;
+  // Requirement #2: Export full site state as a single Orca WebConfig JSON (`orcaslicer_webconfig.json`)
+  let on_export_webconfig_json = {
+    let bound_filename = bound_filename.clone();
+    let bound_path_hint = bound_path_hint.clone();
+    let detected_hardware_summary = detected_hardware_summary.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let active_filament_type = active_filament_type.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let base_profile = base_profile.clone();
+    let rules = rules.clone();
+    let conflicts = conflicts.clone();
+    let pending_updates = pending_updates.clone();
+    let flush_multiplier = flush_multiplier.clone();
+    let disk_flush_multiplier = disk_flush_multiplier.clone();
+    let disk_flush_matrix = disk_flush_matrix.clone();
+    let disk_flush_slot_count = disk_flush_slot_count.clone();
+    let conf_relative_path = conf_relative_path.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |_| {
+      let snapshot = WebConfigStateSnapshot {
+        schema_version: "1.0".to_string(),
+        bound_filename: (*bound_filename).clone(),
+        bound_path_hint: (*bound_path_hint).clone(),
+        detected_hardware_summary: (*detected_hardware_summary).clone(),
+        machines: (*machines).clone(),
+        active_machine_id: (*active_machine_id).clone(),
+        filaments: (*filaments).clone(),
+        active_filament_type: (*active_filament_type).clone(),
+        processes: (*processes).clone(),
+        active_process_id: (*active_process_id).clone(),
+        base_profile: (*base_profile).clone(),
+        rules: (*rules).clone(),
+        conflicts: (*conflicts).clone(),
+        pending_updates: (*pending_updates).clone(),
+        flush_multiplier: *flush_multiplier,
+        disk_flush_multiplier: *disk_flush_multiplier,
+        disk_flush_matrix: (*disk_flush_matrix).clone(),
+        disk_flush_slot_count: *disk_flush_slot_count,
+        conf_relative_path: (*conf_relative_path).clone(),
+      };
+      match serde_json::to_string_pretty(&snapshot) {
+        Ok(json_str) => {
+          let filename = "orcaslicer_webconfig.json";
+          match FsManager::trigger_browser_download(filename, &json_str) {
+            Ok(()) => {
+              toast.set(Some(format!(
+                "Exported full Orca WebConfig state to '{}' ({} machines, {} filaments, {} processes, {} Lua rules)!",
+                filename,
+                snapshot.machines.len(),
+                snapshot.filaments.len(),
+                snapshot.processes.len(),
+                snapshot.rules.len()
+              )));
             }
-            machines.set(list);
-            toast.set(Some(format!("Active machine rig updated.")));
-        })
-    };
+            Err(e) => toast.set(Some(format!("Export JSON error: {}", e))),
+          }
+        }
+        Err(e) => toast.set(Some(format!("Failed to serialize WebConfig JSON: {}", e))),
+      }
+    })
+  };
 
-    let on_toggle_disconnect_after_save = {
-        let disconnect_after_save = disconnect_after_save.clone();
-        Callback::from(move |_| {
-            disconnect_after_save.set(!*disconnect_after_save);
-        })
-    };
+  // Requirement #2: Load an Orca WebConfig JSON (`orcaslicer_webconfig.json`) to recreate the entire site state
+  let on_import_webconfig_json = {
+    let is_config_loaded = is_config_loaded.clone();
+    let show_bind_modal = show_bind_modal.clone();
+    let modal_start_from_scratch = modal_start_from_scratch.clone();
+    let bound_filename = bound_filename.clone();
+    let bound_path_hint = bound_path_hint.clone();
+    let detected_hardware_summary = detected_hardware_summary.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let active_filament_type = active_filament_type.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let base_profile = base_profile.clone();
+    let rules = rules.clone();
+    let conflicts = conflicts.clone();
+    let pending_updates = pending_updates.clone();
+    let flush_multiplier = flush_multiplier.clone();
+    let disk_flush_multiplier = disk_flush_multiplier.clone();
+    let disk_flush_matrix = disk_flush_matrix.clone();
+    let disk_flush_slot_count = disk_flush_slot_count.clone();
+    let conf_relative_path = conf_relative_path.clone();
+    let last_saved_time = last_saved_time.clone();
+    let toast = toast_message.clone();
 
-    let on_disconnect_file = {
-        let file_handle = file_handle.clone();
-        let bound_filename = bound_filename.clone();
-        let toast = toast_message.clone();
-        Callback::from(move |_| {
-            file_handle.set(None);
-            toast.set(Some(format!("Disconnected from {}. File lock released!", *bound_filename)));
-        })
-    };
+    Callback::from(move |e: Event| {
+      let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+      let is_config_loaded = is_config_loaded.clone();
+      let show_bind_modal = show_bind_modal.clone();
+      let modal_start_from_scratch = modal_start_from_scratch.clone();
+      let bound_filename = bound_filename.clone();
+      let bound_path_hint = bound_path_hint.clone();
+      let detected_hardware_summary = detected_hardware_summary.clone();
+      let machines = machines.clone();
+      let active_machine_id = active_machine_id.clone();
+      let filaments = filaments.clone();
+      let active_filament_type = active_filament_type.clone();
+      let processes = processes.clone();
+      let active_process_id = active_process_id.clone();
+      let base_profile = base_profile.clone();
+      let rules = rules.clone();
+      let conflicts = conflicts.clone();
+      let pending_updates = pending_updates.clone();
+      let flush_multiplier = flush_multiplier.clone();
+      let disk_flush_multiplier = disk_flush_multiplier.clone();
+      let disk_flush_matrix = disk_flush_matrix.clone();
+      let disk_flush_slot_count = disk_flush_slot_count.clone();
+      let conf_relative_path = conf_relative_path.clone();
+      let last_saved_time = last_saved_time.clone();
+      let toast = toast.clone();
 
-    let on_commit_save = {
-        let file_handle = file_handle.clone();
-        let bound_filename = bound_filename.clone();
-        let disconnect_after_save = disconnect_after_save.clone();
-        let last_saved_time = last_saved_time.clone();
-        let toast = toast_message.clone();
-        let resulting_json = eval_result.resulting_profile.to_json_pretty();
-
-        Callback::from(move |_| {
-            let handle_opt = (*file_handle).clone();
-            let filename = (*bound_filename).clone();
-            let should_disconnect = *disconnect_after_save;
-            let fh = file_handle.clone();
-            let lst = last_saved_time.clone();
-            let t = toast.clone();
-            let content = resulting_json.clone();
-
-            spawn_local(async move {
-                if let Some(handle) = handle_opt {
-                    match FsManager::write_file(&handle, &content).await {
-                        Ok(()) => {
-                            lst.set("Just now".to_string());
-                            if should_disconnect {
-                                fh.set(None);
-                                t.set(Some(format!("Committed changes to '{}' and released file lock successfully!", filename)));
-                            } else {
-                                t.set(Some(format!("Committed changes to '{}' successfully!", filename)));
-                            }
-                        }
-                        Err(err) => {
-                            t.set(Some(format!("Failed to write to file: {}", err)));
-                        }
-                    }
-                } else {
-                    // Trigger download fallback
-                    if let Err(e) = FsManager::trigger_browser_download(&filename, &content) {
-                        t.set(Some(format!("Download error: {}", e)));
-                    } else {
-                        lst.set("Just now".to_string());
-                        t.set(Some(format!("Exported '{}' to disk.", filename)));
-                    }
-                }
-            });
-        })
-    };
-
-    let on_rebind_file = {
-        let file_handle = file_handle.clone();
-        let bound_filename = bound_filename.clone();
-        let bound_path_hint = bound_path_hint.clone();
-        let base_profile = base_profile.clone();
-        let conflicts = conflicts.clone();
-        let toast = toast_message.clone();
-        let rules_list = (*rules).clone();
-        let current_derived = eval_result.resulting_profile.clone();
-
-        Callback::from(move |_| {
-            let fh = file_handle.clone();
-            let bfn = bound_filename.clone();
-            let bph = bound_path_hint.clone();
-            let bp = base_profile.clone();
-            let c_state = conflicts.clone();
-            let t = toast.clone();
-            let r_list = rules_list.clone();
-            let derived = current_derived.clone();
-
-            spawn_local(async move {
-                let options = js_sys::Object::new();
-                let types = js_sys::Array::new();
-                let type0 = js_sys::Object::new();
-                let _ = js_sys::Reflect::set(&type0, &"description".into(), &"OrcaSlicer Profile (*.json, *.conf)".into());
-                let accept = js_sys::Object::new();
-                let exts = js_sys::Array::new();
-                exts.push(&".json".into());
-                exts.push(&".conf".into());
-                let _ = js_sys::Reflect::set(&accept, &"application/json".into(), &exts);
-                let _ = js_sys::Reflect::set(&type0, &"accept".into(), &accept);
-                types.push(&type0);
-                let _ = js_sys::Reflect::set(&options, &"types".into(), &types);
-
-                let promise = show_open_file_picker(&options.into());
-                match wasm_bindgen_futures::JsFuture::from(promise).await {
-                    Ok(handles_val) => {
-                        let handles: js_sys::Array = handles_val.unchecked_into();
-                        if handles.length() > 0 {
-                            let handle: FileSystemFileHandle = handles.get(0).unchecked_into();
-                            match FsManager::read_file(&handle).await {
-                                Ok((name, content)) => {
-                                    match OrcaProfile::from_json_str(&content) {
-                                        Ok(parsed_profile) => {
-                                            // Detect drift / conflicts against our transformation expectations
-                                            let detected = TransformationEngine::detect_conflicts(
-                                                &bp,
-                                                &derived,
-                                                &parsed_profile,
-                                                &r_list,
-                                            );
-
-                                            bfn.set(name.clone());
-                                            bph.set(format!("Direct File Bound: {}", name));
-                                            bp.set(parsed_profile);
-                                            fh.set(Some(handle));
-
-                                            if !detected.is_empty() {
-                                                c_state.set(detected);
-                                                t.set(Some(format!("Connected to '{}'. External conflicts detected!", name)));
-                                            } else {
-                                                t.set(Some(format!("Connected to '{}' directly without conflicts!", name)));
-                                            }
-                                        }
-                                        Err(e) => {
-                                            t.set(Some(format!("JSON parsing error: {}", e)));
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    t.set(Some(format!("Failed to read file: {}", e)));
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::debug!("Picker cancelled or error: {:?}", e);
-                    }
-                }
-            });
-        })
-    };
-
-    let on_resolve_conflict = {
-        let conflicts = conflicts.clone();
-        let base_profile = base_profile.clone();
-        let toast = toast_message.clone();
-
-        Callback::from(move |(param_key, accept): (String, bool)| {
-            let mut cur_conflicts = (*conflicts).clone();
-            if let Some(pos) = cur_conflicts.iter().position(|c| c.param_key == param_key) {
-                let conf = cur_conflicts.remove(pos);
-                if accept {
-                    // Update baseline with external value
-                    let mut bp = (*base_profile).clone();
-                    bp.set_str(&conf.param_key, &conf.actual_external_value);
-                    base_profile.set(bp);
-                    toast.set(Some(format!("Accepted external value '{}' for {}", conf.actual_external_value, conf.param_label)));
-                } else {
-                    toast.set(Some(format!("Discarded external value for {}. Restored transformation rule state.", conf.param_label)));
-                }
-                conflicts.set(cur_conflicts);
+      spawn_local(async move {
+        match FsManager::read_input_file_bytes(&input).await {
+          Ok((fname, bytes)) => match serde_json::from_slice::<WebConfigStateSnapshot>(&bytes) {
+            Ok(mut snap) => {
+              snap.sanitize();
+              let _ = FsManager::save_state_to_storage(&snap);
+              bound_filename.set(format!("Loaded WebConfig JSON ({})", fname));
+              bound_path_hint.set(snap.bound_path_hint.clone());
+              detected_hardware_summary.set(snap.detected_hardware_summary.clone());
+              machines.set(snap.machines.clone());
+              active_machine_id.set(snap.active_machine_id.clone());
+              filaments.set(snap.filaments.clone());
+              active_filament_type.set(snap.active_filament_type.clone());
+              processes.set(snap.processes.clone());
+              active_process_id.set(snap.active_process_id.clone());
+              base_profile.set(snap.base_profile.clone());
+              rules.set(snap.rules.clone());
+              conflicts.set(snap.conflicts.clone());
+              pending_updates.set(snap.pending_updates.clone());
+              flush_multiplier.set(snap.flush_multiplier);
+              disk_flush_multiplier.set(snap.disk_flush_multiplier);
+              disk_flush_matrix.set(snap.disk_flush_matrix.clone());
+              disk_flush_slot_count.set(snap.disk_flush_slot_count);
+              conf_relative_path.set(snap.conf_relative_path.clone());
+              last_saved_time.set(format!("Loaded from {}", fname));
+              is_config_loaded.set(true);
+              show_bind_modal.set(false);
+              modal_start_from_scratch.set(false);
+              toast.set(Some(format!(
+                "Loaded Orca WebConfig JSON '{}': restored {} machine(s), {} filament(s), {} process(es), and {} Lua rule(s)!",
+                fname,
+                snap.machines.len(),
+                snap.filaments.len(),
+                snap.processes.len(),
+                snap.rules.len()
+              )));
             }
-        })
-    };
+            Err(err) => {
+              toast.set(Some(format!(
+                "Invalid Orca WebConfig JSON '{}': {}",
+                fname, err
+              )));
+            }
+          },
+          Err(err) => {
+            toast.set(Some(format!("Failed to read JSON file: {}", err)));
+          }
+        }
+      });
+    })
+  };
 
-    let on_reset_defaults = {
-        let base_profile = base_profile.clone();
-        let rules = rules.clone();
-        let toast = toast_message.clone();
-        Callback::from(move |_| {
-            base_profile.set(OrcaProfile::get_stock_kobra_s1());
-            rules.set(TransformationEngine::get_default_rules());
-            toast.set(Some("Reset configuration and rules to stock defaults.".to_string()));
-        })
-    };
+  // Requirement: Reset All button clears everything (including browser localStorage) and opens the startup Import Modal
+  let on_reset_all = {
+    let is_config_loaded = is_config_loaded.clone();
+    let show_bind_modal = show_bind_modal.clone();
+    let modal_start_from_scratch = modal_start_from_scratch.clone();
+    let active_tab = active_tab.clone();
+    let machines = machines.clone();
+    let filaments = filaments.clone();
+    let processes = processes.clone();
+    let conflicts = conflicts.clone();
+    let pending_updates = pending_updates.clone();
+    let scanned_entries = scanned_entries.clone();
+    let rules = rules.clone();
+    let execution_logs = execution_logs.clone();
+    let detected_hardware_summary = detected_hardware_summary.clone();
+    let bound_filename = bound_filename.clone();
+    let bound_path_hint = bound_path_hint.clone();
+    let last_saved_time = last_saved_time.clone();
+    let toast = toast_message.clone();
 
-    let on_export_package = {
-        let rules = rules.clone();
-        let active_machine_id = active_machine_id.clone();
-        let toast = toast_message.clone();
-        Callback::from(move |_| {
-            let pkg = TransformationEngine::export_package(&rules, &active_machine_id);
-            if let Err(e) = FsManager::trigger_browser_download("orcaslicer_config_rules.json", &pkg) {
-                toast.set(Some(format!("Export error: {}", e)));
+    Callback::from(move |_| {
+      FsManager::clear_state_from_storage();
+      is_config_loaded.set(false);
+      show_bind_modal.set(true);
+      modal_start_from_scratch.set(false);
+      active_tab.set(ActiveTab::Home);
+      machines.set(Vec::new());
+      filaments.set(Vec::new());
+      processes.set(Vec::new());
+      conflicts.set(Vec::new());
+      pending_updates.set(Vec::new());
+      scanned_entries.set(Vec::new());
+      rules.set(Vec::new());
+      execution_logs.set(Vec::new());
+      detected_hardware_summary.set("Unconnected".to_string());
+      bound_filename.set("No Config Loaded".to_string());
+      bound_path_hint.set(
+        "All state cleared — nothing is loaded. Use Local FS Import, Load WebConfig JSON, Start From Scratch, or Import a .zip."
+          .to_string(),
+      );
+      last_saved_time.set("Reset".to_string());
+      toast.set(Some(
+        "Reset All: cleared browser site data, rigs, filaments, and transformations and reopened the Startup Modal."
+          .to_string(),
+      ));
+    })
+  };
+
+  let on_complete_scratch_wizard = {
+    let is_config_loaded = is_config_loaded.clone();
+    let show_bind_modal = show_bind_modal.clone();
+    let modal_start_from_scratch = modal_start_from_scratch.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let active_filament_type = active_filament_type.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let base_profile = base_profile.clone();
+    let rules = rules.clone();
+    let conflicts = conflicts.clone();
+    let pending_updates = pending_updates.clone();
+    let scanned_entries = scanned_entries.clone();
+    let detected_hardware_summary = detected_hardware_summary.clone();
+    let bound_filename = bound_filename.clone();
+    let bound_path_hint = bound_path_hint.clone();
+    let last_saved_time = last_saved_time.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |out: ScratchWizardOutput| {
+      let rig_id = out.rig.id.clone();
+      if let Some(first_fil) = out.filaments.first() {
+        active_filament_type.set(first_fil.material_type.clone());
+      }
+      if let Some(first_proc) = out.processes.first() {
+        active_process_id.set(first_proc.id.clone());
+      }
+      active_machine_id.set(rig_id);
+      machines.set(vec![out.rig]);
+      filaments.set(out.filaments);
+      processes.set(out.processes);
+      base_profile.set(out.base_profile);
+      rules.set(out.rules);
+      conflicts.set(Vec::new());
+      pending_updates.set(out.initial_pending_updates);
+      scanned_entries.set(Vec::new());
+      detected_hardware_summary.set(out.summary_label.clone());
+      bound_filename.set("Created From Scratch (Unsaved)".to_string());
+      bound_path_hint.set(format!(
+        "Start-From-Scratch Setup Wizard: {} — Click 'Save to Disk' to write to your local slicer directory",
+        out.summary_label
+      ));
+      last_saved_time.set("Unsaved Wizard Stack".to_string());
+      is_config_loaded.set(true);
+      show_bind_modal.set(false);
+      modal_start_from_scratch.set(false);
+
+      toast.set(Some(format!(
+        "Built clean transformation stack from scratch: {}! Click 'Save to Disk' when ready to write files.",
+        out.summary_label
+      )));
+    })
+  };
+
+  let on_toggle_rule = {
+    let rules = rules.clone();
+    Callback::from(move |rule_id: String| {
+      let mut list = (*rules).clone();
+      if let Some(r) = list.iter_mut().find(|r| r.id == rule_id) {
+        r.enabled = !r.enabled;
+      }
+      rules.set(list);
+    })
+  };
+
+  let on_update_rule_lua = {
+    let rules = rules.clone();
+    Callback::from(move |(rule_id, new_lua): (String, String)| {
+      let mut list = (*rules).clone();
+      if let Some(r) = list.iter_mut().find(|r| r.id == rule_id) {
+        r.lua_code = new_lua;
+      }
+      rules.set(list);
+    })
+  };
+
+  // Requirement #5: Duplicate the current rig so the user can modify it (e.g. change nozzle or add-ons)
+  let on_duplicate_active_rig = {
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |_| {
+      let mut list = (*machines).clone();
+      if let Some(curr) = list
+        .iter()
+        .find(|m| m.id == *active_machine_id)
+        .cloned()
+        .or_else(|| list.first().cloned())
+      {
+        let copy_idx = list.len() + 1;
+        let new_id = format!("{}_copy_{}", curr.id, copy_idx);
+        for m in &mut list {
+          m.is_active = false;
+        }
+        let mut dup = curr;
+        dup.id = new_id.clone();
+        dup.source_disk_profile = None;
+        dup.is_active = true;
+        dup.refresh_title_and_notes(true);
+        let new_name = format!("{} #{}", dup.name, copy_idx);
+        dup.name = new_name.clone();
+        list.push(dup);
+        machines.set(list);
+        active_machine_id.set(new_id);
+        toast.set(Some(format!(
+          "Duplicated rig as '{}'! You can now change its nozzle, machine type, or cooling add-ons.",
+          new_name
+        )));
+      }
+    })
+  };
+
+  let on_change_machine_type = {
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |new_model: String| {
+      let mut list = (*machines).clone();
+      if let Some(m) = list.iter_mut().find(|m| m.id == *active_machine_id) {
+        m.printer_model = new_model.clone();
+        match new_model.as_str() {
+          "Anycubic Kobra 3" => {
+            m.kinematics = "Cartesian High-Speed Bedslinger".to_string();
+            m.bed_size = "250 × 250 × 260 mm".to_string();
+            m.firmware = "Kobra OS (Klipper-derived)".to_string();
+          }
+          "Voron 2.4 R2 (350mm)" => {
+            m.kinematics = "CoreXY Flying Gantry".to_string();
+            m.bed_size = "350 × 350 × 330 mm".to_string();
+            m.firmware = "Klipper v0.12 Mainline".to_string();
+          }
+          _ => {
+            m.kinematics = "CoreXY Enclosed".to_string();
+            m.bed_size = "250 × 250 × 250 mm".to_string();
+            m.firmware = "Kobra OS 2.4 (Klipper)".to_string();
+          }
+        }
+        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+      }
+      machines.set(list);
+      toast.set(Some(format!("Updated rig machine type to {}!", new_model)));
+    })
+  };
+
+  let on_toggle_addon = {
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |addon_id: String| {
+      let mut list = (*machines).clone();
+      if let Some(m) = list.iter_mut().find(|m| m.id == *active_machine_id) {
+        if let Some(pos) = m.addons.iter().position(|a| a == &addon_id) {
+          m.addons.remove(pos);
+          toast.set(Some(format!(
+            "Removed '{}' add-on from rig. Cooling/retraction schedule restored.",
+            addon_id
+          )));
+        } else {
+          m.addons.push(addon_id.clone());
+          toast.set(Some(format!(
+            "Installed '{}' add-on on rig! Lua cooling/retraction schedule updated.",
+            addon_id
+          )));
+        }
+        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+      }
+      machines.set(list);
+    })
+  };
+
+  let on_change_nozzle = {
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let rules = rules.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |new_nozzle_type: String| {
+      let mut mach_list = (*machines).clone();
+      let mut r_list = (*rules).clone();
+      let mut fil_list = (*filaments).clone();
+      if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
+        m.nozzle_type = new_nozzle_type.clone();
+        match new_nozzle_type.as_str() {
+          "diamondback" | "microswiss_diamondback" => {
+            m.nozzle_material = "MicroSwiss Diamondback (PCD)".to_string();
+            m.nozzle_name = format!("MicroSwiss Diamondback PCD {}0mm", m.nozzle_diameter);
+            toast.set(Some(
+              "Installed MicroSwiss Diamondback PCD Nozzle (nozzle_type=brass, HRC 68): all default nozzle & thermal rules applied (-10°C, 0.94 Flow, 0.60mm Retract)!"
+                .to_string(),
+            ));
+          }
+          "microswiss_brass" | "microswiss_mk8_brass" => {
+            m.nozzle_material = "Brass (MicroSwiss TwinClad XT)".to_string();
+            m.nozzle_name = format!("MicroSwiss Plated Brass {}0mm", m.nozzle_diameter);
+            toast.set(Some(
+              "Installed MicroSwiss Plated Brass Nozzle (TwinClad XT™, nozzle_type=brass, HRC 35): default rules applied (0°C offset, 0.99 Flow, 0.70mm Retract)!"
+                .to_string(),
+            ));
+          }
+          "brass" | "orca_brass" => {
+            m.nozzle_material = "Brass".to_string();
+            m.nozzle_name = format!("Standard Brass {}0mm", m.nozzle_diameter);
+            toast.set(Some(
+              "Installed Standard Brass Nozzle (nozzle_type=brass, HRC 0): default rules applied with 0°C factory thermal baseline.".to_string(),
+            ));
+          }
+          "ruby_brass" => {
+            m.nozzle_material = "Ruby Tip (Brass Body)".to_string();
+            m.nozzle_name = format!("Brass-Body Ruby Tip {}0mm (CF/GF Ready)", m.nozzle_diameter);
+            toast.set(Some(
+              "Installed Brass-Body Ruby Tip Nozzle (nozzle_type=brass, HRC 60): 0°C Brass thermal conductivity + HRC 60 Ruby gemstone tip enabled for -CF and -GF composite materials!"
+                .to_string(),
+            ));
+          }
+          "hardened_steel" | "orca_hardened_steel" => {
+            m.nozzle_material = "Hardened Steel".to_string();
+            m.nozzle_name = format!("Hardened Steel Wear-Resistant {}0mm", m.nozzle_diameter);
+            toast.set(Some(
+              "Installed Hardened Steel Nozzle (nozzle_type=hardened_steel, HRC 55): default rules applied automatically (+5°C thermal compensation)!"
+                .to_string(),
+            ));
+          }
+          _ => {
+            m.nozzle_material = "Bi-Metal CHT".to_string();
+            m.nozzle_name = format!("Bi-Metal CHT High-Flow {}0mm", m.nozzle_diameter);
+            toast.set(Some(
+              "Installed High-Flow CHT Nozzle (nozzle_type=brass, HRC 55): default rules applied automatically (+25% volumetric capacity)!"
+                .to_string(),
+            ));
+          }
+        }
+        TransformationEngine::sync_rules_for_rig(
+          &mut r_list,
+          &m.nozzle_type,
+          &m.nozzle_material,
+          m.ace_pro_units,
+        );
+        let (_, mach_hrc) = m.orca_machine_nozzle_type_and_hrc();
+        m.nozzle_hrc = mach_hrc;
+        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        let short_noz = m.short_nozzle_tag();
+        let diam_str = m.nozzle_diameter.clone();
+        for sp in fil_list.iter_mut() {
+          sp.recompute_for_nozzle(&new_nozzle_type);
+          if sp.id.starts_with("spool_scratch_") {
+            if let Some((prefix, _)) = sp.name.split_once(" • ") {
+              sp.name = format!("{} • {} {}", prefix, diam_str, short_noz);
+            }
+          }
+        }
+      }
+      machines.set(mach_list);
+      filaments.set(fil_list);
+      rules.set(r_list);
+    })
+  };
+
+  let on_change_nozzle_diameter = {
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |new_diam: String| {
+      let mut mach_list = (*machines).clone();
+      let mut short_mach = "KS1".to_string();
+      if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
+        m.nozzle_diameter = new_diam.clone();
+        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        short_mach = m.short_model_tag();
+      }
+      machines.set(mach_list);
+
+      let mut proc_list = (*processes).clone();
+      if let Some(p) = proc_list.iter_mut().find(|p| p.id == *active_process_id) {
+        p.line_width = match new_diam.as_str() {
+          "0.6" => 0.62,
+          "0.8" => 0.84,
+          _ => 0.42,
+        };
+        if !p.id.starts_with("disk_proc_") {
+          p.name = p.format_concise_title(&short_mach);
+        }
+        p.notes = p.generate_descriptive_notes();
+      }
+      processes.set(proc_list);
+      toast.set(Some(format!(
+        "Nozzle diameter set to {}mm. Lua Volumetric Speed Ceiling dynamically recalculated!",
+        new_diam
+      )));
+    })
+  };
+
+  let on_change_ace_units = {
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |units: usize| {
+      let mut mach_list = (*machines).clone();
+      if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
+        m.ace_pro_units = units;
+        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+      }
+      machines.set(mach_list);
+      let label = if units == 2 {
+        "Double ACE Pro 2 (8 Slots / 8×8 Flushing Matrix)"
+      } else {
+        "Single ACE Pro (4 Slots / 4×4 Flushing Matrix)"
+      };
+      toast.set(Some(format!("Switched multi-material bank to {}!", label)));
+    })
+  };
+
+  let on_select_active_filament = {
+    let active_filament_type = active_filament_type.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |mat: String| {
+      active_filament_type.set(mat.clone());
+      toast.set(Some(format!(
+        "Active slicing material set to {}. Lua Volumetric Speed Ceiling & rules updated!",
+        mat
+      )));
+    })
+  };
+
+  let on_update_spool = {
+    let filaments = filaments.clone();
+    Callback::from(move |updated: FilamentSpool| {
+      let mut list = (*filaments).clone();
+      if let Some(existing) = list.iter_mut().find(|s| s.id == updated.id) {
+        *existing = updated;
+      }
+      filaments.set(list);
+    })
+  };
+
+  let on_set_active_machine = {
+    let active_machine_id = active_machine_id.clone();
+    let machines = machines.clone();
+    let filaments = filaments.clone();
+    let rules = rules.clone();
+    let detected_hardware_summary = detected_hardware_summary.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |mid: String| {
+      active_machine_id.set(mid.clone());
+      let mut list = (*machines).clone();
+      let mut fil_list = (*filaments).clone();
+      let mut r_list = (*rules).clone();
+      for m in &mut list {
+        m.is_active = m.id == mid;
+        if m.is_active {
+          TransformationEngine::sync_rules_for_rig(
+            &mut r_list,
+            &m.nozzle_type,
+            &m.nozzle_material,
+            m.ace_pro_units,
+          );
+          for sp in fil_list.iter_mut() {
+            sp.recompute_for_nozzle(&m.nozzle_type);
+          }
+          detected_hardware_summary.set(format!(
+            "{} ({}) with {} ({}mm) Nozzle",
+            m.printer_model, m.name, m.nozzle_material, m.nozzle_diameter
+          ));
+        }
+      }
+      machines.set(list);
+      filaments.set(fil_list);
+      rules.set(r_list);
+      toast.set(Some(
+        "Active machine rig updated, filament temperatures recomputed for active nozzle, and default Lua rules applied!"
+          .to_string(),
+      ));
+    })
+  };
+
+  let on_select_process = {
+    let active_process_id = active_process_id.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |pid: String| {
+      active_process_id.set(pid);
+      toast.set(Some(
+        "Process / Speed profile updated. Volumetric speed ceiling recalculated!".to_string(),
+      ));
+    })
+  };
+
+  // Export Standalone OrcaSlicer Filament/Machine .json Preset (Artifact #1)
+  let on_export_standalone_json = {
+    let active_rig = active_rig.clone();
+    let active_slots = active_slots.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |_| {
+      let spool = active_slots.first().cloned().unwrap_or_else(|| {
+        let entries = build_reference_anycubic_entries();
+        import_scanned_directory(&entries)
+          .unwrap()
+          .filaments
+          .remove(0)
+      });
+      let json_content = export_standalone_filament_json(&spool, &active_rig);
+      let safe_name = spool.name.replace([' ', '/', '\\'], "_") + ".json";
+      if let Err(e) = FsManager::trigger_browser_download(&safe_name, &json_content) {
+        toast.set(Some(format!("Download error: {}", e)));
+      } else {
+        toast.set(Some(format!(
+          "Exported standalone OrcaSlicer delta preset '{}'!",
+          safe_name
+        )));
+      }
+    })
+  };
+
+  let on_export_spool_json = {
+    let active_rig = active_rig.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |spool: FilamentSpool| {
+      let json_content = export_standalone_filament_json(&spool, &active_rig);
+      let safe_name = spool.name.replace([' ', '/', '\\'], "_") + ".json";
+      let _ = FsManager::trigger_browser_download(&safe_name, &json_content);
+      toast.set(Some(format!(
+        "Exported standalone OrcaSlicer filament preset '{}'!",
+        safe_name
+      )));
+    })
+  };
+
+  // Export .3mf Project Container (Artifact #2)
+  let on_export_3mf = {
+    let active_rig = active_rig.clone();
+    let active_proc = active_proc.clone();
+    let active_slots = active_slots.clone();
+    let flush_matrix = eval_result.flush_matrix.clone();
+    let derived_overrides = eval_result.resulting_profile.values.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |_| {
+      let slots = if active_slots.is_empty() {
+        let entries = build_reference_anycubic_entries();
+        import_scanned_directory(&entries)
+          .unwrap()
+          .filaments
+          .into_iter()
+          .take(4)
+          .collect()
+      } else {
+        active_slots.clone()
+      };
+      let zip_bytes = build_3mf_project_container(
+        &active_rig,
+        &active_proc,
+        &slots,
+        &flush_matrix,
+        &derived_overrides,
+      );
+      let filename = format!("Kobra_ACEPro_{}Slot_Loadout.3mf", slots.len());
+      match FsManager::trigger_binary_download(
+        &filename,
+        &zip_bytes,
+        "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+      ) {
+        Ok(()) => {
+          toast.set(Some(format!(
+            "Exported '{}' with {}-slot ACE Pro arrays & {}×{} flush_volumes_matrix!",
+            filename,
+            slots.len(),
+            slots.len(),
+            slots.len()
+          )));
+        }
+        Err(e) => {
+          toast.set(Some(format!("3MF export error: {}", e)));
+        }
+      }
+    })
+  };
+
+  // Save Changes to Disk: applies staged `pending_updates` (from "Keep Clean Rule Value") and writes directly via `/api/local-slicer-save`
+  let on_commit_save = {
+    let last_saved_time = last_saved_time.clone();
+    let scanned_entries = scanned_entries.clone();
+    let pending_updates = pending_updates.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |_| {
+      let lst = last_saved_time.clone();
+      let se_state = scanned_entries.clone();
+      let pu_state = pending_updates.clone();
+      let t = toast.clone();
+
+      let mut entries_copy = (*scanned_entries).clone();
+      let staged_list = (*pending_updates).clone();
+      let modified_files = apply_pending_updates_to_entries(&mut entries_copy, &staged_list);
+      let staged_count = staged_list.len();
+
+      spawn_local(async move {
+        let req_payload = LocalFsSaveRequest {
+          files: modified_files.clone(),
+        };
+        let mut saved_via_api = false;
+        if let Ok(req_builder) =
+          gloo_net::http::Request::post(&FsManager::api_url("/api/local-slicer-save"))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&req_payload).unwrap_or_default())
+        {
+          if let Ok(resp) = req_builder.send().await {
+            if resp.ok() {
+              if let Ok(save_res) = resp.json::<LocalFsSaveResponse>().await {
+                saved_via_api = save_res.ok;
+              }
+            }
+          }
+        }
+
+        se_state.set(entries_copy);
+        pu_state.set(Vec::new());
+        lst.set("Saved to Local Disk".to_string());
+
+        if saved_via_api {
+          t.set(Some(format!(
+            "Saved {} staged Clean Rule Value(s) across {} file(s) directly to local disk!",
+            staged_count,
+            modified_files.len()
+          )));
+        } else {
+          t.set(Some(format!(
+            "Applied {} staged Clean Rule Value(s) to configuration state!",
+            staged_count
+          )));
+        }
+      });
+    })
+  };
+
+  // Requirement #4: Resolve flagged difference by either accepting it as a one-off Lua transformation rule
+  // or staging the clean rule value to be saved when the user clicks Save to Disk!
+  let on_resolve_conflict = {
+    let conflicts = conflicts.clone();
+    let pending_updates = pending_updates.clone();
+    let rules = rules.clone();
+    let filaments = filaments.clone();
+    let machines = machines.clone();
+    let processes = processes.clone();
+    let last_saved_time = last_saved_time.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |(param_key, accept_as_transform): (String, bool)| {
+      let mut cur_conflicts = (*conflicts).clone();
+      if let Some(pos) = cur_conflicts.iter().position(|c| c.param_key == param_key) {
+        let conf = cur_conflicts.remove(pos);
+        if accept_as_transform {
+          let new_rule = TransformationEngine::create_oneoff_rule_from_conflict(&conf);
+          let mut r_list = (*rules).clone();
+          r_list.push(new_rule.clone());
+          rules.set(r_list);
+          toast.set(Some(format!(
+            "Created & enabled Lua One-Off Transformation '{}' ({} = {})!",
+            new_rule.name, conf.param_key, conf.actual_external_value
+          )));
+        } else {
+          // Update our internal model to the clean rule value and stage a PendingDiskUpdate for Save!
+          if conf.param_key.starts_with("filament:") {
+            let mut fil_list = (*filaments).clone();
+            for sp in &mut fil_list {
+              if conf.param_key.contains(&sp.name) {
+                if conf.json_field_key == "nozzle_temperature_HS" {
+                  if let Ok(clean_t) = conf.clean_raw_value.parse::<i32>() {
+                    sp.print_temp = clean_t;
+                  }
+                } else if conf.json_field_key == "textured_plate_temp" {
+                  if let Ok(clean_b) = conf.clean_raw_value.parse::<i32>() {
+                    sp.bed_temp = clean_b;
+                  }
+                }
+                for d in &mut sp.deltas_from_base {
+                  if d.param_key == conf.json_field_key {
+                    d.reconstructed_by_lua = true;
+                    d.rule_explanation = format!(
+                      "Staged Clean Rule Value ({}) — Pending Save to Disk",
+                      conf.clean_raw_value
+                    );
+                  }
+                }
+              }
+            }
+            filaments.set(fil_list);
+          } else if conf.param_key.starts_with("machine:") {
+            let mut m_list = (*machines).clone();
+            for m in &mut m_list {
+              if conf.param_key.contains(&m.name) {
+                if conf.json_field_key == "retraction_length" {
+                  if let Ok(clean_len) = conf.clean_raw_value.parse::<f64>() {
+                    m.base_retraction_length = clean_len;
+                  }
+                }
+              }
+            }
+            machines.set(m_list);
+          } else if conf.param_key.starts_with("process:") {
+            let mut p_list = (*processes).clone();
+            for p in &mut p_list {
+              if conf.param_key.contains(&p.name) {
+                p.wall_generator = "classic".to_string();
+                p.print_sequence = "by layer".to_string();
+              }
+            }
+            processes.set(p_list);
+          }
+
+          let candidate_upd = PendingDiskUpdate {
+            param_key: conf.param_key.clone(),
+            param_label: conf.param_label.clone(),
+            source_relative_path: conf.source_relative_path.clone(),
+            json_field_key: conf.json_field_key.clone(),
+            old_disk_value: conf.actual_external_value.clone(),
+            new_clean_value: conf.clean_raw_value.clone(),
+          };
+          if candidate_upd.has_value_change() {
+            let mut pend = (*pending_updates).clone();
+            pend.push(candidate_upd);
+            pending_updates.set(pend);
+            last_saved_time.set("Unsaved Staged Changes".to_string());
+
+            toast.set(Some(format!(
+              "Staged Clean Rule Value for {} ({} → {}). Click 'Save to Disk' when ready to write to disk!",
+              conf.param_label, conf.actual_external_value, conf.expected_derived_value
+            )));
+          } else {
+            toast.set(Some(format!(
+              "Verified Clean Rule Value for {} (matches disk value {}, no disk write required).",
+              conf.param_label, conf.actual_external_value
+            )));
+          }
+        }
+        conflicts.set(cur_conflicts);
+      }
+    })
+  };
+
+  let on_export_package = {
+    let rules = rules.clone();
+    let active_machine_id = active_machine_id.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |_| {
+      let pkg = TransformationEngine::export_package(&rules, &active_machine_id);
+      if let Err(e) = FsManager::trigger_browser_download("orcaslicer_lua_stack.json", &pkg) {
+        toast.set(Some(format!("Export error: {}", e)));
+      } else {
+        toast.set(Some(
+          "1-Click Export: saved 'orcaslicer_lua_stack.json'!".to_string(),
+        ));
+      }
+    })
+  };
+
+  let on_create_rule = {
+    let rules = rules.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |new_rule: TransformationRule| {
+      let mut list = (*rules).clone();
+      let rule_name = new_rule.name.clone();
+      let rule_scope = new_rule.condition_expr.clone();
+      list.push(new_rule);
+      rules.set(list);
+      toast.set(Some(format!(
+        "Added & enabled Lua transformation rule '{}' (Scope: {})!",
+        rule_name, rule_scope
+      )));
+    })
+  };
+
+  let on_delete_rule = {
+    let rules = rules.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |rule_id: String| {
+      let mut list = (*rules).clone();
+      list.retain(|r| r.id != rule_id);
+      rules.set(list);
+      toast.set(Some(format!(
+        "Removed transformation rule '{}' from stack.",
+        rule_id
+      )));
+    })
+  };
+
+  let on_save_rig_to_vault = {
+    let toast = toast_message.clone();
+    Callback::from(move |_| {
+      toast.set(Some("Saved active rig configuration to vault!".to_string()));
+    })
+  };
+
+  let on_clear_logs = {
+    let execution_logs = execution_logs.clone();
+    Callback::from(move |_| {
+      execution_logs.set(Vec::new());
+    })
+  };
+
+  let modal_os = *selected_modal_os;
+
+  html! {
+    <div class="min-h-screen bg-surface text-on-surface font-sans flex flex-col">
+      // Navigation Bar
+      <NavigationBar
+        active_tab={*active_tab}
+        on_select_tab={on_select_tab}
+        is_config_loaded={*is_config_loaded}
+        bound_filename={(*bound_filename).clone()}
+        active_rig_name={active_rig.name.clone()}
+        ace_pro_units={active_rig.ace_pro_units}
+        on_commit_save={on_commit_save.clone()}
+        on_export_3mf={on_export_3mf.clone()}
+        on_import_zip={on_import_zip.clone()}
+        on_backup_zip={on_backup_zip.clone()}
+        on_toggle_diff={
+          let sdd = show_diff_drawer.clone();
+          Callback::from(move |_| sdd.set(!*sdd))
+        }
+        on_reset_all={on_reset_all.clone()}
+        has_unapplied_changes={!pending_updates.is_empty()}
+        pending_save_count={pending_updates.len()}
+      />
+
+      // Startup & Reset Modal (Import Existing Directory OR Start From Scratch Wizard!)
+      if *show_bind_modal {
+        <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
+          <div class="bg-surface-container-low border-2 border-primary rounded-2xl max-w-3xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
+            <div class="flex items-start justify-between gap-space-md">
+              <div class="flex flex-col gap-1">
+                <div class="flex items-center gap-space-xs">
+                  <span class="bg-primary text-on-primary text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
+                    {"Startup Setup Modal"}
+                  </span>
+                  <span class="text-xs font-mono uppercase text-secondary font-bold">
+                    {format!("HTTP Client OS: {}", FsManager::detect_client_os().label())}
+                  </span>
+                </div>
+                <h2 class="font-headline-lg text-headline-sm text-on-surface font-bold mt-1">
+                  if *modal_start_from_scratch {
+                    {"Start From Scratch — 5-Step Transformation Setup Wizard"}
+                  } else {
+                    {"Import Slicer Configuration Directory or Start From Scratch"}
+                  }
+                </h2>
+                <p class="text-xs text-on-surface-variant">
+                  if *modal_start_from_scratch {
+                    {"Select your Machine, Nozzle, Bed Plate, AMS / ACE Pro unit, and Filaments to build a clean transformation-based configuration stack from scratch."}
+                  } else {
+                    {"Nothing is loaded by default. Import your AnycubicSlicerNext directory from disk or start from scratch with our 5-step setup wizard."}
+                  }
+                </p>
+              </div>
+              if *is_config_loaded {
+                <button
+                  class="text-on-surface-variant hover:text-on-surface p-1"
+                  onclick={
+                    let sbm = show_bind_modal.clone();
+                    Callback::from(move |_| sbm.set(false))
+                  }
+                >
+                  <span class="material-symbols-outlined">{"close"}</span>
+                </button>
+              }
+            </div>
+
+            // Mode Switcher: Import Existing Directory vs Start From Scratch Wizard
+            <div class="grid grid-cols-2 gap-space-xs bg-surface-container-lowest p-1.5 rounded-xl border border-outline-variant font-mono text-xs">
+              <button
+                class={format!(
+                  "flex items-center justify-center gap-1.5 py-2 rounded-lg transition-colors cursor-pointer {}",
+                  if !*modal_start_from_scratch {
+                    "bg-primary text-on-primary font-bold shadow"
+                  } else {
+                    "text-on-surface-variant hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let msfs = modal_start_from_scratch.clone();
+                  Callback::from(move |_| msfs.set(false))
+                }
+              >
+                <span class="material-symbols-outlined text-[16px]">{"folder_open"}</span>
+                {"1. Import Existing Slicer Directory"}
+              </button>
+              <button
+                class={format!(
+                  "flex items-center justify-center gap-1.5 py-2 rounded-lg transition-colors cursor-pointer {}",
+                  if *modal_start_from_scratch {
+                    "bg-primary text-on-primary font-bold shadow"
+                  } else {
+                    "text-on-surface-variant hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let msfs = modal_start_from_scratch.clone();
+                  Callback::from(move |_| msfs.set(true))
+                }
+              >
+                <span class="material-symbols-outlined text-[16px]">{"auto_fix_high"}</span>
+                {"2. Start From Scratch (5-Step Wizard)"}
+              </button>
+            </div>
+
+            if *modal_start_from_scratch {
+              <ScratchWizard
+                on_complete={on_complete_scratch_wizard.clone()}
+                on_back_to_import={
+                  let msfs = modal_start_from_scratch.clone();
+                  Callback::from(move |_| msfs.set(false))
+                }
+              />
             } else {
-                toast.set(Some("1-Click Export: saved 'orcaslicer_config_rules.json'!".to_string()));
-            }
-        })
-    };
+              <>
+                // OS Tabs (Windows, Linux / WSL, macOS)
+                <div class="flex items-center gap-space-xs bg-surface-container-lowest p-1 rounded-lg border border-outline-variant font-mono text-xs">
+                  {for vec![
+                    (DetectedClientOs::Windows, "Windows"),
+                    (DetectedClientOs::Linux, "Linux / WSL"),
+                    (DetectedClientOs::MacOs, "macOS"),
+                  ].into_iter().map(|(os_val, lbl)| {
+                    let is_sel = modal_os == os_val;
+                    let smo = selected_modal_os.clone();
+                    html! {
+                      <button
+                        class={format!(
+                          "flex-1 py-1.5 rounded transition-colors cursor-pointer {}",
+                          if is_sel {
+                            "bg-primary text-on-primary font-bold"
+                          } else {
+                            "text-on-surface-variant hover:text-on-surface"
+                          }
+                        )}
+                        onclick={Callback::from(move |_| smo.set(os_val))}
+                      >
+                        {lbl}
+                      </button>
+                    }
+                  })}
+                </div>
 
-    let on_import_package_trigger = {
-        let rules = rules.clone();
-        let active_machine_id = active_machine_id.clone();
-        let toast = toast_message.clone();
-
-        Callback::from(move |_| {
-            let r_state = rules.clone();
-            let m_state = active_machine_id.clone();
-            let t = toast.clone();
-
-            spawn_local(async move {
-                let options = js_sys::Object::new();
-                let types = js_sys::Array::new();
-                let type0 = js_sys::Object::new();
-                let _ = js_sys::Reflect::set(&type0, &"description".into(), &"OrcaSlicer Transformation Rules (*.json)".into());
-                let accept = js_sys::Object::new();
-                let exts = js_sys::Array::new();
-                exts.push(&".json".into());
-                let _ = js_sys::Reflect::set(&accept, &"application/json".into(), &exts);
-                let _ = js_sys::Reflect::set(&type0, &"accept".into(), &accept);
-                types.push(&type0);
-                let _ = js_sys::Reflect::set(&options, &"types".into(), &types);
-
-                let promise = show_open_file_picker(&options.into());
-                match wasm_bindgen_futures::JsFuture::from(promise).await {
-                    Ok(handles_val) => {
-                        let handles: js_sys::Array = handles_val.unchecked_into();
-                        if handles.length() > 0 {
-                            let handle: FileSystemFileHandle = handles.get(0).unchecked_into();
-                            if let Ok((_, content)) = FsManager::read_file(&handle).await {
-                                match TransformationEngine::import_package(&content) {
-                                    Ok(pkg) => {
-                                        r_state.set(pkg.rules);
-                                        m_state.set(pkg.active_rig_id);
-                                        t.set(Some("1-Click Import: successfully loaded transformation rules and rigs!".to_string()));
-                                    }
-                                    Err(e) => {
-                                        t.set(Some(format!("Import parsing failed: {}", e)));
-                                    }
-                                }
-                            }
+                // Path boxes with 1-click Copy Icon
+                <div class="flex flex-col gap-space-sm">
+                  <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col gap-space-xs">
+                    <div class="flex items-center justify-between">
+                      <span class="text-xs font-mono text-primary font-bold">
+                        {format!("AnycubicSlicerNext Directory ({})", modal_os.label())}
+                      </span>
+                      <button
+                        class="flex items-center gap-1 bg-primary-container hover:bg-primary text-on-primary-container px-2.5 py-1 rounded text-xs font-mono font-bold transition-colors cursor-pointer"
+                        onclick={
+                          let cb = on_copy_path.clone();
+                          let p = modal_os.anycubic_path().to_string();
+                          Callback::from(move |_| cb.emit(p.clone()))
                         }
-                    }
-                    Err(e) => {
-                        log::debug!("Import picker cancelled: {:?}", e);
-                    }
-                }
-            });
-        })
-    };
-
-    let on_add_custom_rule = {
-        let rules = rules.clone();
-        let toast = toast_message.clone();
-        Callback::from(move |_| {
-            let mut list = (*rules).clone();
-            let new_rule = TransformationRule {
-                id: format!("custom_rule_{}", list.len() + 1),
-                name: format!("Custom User Rule #{}", list.len() + 1),
-                description: "User-defined Lua transformation rule".to_string(),
-                category: "Custom".to_string(),
-                icon: "⚙️".to_string(),
-                enabled: true,
-                condition_expr: "all".to_string(),
-                lua_code: r#"-- Custom User Transformation
-function apply(config, ctx)
-    -- Modify parameters here:
-    print("[CustomRule] Executing custom Lua rule...")
-end
-"#.to_string(),
-                priority: (list.len() as i32 + 1) * 10,
-            };
-            list.push(new_rule);
-            rules.set(list);
-            toast.set(Some("Created new custom Lua transformation rule!".to_string()));
-        })
-    };
-
-    let on_save_rig_to_vault = {
-        let toast = toast_message.clone();
-        Callback::from(move |_| {
-            toast.set(Some("Saved active rig configuration to vault!".to_string()));
-        })
-    };
-
-    let on_clear_logs = {
-        let execution_logs = execution_logs.clone();
-        Callback::from(move |_| {
-            execution_logs.set(Vec::new());
-        })
-    };
-
-    let is_file_bound = file_handle.is_some();
-
-    html! {
-        <div class="min-h-screen bg-surface text-on-surface font-sans flex flex-col">
-            // Navigation Bar
-            <NavigationBar 
-                active_tab={*active_tab}
-                on_select_tab={on_select_tab}
-                bound_filename={(*bound_filename).clone()}
-                is_file_bound={is_file_bound}
-                active_rig_name={active_rig.name.clone()}
-                on_commit_save={on_commit_save.clone()}
-                on_toggle_diff={
-                    let sdd = show_diff_drawer.clone();
-                    Callback::from(move |_| sdd.set(!*sdd))
-                }
-                on_disconnect_file={on_disconnect_file.clone()}
-                on_rebind_file={on_rebind_file.clone()}
-                has_unapplied_changes={eval_result.diff_items.iter().any(|d| d.is_modified)}
-            />
-
-            // Main Content Body (with padding-top to clear fixed header)
-            <main class="w-full pt-32 px-4 lg:px-8 pb-12 flex-1 max-w-7xl mx-auto">
-                // Toast notification
-                if let Some(msg) = &*toast_message {
-                    <div class="mb-4 p-space-md rounded-lg bg-surface-container-high border border-primary text-primary font-code-sm text-code-sm flex items-center justify-between shadow-lg animate-fade-in">
-                        <div class="flex items-center gap-space-sm">
-                            <span class="material-symbols-outlined text-[16px]">{"info"}</span>
-                            <span>{msg}</span>
-                        </div>
-                        <button 
-                            class="text-on-surface-variant hover:text-on-surface"
-                            onclick={
-                                let tm = toast_message.clone();
-                                Callback::from(move |_| tm.set(None))
-                            }
-                        >
-                            <span class="material-symbols-outlined text-[16px]">{"close"}</span>
-                        </button>
+                      >
+                        <span class="material-symbols-outlined text-[14px]">{"content_copy"}</span>
+                        {"Copy Path"}
+                      </button>
                     </div>
+                    <code class="text-xs font-mono text-on-surface bg-surface-container-lowest p-2.5 rounded border border-outline-variant/60 select-all break-all">
+                      {modal_os.anycubic_path()}
+                    </code>
+                    if modal_os == DetectedClientOs::Windows {
+                      <div class="flex items-center justify-between mt-1 pt-1 border-t border-surface-container-high">
+                        <code class="text-[11px] font-mono text-on-surface-variant select-all">
+                          {modal_os.anycubic_env_shortcut()}
+                        </code>
+                        <button
+                          class="text-[11px] font-mono text-secondary hover:underline flex items-center gap-0.5 cursor-pointer"
+                          onclick={
+                            let cb = on_copy_path.clone();
+                            let p = modal_os.anycubic_env_shortcut().to_string();
+                            Callback::from(move |_| cb.emit(p.clone()))
+                          }
+                        >
+                          <span class="material-symbols-outlined text-[12px]">{"content_copy"}</span>
+                          {"Copy %APPDATA% Shortcut"}
+                        </button>
+                      </div>
+                    }
+                  </div>
+
+                  <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col gap-space-xs">
+                    <div class="flex items-center justify-between">
+                      <span class="text-xs font-mono text-secondary font-bold">
+                        {format!("OrcaSlicer Directory ({})", modal_os.label())}
+                      </span>
+                      <button
+                        class="flex items-center gap-1 bg-surface-container-highest hover:bg-surface-bright text-on-surface px-2.5 py-1 rounded text-xs font-mono font-bold transition-colors cursor-pointer"
+                        onclick={
+                          let cb = on_copy_path.clone();
+                          let p = modal_os.orca_path().to_string();
+                          Callback::from(move |_| cb.emit(p.clone()))
+                        }
+                      >
+                        <span class="material-symbols-outlined text-[14px]">{"content_copy"}</span>
+                        {"Copy Path"}
+                      </button>
+                    </div>
+                    <code class="text-xs font-mono text-on-surface bg-surface-container-lowest p-2.5 rounded border border-outline-variant/60 select-all break-all">
+                      {modal_os.orca_path()}
+                    </code>
+                  </div>
+                </div>
+
+                // Live Import Progress Bar (shown when scanning/reading the 711 files)
+                if let Some(prog) = &*import_progress {
+                  <div class="bg-surface-container-highest border border-primary/60 rounded-xl p-space-md flex flex-col gap-space-sm shadow-inner">
+                    <div class="flex items-center justify-between gap-space-sm">
+                      <div class="flex items-center gap-space-xs text-primary font-mono text-xs font-bold">
+                        <span class="material-symbols-outlined text-[16px] animate-spin">{"sync"}</span>
+                        <span>{&prog.phase}</span>
+                      </div>
+                      <span class="bg-primary text-on-primary px-2 py-0.5 rounded text-xs font-mono font-bold">
+                        if prog.total_files > 0 {
+                          {format!(
+                            "{} / {} files ({}%)",
+                            prog.files_read,
+                            prog.total_files,
+                            ((prog.files_read as f64 / prog.total_files as f64) * 100.0)
+                              .round()
+                              .clamp(1.0, 100.0) as usize
+                          )}
+                        } else {
+                          {"Discovering files..."}
+                        }
+                      </span>
+                    </div>
+
+                    <div class="w-full h-3 bg-surface-container-lowest rounded-full overflow-hidden border border-outline-variant/60">
+                      <div
+                        class="h-full bg-primary transition-all duration-75 rounded-full"
+                        style={format!(
+                          "width: {}%;",
+                          if prog.total_files > 0 {
+                            ((prog.files_read as f64 / prog.total_files as f64) * 100.0)
+                              .round()
+                              .clamp(2.0, 100.0) as usize
+                          } else {
+                            8usize
+                          }
+                        )}
+                      />
+                    </div>
+
+                    <div class="text-[11px] font-mono text-on-surface-variant truncate">
+                      {format!("File: {}", prog.current_file)}
+                    </div>
+                  </div>
                 }
 
-                // Render Active Tab
-                {match *active_tab {
-                    ActiveTab::Home => html! {
-                        <HomeTab 
-                            is_file_bound={is_file_bound}
-                            bound_filename={(*bound_filename).clone()}
-                            bound_path_hint={(*bound_path_hint).clone()}
-                            last_saved_time={(*last_saved_time).clone()}
-                            disconnect_after_save={*disconnect_after_save}
-                            on_toggle_disconnect_after_save={on_toggle_disconnect_after_save}
-                            on_disconnect_file={on_disconnect_file}
-                            on_rebind_file={on_rebind_file}
-                            on_commit_save={on_commit_save}
-                            on_reset_defaults={on_reset_defaults}
-                            on_switch_tab={
-                                let at = active_tab.clone();
-                                Callback::from(move |tab: ActiveTab| at.set(tab))
-                            }
-                            diff_items={eval_result.diff_items.clone()}
-                            rules={(*rules).clone()}
-                            on_toggle_rule={on_toggle_rule.clone()}
-                            conflicts={(*conflicts).clone()}
-                            on_resolve_conflict={on_resolve_conflict}
-                            show_diff_drawer={*show_diff_drawer}
-                            on_toggle_diff_drawer={
-                                let sdd = show_diff_drawer.clone();
-                                Callback::from(move |_| sdd.set(!*sdd))
-                            }
-                            active_rig_name={active_rig.name.clone()}
-                            json_diff_text={json_diff_text}
-                        />
-                    },
-                    ActiveTab::Machine => html! {
-                        <MachineTab 
-                            machines={(*machines).clone()}
-                            active_machine_id={(*active_machine_id).clone()}
-                            on_set_active_machine={on_set_active_machine}
-                            on_add_machine={
-                                let m_state = machines.clone();
-                                Callback::from(move |new_m: MachineRig| {
-                                    let mut list = (*m_state).clone();
-                                    list.push(new_m);
-                                    m_state.set(list);
-                                })
-                            }
-                            on_change_nozzle={on_change_nozzle}
-                            on_save_rig_to_vault={on_save_rig_to_vault}
-                        />
-                    },
-                    ActiveTab::Filament => html! {
-                        <FilamentTab 
-                            filaments={(*filaments).clone()}
-                            active_filament_type={(*active_filament_type).clone()}
-                            on_select_active_filament={on_select_active_filament}
-                        />
-                    },
-                    ActiveTab::Wizard => html! {
-                        <WizardTab 
-                            rules={(*rules).clone()}
-                            on_toggle_rule={on_toggle_rule}
-                            on_update_rule_lua={on_update_rule_lua}
-                            on_add_custom_rule={on_add_custom_rule}
-                            on_export_package={on_export_package}
-                            on_import_package_trigger={on_import_package_trigger}
-                            on_commit_save={on_commit_save}
-                            execution_logs={eval_result.execution_logs.clone()}
-                            on_clear_logs={on_clear_logs}
-                        />
-                    },
-                }}
-            </main>
+                // Modal Action Buttons: Real Local FS Scan (`local_slicer_config.json`) + Import Backup (.zip) + Start From Scratch
+                <div class="flex flex-col gap-space-sm pt-space-sm border-t border-surface-container">
+                  <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-space-sm">
+                    <button
+                      disabled={import_progress.is_some()}
+                      class={format!(
+                        "flex-1 flex items-center justify-center gap-space-xs px-space-md py-space-md rounded-xl text-xs font-mono font-bold shadow-lg transition-colors {}",
+                        if import_progress.is_some() {
+                          "bg-surface-container-high text-on-surface-variant opacity-60 cursor-wait"
+                        } else {
+                          "bg-primary-container hover:bg-primary text-on-primary-container cursor-pointer"
+                        }
+                      )}
+                      onclick={
+                        let cb = on_load_reference_snapshot.clone();
+                        Callback::from(move |_| cb.emit(()))
+                      }
+                    >
+                      <span class="material-symbols-outlined text-[16px]">
+                        {if import_progress.is_some() { "hourglass_top" } else { "bolt" }}
+                      </span>
+                      {if import_progress.is_some() {
+                        "Importing From Local FS..."
+                      } else {
+                        "Import From Local FS (local_slicer_config.json)"
+                      }}
+                    </button>
+
+                    <label
+                      class={format!(
+                        "flex-1 flex items-center justify-center gap-space-sm bg-surface-container-highest text-secondary border border-secondary/40 px-space-md py-space-md rounded-xl text-xs font-mono font-bold transition-colors {}",
+                        if import_progress.is_some() {
+                          "opacity-50 pointer-events-none"
+                        } else {
+                          "hover:bg-surface-bright cursor-pointer"
+                        }
+                      )}
+                    >
+                      <span class="material-symbols-outlined text-[18px]">{"folder_zip"}</span>
+                      {"Import Backup Archive (.zip)"}
+                      <input
+                        type="file"
+                        accept=".zip"
+                        class="hidden"
+                        onchange={on_import_zip.clone()}
+                      />
+                    </label>
+
+                    <label
+                      class={format!(
+                        "flex-1 flex items-center justify-center gap-space-sm bg-surface-container-highest text-primary border border-primary/50 px-space-md py-space-md rounded-xl text-xs font-mono font-bold transition-colors {}",
+                        if import_progress.is_some() {
+                          "opacity-50 pointer-events-none"
+                        } else {
+                          "hover:bg-surface-bright cursor-pointer"
+                        }
+                      )}
+                      title="Load an exported orcaslicer_webconfig.json state file to recreate the entire site state"
+                    >
+                      <span class="material-symbols-outlined text-[18px]">{"data_object"}</span>
+                      {"Load Orca WebConfig (.json)"}
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        class="hidden"
+                        onchange={on_import_webconfig_json.clone()}
+                      />
+                    </label>
+                  </div>
+
+                  <button
+                    disabled={import_progress.is_some()}
+                    class="w-full flex items-center justify-center gap-space-sm bg-tertiary/15 hover:bg-tertiary/25 text-tertiary border border-tertiary/50 px-space-lg py-2.5 rounded-xl text-xs font-mono font-bold transition-colors cursor-pointer"
+                    onclick={
+                      let msfs = modal_start_from_scratch.clone();
+                      Callback::from(move |_| msfs.set(true))
+                    }
+                  >
+                    <span class="material-symbols-outlined text-[18px]">{"auto_fix_high"}</span>
+                    {"Or Start From Scratch with Setup Wizard (Machine → Nozzle → Bed → AMS → Filaments)"}
+                  </button>
+                </div>
+              </>
+            }
+          </div>
         </div>
-    }
+      }
+
+      // Main Content Body
+      <main class="w-full pt-32 px-4 lg:px-8 pb-12 flex-1 max-w-7xl mx-auto">
+        // Toast notification
+        if let Some(msg) = &*toast_message {
+          <div class="mb-4 p-space-md rounded-lg bg-surface-container-high border border-primary text-primary font-code-sm text-code-sm flex items-center justify-between shadow-lg animate-fade-in">
+            <div class="flex items-center gap-space-sm">
+              <span class="material-symbols-outlined text-[16px]">{"info"}</span>
+              <span>{msg}</span>
+            </div>
+            <button
+              class="text-on-surface-variant hover:text-on-surface"
+              onclick={
+                let tm = toast_message.clone();
+                Callback::from(move |_| tm.set(None))
+              }
+            >
+              <span class="material-symbols-outlined text-[16px]">{"close"}</span>
+            </button>
+          </div>
+        }
+
+        // Render Active Tab
+        {match *active_tab {
+          ActiveTab::Home => html! {
+            <HomeTab
+              is_config_loaded={*is_config_loaded}
+              bound_filename={(*bound_filename).clone()}
+              bound_path_hint={(*bound_path_hint).clone()}
+              detected_hardware_summary={(*detected_hardware_summary).clone()}
+              scanned_file_count={scanned_entries.len()}
+              last_saved_time={(*last_saved_time).clone()}
+              on_load_reference_snapshot={on_load_reference_snapshot}
+              on_import_zip={on_import_zip}
+              on_backup_zip={on_backup_zip}
+              on_export_webconfig_json={on_export_webconfig_json}
+              on_import_webconfig_json={on_import_webconfig_json}
+              on_reset_all={on_reset_all}
+              on_commit_save={on_commit_save}
+              on_export_3mf={on_export_3mf}
+              on_export_standalone_json={on_export_standalone_json}
+              on_switch_tab={
+                let at = active_tab.clone();
+                Callback::from(move |tab: ActiveTab| at.set(tab))
+              }
+              diff_items={eval_result.diff_items.clone()}
+              rules={(*rules).clone()}
+              on_toggle_rule={on_toggle_rule.clone()}
+              conflicts={(*conflicts).clone()}
+              pending_updates={(*pending_updates).clone()}
+              on_resolve_conflict={on_resolve_conflict}
+              show_diff_drawer={*show_diff_drawer}
+              on_toggle_diff_drawer={
+                let sdd = show_diff_drawer.clone();
+                Callback::from(move |_| sdd.set(!*sdd))
+              }
+              active_rig={active_rig.clone()}
+              processes={(*processes).clone()}
+              active_process_id={(*active_process_id).clone()}
+              on_select_process={on_select_process.clone()}
+              safe_speed_ceiling={eval_result.safe_speed_ceiling}
+              json_diff_text={json_diff_text}
+              our_internal_config_json={our_internal_config_json}
+              user_disk_config_json={user_disk_config_json}
+            />
+          },
+          ActiveTab::Machine => html! {
+            <MachineTab
+              is_config_loaded={*is_config_loaded}
+              machines={(*machines).clone()}
+              active_machine_id={(*active_machine_id).clone()}
+              on_set_active_machine={on_set_active_machine}
+              on_duplicate_active_rig={on_duplicate_active_rig}
+              on_add_machine={
+                let m_state = machines.clone();
+                let amid = active_machine_id.clone();
+                let icl = is_config_loaded.clone();
+                let t = toast_message.clone();
+                Callback::from(move |mut new_m: MachineRig| {
+                  let mut list = (*m_state).clone();
+                  for m in &mut list {
+                    m.is_active = false;
+                  }
+                  new_m.is_active = true;
+                  let new_id = new_m.id.clone();
+                  let new_name = new_m.name.clone();
+                  list.push(new_m);
+                  m_state.set(list);
+                  amid.set(new_id);
+                  icl.set(true);
+                  t.set(Some(format!("Added new rig '{}' to vault!", new_name)));
+                })
+              }
+              on_change_machine_type={on_change_machine_type}
+              on_change_nozzle={on_change_nozzle}
+              on_change_nozzle_diameter={on_change_nozzle_diameter}
+              on_toggle_addon={on_toggle_addon}
+              on_change_ace_units={on_change_ace_units}
+              on_save_rig_to_vault={on_save_rig_to_vault}
+              on_open_bind_modal={on_open_bind_modal}
+              active_process={active_proc.clone()}
+              safe_speed_ceiling={eval_result.safe_speed_ceiling}
+            />
+          },
+          ActiveTab::Filament => html! {
+            <FilamentTab
+              is_config_loaded={*is_config_loaded}
+              filaments={(*filaments).clone()}
+              active_filament_type={(*active_filament_type).clone()}
+              ace_pro_units={active_rig.ace_pro_units}
+              flush_matrix={eval_result.flush_matrix.clone()}
+              disk_flush_matrix={(*disk_flush_matrix).clone()}
+              disk_flush_slot_count={*disk_flush_slot_count}
+              flush_multiplier={*flush_multiplier}
+              disk_flush_multiplier={*disk_flush_multiplier}
+              melt_zone_multiplier={active_rig.melt_zone_multiplier}
+              on_change_flush_multiplier={{
+                let fm = flush_multiplier.clone();
+                let t = toast_message.clone();
+                Callback::from(move |new_mult: f64| {
+                  fm.set(new_mult);
+                  t.set(Some(format!(
+                    "Updated Flushing Multiplier to {:.2}× (re-evaluated Lua flushing matrix)!",
+                    new_mult
+                  )));
+                })
+              }}
+              on_stage_flush_to_disk={{
+                let pu = pending_updates.clone();
+                let lst = last_saved_time.clone();
+                let crp = (*conf_relative_path).clone();
+                let cur_mult = *flush_multiplier;
+                let d_mult = *disk_flush_multiplier;
+                let lua_mat = eval_result.flush_matrix.clone();
+                let d_mat = (*disk_flush_matrix).clone();
+                let t = toast_message.clone();
+                Callback::from(move |_| {
+                  let mut list = (*pu).clone();
+                  list.retain(|u| {
+                    u.json_field_key != "flush_multiplier"
+                      && u.json_field_key != "flush_volumes_matrix"
+                  });
+                  if (cur_mult - d_mult).abs() > 1e-4 {
+                    list.push(PendingDiskUpdate {
+                      param_key: "conf:flush_multiplier".to_string(),
+                      param_label: "Flushing Multiplier (app.flush_multiplier)".to_string(),
+                      source_relative_path: crp.clone(),
+                      json_field_key: "flush_multiplier".to_string(),
+                      old_disk_value: format!("{:.2}", d_mult),
+                      new_clean_value: format!("{:.2}", cur_mult),
+                    });
+                  }
+                  let formatted_pipe_matrix = lua_mat
+                    .iter()
+                    .map(|s| {
+                      s.parse::<f64>()
+                        .map(|v| format!("{:.6}", v))
+                        .unwrap_or_else(|_| "0.000000".to_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
+                  let old_pipe_summary = if d_mat.is_empty() {
+                    "None".to_string()
+                  } else {
+                    format!("{} cells ({}|...)", d_mat.len(), d_mat.iter().take(4).cloned().collect::<Vec<_>>().join("|"))
+                  };
+                  list.push(PendingDiskUpdate {
+                    param_key: "conf:flush_volumes_matrix".to_string(),
+                    param_label: "Flushing Volume Matrix (anycubic_presets[].flush_volumes_matrix)".to_string(),
+                    source_relative_path: crp.clone(),
+                    json_field_key: "flush_volumes_matrix".to_string(),
+                    old_disk_value: old_pipe_summary,
+                    new_clean_value: formatted_pipe_matrix,
+                  });
+                  pu.set(list);
+                  lst.set("Unsaved Staged Changes".to_string());
+                  t.set(Some(format!(
+                    "Staged Lua Flushing Matrix & {:.2}× Multiplier for '{}' — click 'Save to Disk' to write!",
+                    cur_mult, crp
+                  )));
+                })
+              }}
+              on_select_active_filament={on_select_active_filament}
+              on_change_ace_units={on_change_ace_units}
+              on_update_spool={on_update_spool}
+              on_export_spool_json={on_export_spool_json}
+              on_export_3mf={on_export_3mf}
+              on_open_bind_modal={on_open_bind_modal}
+            />
+          },
+          ActiveTab::Wizard => html! {
+            <WizardTab
+              is_config_loaded={*is_config_loaded}
+              rules={(*rules).clone()}
+              diff_items={eval_result.diff_items.clone()}
+              rule_changes={eval_result.rule_changes.clone()}
+              processes={(*processes).clone()}
+              active_process_id={(*active_process_id).clone()}
+              on_select_process={on_select_process}
+              on_toggle_rule={on_toggle_rule}
+              on_update_rule_lua={on_update_rule_lua}
+              on_create_rule={on_create_rule}
+              on_delete_rule={on_delete_rule}
+              on_export_package={on_export_package}
+              on_commit_save={on_commit_save}
+              on_open_bind_modal={on_open_bind_modal}
+              execution_logs={eval_result.execution_logs.clone()}
+              on_clear_logs={on_clear_logs}
+              safe_speed_ceiling={eval_result.safe_speed_ceiling}
+            />
+          },
+        }}
+      </main>
+    </div>
+  }
 }

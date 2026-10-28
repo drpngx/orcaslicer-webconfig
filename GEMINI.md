@@ -25,3 +25,12 @@
 5. **Direct File System Access**:
    - Uses the File System Access API (`showOpenFilePicker`, `showDirectoryPicker`, `FileSystemFileHandle`) to read and edit OrcaSlicer configuration profiles directly.
    - Supports disconnecting after saves to release file locks.
+
+6. **2-Space Rust Indentation**:
+   - All Rust files (`*.rs`) must use **2 spaces** for indentation (`tab_spaces = 2` in `rustfmt.toml`).
+   - Do not use 4-space indentation in Rust files.
+
+7. **Local Slicer Configuration Reference Paths & Clean Startup**:
+   - The user's real AnycubicSlicerNext configuration directory on this machine is `/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext/` (Windows path: `C:\Users\drpng\AppData\Roaming\AnycubicSlicerNext\` or `%APPDATA%\AnycubicSlicerNext\`).
+   - The web application must **default to nothing loaded** on initial startup (no pre-imported user profiles), clearly prompting the user to connect/bind their local slicer directory first.
+   - Always distinguish between **our internal transformation-based data structures** (machine rigs, nozzles, add-ons, base filaments + Lua transformation stacks) and **the raw configuration files on the user's disk**.

@@ -1,0 +1,5 @@
+{
+  "local_slicer_directory": "/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext",
+  "windows_equivalent_path": "C:\\Users\\drpng\\AppData\\Roaming\\AnycubicSlicerNext",
+  "description": "Local AnycubicSlicerNext configuration directory on the WSL/Linux filesystem read by the local server when connecting configs."
+}
