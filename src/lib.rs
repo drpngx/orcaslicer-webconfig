@@ -763,6 +763,7 @@ pub fn App() -> Html {
     let flush_multiplier = *flush_multiplier;
     let conf_relative_path = conf_relative_path.clone();
     let pending_updates = pending_updates.clone();
+    let derived_overrides = eval_result.resulting_profile.values.clone();
     let toast = toast_message.clone();
     Callback::from(move |_| {
       let mut entries = (*scanned_entries).clone();
@@ -777,6 +778,7 @@ pub fn App() -> Html {
         flush_multiplier,
         &conf_relative_path,
         &pending_updates,
+        &derived_overrides,
       );
       let zip_bytes = build_directory_backup_zip(&entries);
       let filename = "AnycubicSlicerNext_Config_Backup.zip";
@@ -1615,6 +1617,7 @@ pub fn App() -> Html {
     let flush_multiplier = *flush_multiplier;
     let conf_relative_path = conf_relative_path.clone();
     let pending_updates = pending_updates.clone();
+    let derived_overrides = eval_result.resulting_profile.values.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1636,6 +1639,7 @@ pub fn App() -> Html {
         flush_multiplier,
         &conf_relative_path,
         &staged_list,
+        &derived_overrides,
       );
 
       spawn_local(async move {

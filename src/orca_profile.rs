@@ -335,132 +335,74 @@ impl OrcaProfile {
   }
 
   pub fn get_stock_kobra_s1() -> Self {
-    let json_data = serde_json::json!({
-      "name": "Anycubic Kobra S1 - Stock Volcano V6 Nozzle",
-      "type": "machine",
-      "from": "User",
-      "inherits": "Anycubic Kobra S1 0.4 nozzle",
-      "printer_model": "Anycubic Kobra S1",
-      "printer_variant": "0.4",
-      "nozzle_diameter": ["0.4"],
-      "nozzle_type": "brass",
-      "nozzle_hrc": "0",
-      "printable_area": ["0x0", "250x0", "250x250", "0x250"],
-      "printable_height": "260",
-      "filament_type": ["PETG"],
-      "nozzle_temperature": ["240"],
-      "nozzle_temperature_initial_layer": ["245"],
-      "hot_plate_temp": ["75"],
-      "hot_plate_temp_initial_layer": ["80"],
-      "filament_flow_ratio": ["1.00"],
-      "filament_max_volumetric_speed": ["15.0"],
-      "filament_retraction_length": ["2.00"],
-      "filament_retraction_speed": ["35"],
-      "filament_deretraction_speed": ["30"],
-      "filament_retract_before_wipe": ["0%"],
-      "filament_wipe_distance": ["1.0"],
-      "pressure_advance": ["0.040"],
-      "layer_height": "0.20",
-      "initial_layer_print_height": "0.24",
-      "initial_layer_speed": "35",
-      "initial_layer_line_width": "0.50",
-      "outer_wall_line_width": "0.42",
-      "outer_wall_speed": "200",
-      "inner_wall_speed": "300",
-      "sparse_infill_speed": "350",
-      "sparse_infill_pattern": "grid",
-      "sparse_infill_density": "15%",
-      "wall_loops": "2",
-      "wall_generator": "classic",
-      "wall_transition_angle": "10",
-      "wall_transition_length": "100%",
-      "min_feature_size": "25%",
-      "min_bead_width": "85%",
-      "only_one_wall_top": "0",
-      "seam_position": "aligned",
-      "seam_slope_type": "none",
-      "seam_slope_conditional": "0",
-      "seam_slope_start_height": "0%",
-      "seam_slope_entire_loop": "0",
-      "seam_slope_min_length": "20",
-      "seam_slope_steps": "10",
-      "seam_gap": "15%",
-      "scarf_angle_threshold": "155",
-      "ironing_type": "no ironing",
-      "ironing_flow": "10%",
-      "ironing_speed": "30",
-      "print_sequence": "by layer",
-      "brim_type": "auto_brim",
-      "brim_width": "5",
-      "enable_support": "0",
-      "support_type": "normal(auto)",
-      "wipe_on_loops": "0",
-      "reduce_crossing_wall": "0",
-      "z_hop": ["0.0"],
-      "z_hop_types": ["Normal Lift"],
-      "travel_acceleration": "4000",
-      "cut_retraction_length": "28.0",
-      "transition_flush_temp_hold": "205",
-      "fan_cooling_layer_time": ["30"],
-      "fan_min_speed": ["40"],
-      "machine_max_speed_x": ["500"],
-      "machine_max_acceleration_x": ["10000"],
-      "flush_multiplier": "1.0",
-      "computed_safe_speed_ceiling": "250",
-      "version": "2.0.0.0"
-    });
+    let cat = crate::catalog::load_merged_catalog();
+    let mut values = serde_json::Map::new();
+    for (k, v) in &cat.default_machine_base {
+      values.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &cat.default_process_base {
+      values.insert(k.clone(), v.clone());
+    }
+    if let Some(petg_base) = cat.default_filament_bases.get("PETG") {
+      for (k, v) in petg_base {
+        values.insert(k.clone(), v.clone());
+      }
+    }
+    values.insert(
+      "name".to_string(),
+      serde_json::Value::String("Anycubic Kobra S1 0.4 nozzle".to_string()),
+    );
+    values.insert(
+      "type".to_string(),
+      serde_json::Value::String("machine".to_string()),
+    );
+    values.insert(
+      "from".to_string(),
+      serde_json::Value::String("User".to_string()),
+    );
+    values.insert(
+      "inherits".to_string(),
+      serde_json::Value::String("Anycubic Kobra S1 0.4 nozzle".to_string()),
+    );
 
     Self {
-      name: "Anycubic Kobra S1 - Stock Volcano V6 Nozzle".to_string(),
+      name: "Anycubic Kobra S1 0.4 nozzle".to_string(),
       profile_type: "machine".to_string(),
       inherits: Some("Anycubic Kobra S1 0.4 nozzle".to_string()),
       from: Some("User".to_string()),
-      values: json_data.as_object().unwrap().clone(),
+      values,
     }
   }
 
   pub fn get_stock_voron_24() -> Self {
-    let json_data = serde_json::json!({
-      "name": "Voron 2.4 350mm - Revo Voron Edition",
-      "type": "machine",
-      "from": "User",
-      "inherits": "Voron_v2_350_afterburner 0.4 nozzle",
-      "printer_model": "Voron 2.4 350mm",
-      "printer_variant": "0.4",
-      "nozzle_diameter": ["0.4"],
-      "nozzle_type": "hardened_steel",
-      "printable_area": ["0x0", "350x0", "350x350", "0x350"],
-      "printable_height": "340",
-      "filament_type": ["ABS"],
-      "nozzle_temperature": ["250"],
-      "nozzle_temperature_initial_layer": ["255"],
-      "hot_plate_temp": ["105"],
-      "hot_plate_temp_initial_layer": ["110"],
-      "filament_flow_ratio": ["0.95"],
-      "filament_max_volumetric_speed": ["18.0"],
-      "filament_retraction_length": ["0.5"],
-      "filament_retraction_speed": ["40"],
-      "pressure_advance": ["0.022"],
-      "layer_height": "0.20",
-      "initial_layer_speed": "40",
-      "outer_wall_line_width": "0.42",
-      "outer_wall_speed": "200",
-      "inner_wall_speed": "300",
-      "sparse_infill_speed": "350",
-      "sparse_infill_pattern": "grid",
-      "wipe_on_loops": "0",
-      "z_hop": ["0.2"],
-      "machine_max_speed_x": ["500"],
-      "machine_max_acceleration_x": ["12000"],
-      "version": "2.0.0.0"
-    });
+    let cat = crate::catalog::load_merged_catalog();
+    let mut values = serde_json::Map::new();
+    for (k, v) in &cat.default_voron_base {
+      values.insert(k.clone(), v.clone());
+    }
+    values.insert(
+      "name".to_string(),
+      serde_json::Value::String("Voron 2.4 350 0.4 nozzle".to_string()),
+    );
+    values.insert(
+      "type".to_string(),
+      serde_json::Value::String("machine".to_string()),
+    );
+    values.insert(
+      "from".to_string(),
+      serde_json::Value::String("User".to_string()),
+    );
+    values.insert(
+      "inherits".to_string(),
+      serde_json::Value::String("Voron 2.4 350 0.4 nozzle".to_string()),
+    );
 
     Self {
-      name: "Voron 2.4 350mm - Revo Voron Edition".to_string(),
+      name: "Voron 2.4 350 0.4 nozzle".to_string(),
       profile_type: "machine".to_string(),
-      inherits: Some("Voron_v2_350_afterburner 0.4 nozzle".to_string()),
+      inherits: Some("Voron 2.4 350 0.4 nozzle".to_string()),
       from: Some("User".to_string()),
-      values: json_data.as_object().unwrap().clone(),
+      values,
     }
   }
 
@@ -1543,11 +1485,15 @@ mod tests {
     };
 
     let base = OrcaProfile::get_stock_kobra_s1();
+    let base_temp: i32 = base
+      .get_str("nozzle_temperature")
+      .and_then(|s| s.parse().ok())
+      .unwrap_or(230);
     let ctx = serde_json::json!({ "printer_model": "Anycubic Kobra S1" });
     let eval = TransformationEngine::evaluate_stack(&base, &[rule], &ctx);
     assert_eq!(
       eval.resulting_profile.get_str("nozzle_temperature"),
-      Some("248".to_string())
+      Some((base_temp + 8).to_string())
     );
     assert_eq!(
       eval.resulting_profile.get_str("wall_generator"),

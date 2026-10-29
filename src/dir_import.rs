@@ -129,6 +129,7 @@ pub fn import_scanned_directory(
 
   let mut system_filaments: HashMap<String, serde_json::Value> = HashMap::new();
   let mut system_machines: HashMap<String, serde_json::Value> = HashMap::new();
+  let mut system_processes: HashMap<String, serde_json::Value> = HashMap::new();
   let mut user_filament_files: Vec<(String, serde_json::Value, String)> = Vec::new();
   let mut user_machine_files: Vec<(String, serde_json::Value)> = Vec::new();
   let mut user_process_files: Vec<(String, serde_json::Value)> = Vec::new();
@@ -177,11 +178,13 @@ pub fn import_scanned_directory(
 
     let name = extract_str(&val, "name").unwrap_or_else(|| entry.filename.clone());
 
-    if entry.relative_path.starts_with("system/") {
+    if entry.relative_path.starts_with("system/") || entry.relative_path.starts_with("ota/") {
       if entry.relative_path.contains("/filament/") {
         system_filaments.insert(name, val);
       } else if entry.relative_path.contains("/machine/") {
         system_machines.insert(name, val);
+      } else if entry.relative_path.contains("/process/") {
+        system_processes.insert(name, val);
       }
     } else if entry.relative_path.starts_with("user/") {
       // Detect user folder ID from path `user/<id>/...`
@@ -1264,21 +1267,56 @@ pub fn import_scanned_directory(
     .unwrap_or_else(|| "proc_020_std_png".to_string());
 
   // System Base Profile represents the shipped Anycubic Kobra S1 0.4mm Brass Nozzle baseline
-  // BEFORE our Hardened Steel + ACE Pro transformation rules are applied.
+  // imported from the OrcaSlicer catalog and merged with any scanned system/ota profiles on disk.
   let mut base_profile = OrcaProfile::get_stock_kobra_s1();
   base_profile.name = "Anycubic Kobra S1 0.4 nozzle (Shipped Brass System Base)".to_string();
-  base_profile.set_str("nozzle_type", "brass");
-  base_profile.set_array_str("nozzle_temperature", "230");
-  base_profile.set_array_str("nozzle_temperature_initial_layer", "230");
-  base_profile.set_array_str("nozzle_temperature_HS", "230");
-  base_profile.set_array_str("nozzle_temperature_initial_layer_HS", "230");
-  base_profile.set_array_str("hot_plate_temp", "75");
-  base_profile.set_array_str("hot_plate_temp_initial_layer", "75");
-  base_profile.set_array_str("textured_plate_temp", "75");
-  base_profile.set_array_str("textured_plate_temp_initial_layer", "75");
-  base_profile.set_array_str("filament_retraction_length", "0.8");
-  base_profile.set_array_str("filament_retraction_speed", "40");
-  base_profile.set_str("cut_retraction_length", "0");
+  for sys_val in [
+    system_machines.get("Anycubic Kobra S1 0.4 nozzle"),
+    system_processes.get("0.20mm Standard @Anycubic Kobra S1 0.4 nozzle"),
+    system_filaments.get("Anycubic PETG @Anycubic Kobra S1 0.4 nozzle"),
+  ]
+  .into_iter()
+  .flatten()
+  {
+    if let Some(obj) = sys_val.as_object() {
+      for (k, v) in obj {
+        if k.ends_with("_gcode")
+          || matches!(
+            k.as_str(),
+            "name"
+              | "type"
+              | "from"
+              | "inherits"
+              | "setting_id"
+              | "filament_id"
+              | "instantiation"
+              | "compatible_printers_condition"
+              | "compatible_prints_condition"
+              | "compatible_prints"
+              | "filament_ramming_parameters"
+              | "small_area_infill_flow_compensation_model"
+              | "adaptive_pressure_advance_model"
+              | "head_wrap_detect_zone"
+              | "bed_exclude_area"
+              | "post_process"
+              | "upward_compatible_machine"
+              | "wiping_volumes_extruders"
+              | "filament_notes"
+          )
+        {
+          continue;
+        }
+        let is_nil = v.as_str().map(|s| s == "nil").unwrap_or(false)
+          || v
+            .as_array()
+            .map(|a| a.is_empty() || a.iter().all(|x| x.as_str() == Some("nil")))
+            .unwrap_or(false);
+        if !is_nil {
+          base_profile.values.insert(k.clone(), v.clone());
+        }
+      }
+    }
+  }
   base_profile.set_str("flush_multiplier", &format!("{:.2}", disk_flush_multiplier));
 
   Ok(DirectoryImportSummary {
@@ -1508,6 +1546,7 @@ pub fn sync_live_state_to_entries(
   flush_multiplier: f64,
   conf_relative_path: &str,
   pending_updates: &[PendingDiskUpdate],
+  derived_overrides: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<LocalFsSaveFileEntry> {
   let mut modified_map: HashMap<String, String> = HashMap::new();
 
@@ -1549,25 +1588,7 @@ pub fn sync_live_state_to_entries(
   for rig in machines {
     let fname = crate::models::sanitize_profile_filename(&rig.name);
     let rel_path = format!("user/{}/machine/{}", user_folder_id, fname);
-    let (orca_noz, _) = rig.orca_machine_nozzle_type_and_hrc();
-    let noz_diam_str = rig.formatted_nozzle_diameter();
-    let machine_json = serde_json::to_string_pretty(&serde_json::json!({
-      "type": "machine",
-      "from": "User",
-      "is_custom_defined": "0",
-      "inherits": format!("{} {} nozzle", rig.printer_model, noz_diam_str),
-      "name": rig.name,
-      "printer_settings_id": rig.name,
-      "printer_model": rig.printer_model,
-      "printer_variant": noz_diam_str,
-      "nozzle_type": orca_noz,
-      "nozzle_diameter": [noz_diam_str],
-      "retraction_length": [format!("{:.2}", rig.base_retraction_length)],
-      "retraction_speed": ["40"],
-      "printer_notes": rig.notes,
-      "version": "2.0.0.0"
-    }))
-    .unwrap_or_else(|_| "{}".to_string());
+    let machine_json = crate::threemf::build_machine_preset_json(rig);
 
     if let Some(existing) = entries.iter_mut().find(|e| {
       e.relative_path == rel_path
@@ -1610,52 +1631,10 @@ pub fn sync_live_state_to_entries(
     true
   });
 
-  let compat_printer = format!(
-    "{} {} nozzle",
-    active_rig.printer_model,
-    active_rig.formatted_nozzle_diameter()
-  );
   for proc in processes {
     let fname = crate::models::sanitize_profile_filename(&proc.name);
     let rel_path = format!("user/{}/process/{}", user_folder_id, fname);
-    let proc_json = serde_json::to_string_pretty(&serde_json::json!({
-      "type": "process",
-      "from": "User",
-      "is_custom_defined": "0",
-      "inherits": proc.inherits,
-      "compatible_printers": [compat_printer],
-      "name": proc.name,
-      "print_settings_id": proc.name,
-      "layer_height": format!("{:.2}", proc.layer_height),
-      "line_width": format!("{:.2}", proc.line_width),
-      "outer_wall_line_width": format!("{:.2}", proc.line_width),
-      "outer_wall_speed": format!("{:.0}", proc.outer_wall_speed),
-      "inner_wall_speed": format!("{:.0}", proc.inner_wall_speed),
-      "sparse_infill_speed": format!("{:.0}", proc.sparse_infill_speed),
-      "initial_layer_speed": format!("{:.0}", proc.initial_layer_speed),
-      "default_acceleration": format!("{:.0}", proc.default_acceleration),
-      "wall_generator": proc.wall_generator,
-      "wall_transition_angle": "10",
-      "wall_transition_length": "100%",
-      "min_feature_size": "25%",
-      "min_bead_width": "85%",
-      "seam_slope_type": "all",
-      "seam_slope_conditional": "1",
-      "seam_slope_start_height": "10%",
-      "seam_slope_entire_loop": "0",
-      "seam_slope_inner_walls": "1",
-      "seam_slope_min_length": "15",
-      "seam_slope_steps": "15",
-      "seam_gap": "10%",
-      "scarf_angle_threshold": "155",
-      "wipe_on_loops": "1",
-      "sparse_infill_pattern": "gyroid",
-      "reduce_crossing_wall": "1",
-      "print_sequence": proc.print_sequence,
-      "notes": proc.notes,
-      "version": "2.0.0.0"
-    }))
-    .unwrap_or_else(|_| "{}".to_string());
+    let proc_json = crate::threemf::build_process_preset_json(proc, &active_rig, derived_overrides);
 
     if let Some(existing) = entries
       .iter_mut()
@@ -2305,6 +2284,7 @@ mod tests {
       1.0,
       "AnycubicSlicerNext.conf",
       &[legacy_upd],
+      &serde_json::Map::new(),
     );
 
     assert!(entries

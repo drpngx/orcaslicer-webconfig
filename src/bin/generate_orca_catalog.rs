@@ -13,6 +13,14 @@ pub struct GeneratedCatalog {
   pub ams_options: Vec<CatalogAmsOption>,
   pub filaments: Vec<CatalogFilament>,
   pub standard_colors: Vec<CatalogColorSwatch>,
+  #[serde(default)]
+  pub default_machine_base: BTreeMap<String, Value>,
+  #[serde(default)]
+  pub default_process_base: BTreeMap<String, Value>,
+  #[serde(default)]
+  pub default_filament_bases: BTreeMap<String, BTreeMap<String, Value>>,
+  #[serde(default)]
+  pub default_voron_base: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,6 +171,90 @@ fn resolve_profile<'a>(name: &str, by_name: &'a HashMap<String, Value>, depth: u
 }
 
 type MapView = BTreeMap<String, Value>;
+
+fn load_dir_profile_map(dir: &Path, mut base: HashMap<String, Value>) -> HashMap<String, Value> {
+  if dir.is_dir() {
+    let mut files = Vec::new();
+    collect_json_files(dir, &mut files);
+    for f in &files {
+      if let Ok(txt) = fs::read_to_string(f) {
+        if let Ok(val) = serde_json::from_str::<Value>(&txt) {
+          if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+            base.insert(name.to_string(), val);
+          }
+        }
+      }
+    }
+  }
+  base
+}
+
+fn is_nil_or_empty_orca_value(val: &Value) -> bool {
+  match val {
+    Value::Null => true,
+    Value::String(s) => s.trim().eq_ignore_ascii_case("nil"),
+    Value::Array(arr) => {
+      arr.is_empty()
+        || arr.iter().all(|x| {
+          x.as_str()
+            .map(|s| s.trim().eq_ignore_ascii_case("nil"))
+            .unwrap_or(true)
+        })
+    }
+    _ => false,
+  }
+}
+
+fn sanitize_orca_profile_map(raw: MapView, fallback_machine: Option<&MapView>) -> MapView {
+  let mut out = BTreeMap::new();
+  for (k, v) in raw {
+    if k.ends_with("_gcode")
+      || matches!(
+        k.as_str(),
+        "setting_id"
+          | "filament_id"
+          | "instantiation"
+          | "compatible_printers_condition"
+          | "compatible_prints_condition"
+          | "compatible_prints"
+          | "filament_ramming_parameters"
+          | "small_area_infill_flow_compensation_model"
+          | "adaptive_pressure_advance_model"
+          | "head_wrap_detect_zone"
+          | "bed_exclude_area"
+          | "post_process"
+          | "upward_compatible_machine"
+          | "wiping_volumes_extruders"
+          | "filament_notes"
+      )
+    {
+      continue;
+    }
+    if is_nil_or_empty_orca_value(&v) {
+      continue;
+    }
+    out.insert(k, v);
+  }
+  if let Some(mach) = fallback_machine {
+    for (fil_key, mach_key) in [
+      ("filament_retraction_length", "retraction_length"),
+      ("filament_retraction_speed", "retraction_speed"),
+      ("filament_deretraction_speed", "deretraction_speed"),
+      ("filament_retract_before_wipe", "retract_before_wipe"),
+      ("filament_wipe", "wipe"),
+      ("filament_wipe_distance", "wipe_distance"),
+      ("filament_z_hop", "z_hop"),
+      ("filament_z_hop_types", "z_hop_types"),
+    ] {
+      if !out.contains_key(fil_key) {
+        if let Some(mv) = mach.get(mach_key) {
+          out.insert(fil_key.to_string(), mv.clone());
+        }
+      }
+    }
+  }
+  out
+}
 
 fn parse_build_volume(resolved: &MapView) -> String {
   let mut max_x: i32 = 250;
@@ -1037,6 +1129,116 @@ fn main() {
 
   let filaments: Vec<CatalogFilament> = best_by_code.into_values().map(|(_, v)| v).collect();
 
+  // 5. Resolve full OrcaSlicer base profiles (Machine, Process, Filament, Voron) from @orcaslicer_repo
+  let anycubic_dir = profiles_dir.join("Anycubic");
+  let anycubic_mach_map = load_dir_profile_map(&anycubic_dir.join("machine"), HashMap::new());
+  let anycubic_proc_map = load_dir_profile_map(&anycubic_dir.join("process"), HashMap::new());
+  let anycubic_fil_map =
+    load_dir_profile_map(&anycubic_dir.join("filament"), lib_fil_by_name.clone());
+
+  let default_machine_base = sanitize_orca_profile_map(
+    resolve_profile("Anycubic Kobra S1 0.4 nozzle", &anycubic_mach_map, 0),
+    None,
+  );
+  let default_process_base = sanitize_orca_profile_map(
+    resolve_profile(
+      "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle",
+      &anycubic_proc_map,
+      0,
+    ),
+    None,
+  );
+
+  let mut default_filament_bases: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
+  for (code, profile_name) in [
+    ("PLA", "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle"),
+    ("PETG", "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle"),
+    ("ABS", "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle"),
+    ("ASA", "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle"),
+    ("TPU", "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle"),
+    ("PA", "Anycubic Generic PA"),
+    ("PA-CF", "Anycubic Generic PA-CF"),
+    ("PC", "Anycubic Generic PC"),
+    ("PLA-CF", "Anycubic Generic PLA-CF"),
+    ("PVA", "Anycubic Generic PVA"),
+  ] {
+    let mut resolved_fil = sanitize_orca_profile_map(
+      resolve_profile(profile_name, &anycubic_fil_map, 0),
+      Some(&default_machine_base),
+    );
+    if let Some(mach_ret_len) = default_machine_base.get("retraction_length") {
+      resolved_fil.insert(
+        "filament_retraction_length".to_string(),
+        mach_ret_len.clone(),
+      );
+    }
+    if let Some(mach_ret_spd) = default_machine_base.get("retraction_speed") {
+      resolved_fil.insert(
+        "filament_retraction_speed".to_string(),
+        mach_ret_spd.clone(),
+      );
+    }
+    if let Some(cat_fil) = filaments.iter().find(|f| f.code == code) {
+      let noz_str = cat_fil.base_nozzle_c.to_string();
+      let bed_str = cat_fil.base_bed_c.to_string();
+      let mvs_str = format!("{:.1}", cat_fil.max_vol_mm3s);
+      let fan_str = cat_fil.fan_pct.to_string();
+      let hrc_str = if cat_fil.requires_hardened { "55" } else { "3" };
+      resolved_fil.insert(
+        "nozzle_temperature".to_string(),
+        serde_json::json!([noz_str]),
+      );
+      resolved_fil.insert(
+        "nozzle_temperature_initial_layer".to_string(),
+        serde_json::json!([noz_str]),
+      );
+      resolved_fil.insert("hot_plate_temp".to_string(), serde_json::json!([bed_str]));
+      resolved_fil.insert(
+        "hot_plate_temp_initial_layer".to_string(),
+        serde_json::json!([bed_str]),
+      );
+      resolved_fil.insert(
+        "textured_plate_temp".to_string(),
+        serde_json::json!([bed_str]),
+      );
+      resolved_fil.insert(
+        "textured_plate_temp_initial_layer".to_string(),
+        serde_json::json!([bed_str]),
+      );
+      resolved_fil.insert(
+        "filament_max_volumetric_speed".to_string(),
+        serde_json::json!([mvs_str]),
+      );
+      resolved_fil.insert("fan_max_speed".to_string(), serde_json::json!([fan_str]));
+      resolved_fil.insert(
+        "required_nozzle_HRC".to_string(),
+        serde_json::json!([hrc_str]),
+      );
+    }
+    default_filament_bases.insert(code.to_string(), resolved_fil);
+  }
+
+  let voron_dir = profiles_dir.join("Voron");
+  let voron_mach_map = load_dir_profile_map(&voron_dir.join("machine"), HashMap::new());
+  let voron_proc_map = load_dir_profile_map(&voron_dir.join("process"), HashMap::new());
+  let mut default_voron_base = sanitize_orca_profile_map(
+    resolve_profile("Voron 2.4 350 0.4 nozzle", &voron_mach_map, 0),
+    None,
+  );
+  for (k, v) in sanitize_orca_profile_map(
+    resolve_profile("0.20mm Standard @Voron", &voron_proc_map, 0),
+    None,
+  ) {
+    default_voron_base.entry(k).or_insert(v);
+  }
+  if let Some(abs_fil) = default_filament_bases.get("ABS") {
+    for (k, v) in abs_fil {
+      default_voron_base
+        .entry(k.clone())
+        .or_insert_with(|| v.clone());
+    }
+  }
+
   let catalog = GeneratedCatalog {
     machines,
     nozzles,
@@ -1044,6 +1246,10 @@ fn main() {
     ams_options: Vec::new(),
     filaments,
     standard_colors: Vec::new(),
+    default_machine_base,
+    default_process_base,
+    default_filament_bases,
+    default_voron_base,
   };
 
   let json_out = serde_json::to_string_pretty(&catalog).expect("Failed to serialize catalog");

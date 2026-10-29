@@ -18,6 +18,14 @@ pub struct CombinedCatalog {
   pub filaments: Vec<CatalogFilament>,
   #[serde(default)]
   pub standard_colors: Vec<CatalogColorSwatch>,
+  #[serde(default)]
+  pub default_machine_base: BTreeMap<String, serde_json::Value>,
+  #[serde(default)]
+  pub default_process_base: BTreeMap<String, serde_json::Value>,
+  #[serde(default)]
+  pub default_filament_bases: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+  #[serde(default)]
+  pub default_voron_base: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -236,6 +244,10 @@ pub fn load_merged_catalog() -> CombinedCatalog {
     ams_options,
     filaments,
     standard_colors: additional.standard_colors,
+    default_machine_base: generated.default_machine_base,
+    default_process_base: generated.default_process_base,
+    default_filament_bases: generated.default_filament_bases,
+    default_voron_base: generated.default_voron_base,
   }
 }
 
