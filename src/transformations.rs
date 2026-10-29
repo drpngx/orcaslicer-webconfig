@@ -1693,14 +1693,14 @@ end
         questions: vec![
           CalibrationQuestion {
             id: "scarf_mode".to_string(),
-            question: "1. Where should Scarf Joint Seams be applied?".to_string(),
-            hint: "'contour' applies scarf ramps to visible outer walls; 'all' applies to both outer walls and inner holes.".to_string(),
+            question: "1. Where should Scarf Joint Seams be applied (seam_slope_type)?".to_string(),
+            hint: "'external' ('Contour') applies scarf ramps to visible outer walls; 'all' ('Contour and hole') applies to both outer walls and inner holes.".to_string(),
             default_value: "all".to_string(),
             unit: String::new(),
             quick_options: vec![
-              ("contour".to_string(), "Outer Contour Only".to_string()),
-              ("all".to_string(), "All Walls (Outer Contour + Inner Holes)".to_string()),
-              ("none".to_string(), "Disable Scarf Seams".to_string()),
+              ("external".to_string(), "Contour (Outer Walls Only)".to_string()),
+              ("all".to_string(), "Contour and Hole (Outer + Inner Walls)".to_string()),
+              ("none".to_string(), "None (Disable Scarf Seams)".to_string()),
             ],
           },
           CalibrationQuestion {
@@ -2338,12 +2338,12 @@ end
             id: "enable_scarf".to_string(),
             question: "3. Enable Scarf Joint Seam Ramp to feather the loop start/end?".to_string(),
             hint: "Scarf joints ramp layer height over 20mm so there is no step or pimple at loop closure.".to_string(),
-            default_value: "contour".to_string(),
+            default_value: "external".to_string(),
             unit: String::new(),
             quick_options: vec![
-              ("contour".to_string(), "contour (Outer Walls — Recommended)".to_string()),
-              ("all".to_string(), "all (Outer + Inner Walls)".to_string()),
-              ("none".to_string(), "none (Standard Seam)".to_string()),
+              ("external".to_string(), "Contour (Outer Walls — Recommended)".to_string()),
+              ("all".to_string(), "Contour and Hole (Outer + Inner Walls)".to_string()),
+              ("none".to_string(), "None (Standard Seam)".to_string()),
             ],
           },
         ],
@@ -3798,7 +3798,12 @@ impl ParameterizedCalibrationTemplate {
           ((100.0 - deret_pct) / 100.0).clamp(0.40, 1.0)
         };
         let drop_label = ((1.0 - d_scale) * 100.0).round();
-        let scarf = get_ans("enable_scarf", "contour");
+        let raw_scarf = get_ans("enable_scarf", "external");
+        let scarf = if raw_scarf == "contour" {
+          "external".to_string()
+        } else {
+          raw_scarf
+        };
         let badge = format!(
           "Seam={} • Deretract -{:.0}% ({:.2}×) • Scarf={} • Wipe on Loops",
           seam_pos, drop_label, d_scale, scarf
@@ -4391,7 +4396,12 @@ impl ParameterizedCalibrationTemplate {
         (title, desc, badge, lua)
       }
       _ => {
-        let scarf_mode = get_ans("scarf_mode", "all");
+        let raw_scarf_mode = get_ans("scarf_mode", "all");
+        let scarf_mode = if raw_scarf_mode == "contour" {
+          "external".to_string()
+        } else {
+          raw_scarf_mode
+        };
         let scarf_len = get_ans("scarf_len", "20");
         let seam_gap = get_ans("seam_gap", "10%");
         let wall_gen = get_ans("wall_gen", "arachne");

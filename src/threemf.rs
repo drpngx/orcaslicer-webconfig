@@ -392,7 +392,7 @@ pub fn build_project_settings_config_json(
 
   let mut different_settings_to_system: Vec<String> = Vec::with_capacity(active_slots.len() + 2);
   different_settings_to_system.push(
-    "default_acceleration;initial_layer_speed;inner_wall_speed;layer_height;line_width;notes;outer_wall_line_width;outer_wall_speed;print_sequence;sparse_infill_speed;wall_generator".to_string(),
+    "default_acceleration;initial_layer_speed;inner_wall_speed;layer_height;line_width;min_bead_width;min_feature_size;notes;outer_wall_line_width;outer_wall_speed;print_sequence;reduce_crossing_wall;scarf_angle_threshold;seam_gap;seam_slope_conditional;seam_slope_entire_loop;seam_slope_inner_walls;seam_slope_min_length;seam_slope_start_height;seam_slope_steps;seam_slope_type;sparse_infill_pattern;sparse_infill_speed;wall_generator;wall_transition_angle;wall_transition_length;wipe_on_loops".to_string(),
   );
   for _ in active_slots {
     different_settings_to_system.push(FILAMENT_DIFF_KEYS.to_string());
@@ -405,6 +405,18 @@ pub fn build_project_settings_config_json(
   let fil_diameters: Vec<String> = vec!["1.75".to_string(); active_slots.len()];
 
   let noz_diam_str = rig.formatted_nozzle_diameter();
+
+  let get_proc_str = |key: &str, default_val: &str| -> String {
+    let raw = derived_overrides
+      .get(key)
+      .and_then(|v| v.as_str())
+      .unwrap_or(default_val);
+    if key == "seam_slope_type" && raw == "contour" {
+      "external".to_string()
+    } else {
+      raw.to_string()
+    }
+  };
 
   let config_obj = serde_json::json!({
     "from": "project",
@@ -461,7 +473,23 @@ pub fn build_project_settings_config_json(
     "sparse_infill_speed": format!("{:.0}", process.sparse_infill_speed),
     "initial_layer_speed": format!("{:.0}", process.initial_layer_speed),
     "default_acceleration": format!("{:.0}", process.default_acceleration),
-    "wall_generator": process.wall_generator,
+    "wall_generator": get_proc_str("wall_generator", &process.wall_generator),
+    "wall_transition_angle": get_proc_str("wall_transition_angle", "10"),
+    "wall_transition_length": get_proc_str("wall_transition_length", "100%"),
+    "min_feature_size": get_proc_str("min_feature_size", "25%"),
+    "min_bead_width": get_proc_str("min_bead_width", "85%"),
+    "seam_slope_type": get_proc_str("seam_slope_type", "all"),
+    "seam_slope_conditional": get_proc_str("seam_slope_conditional", "1"),
+    "seam_slope_start_height": get_proc_str("seam_slope_start_height", "10%"),
+    "seam_slope_entire_loop": get_proc_str("seam_slope_entire_loop", "0"),
+    "seam_slope_inner_walls": get_proc_str("seam_slope_inner_walls", "1"),
+    "seam_slope_min_length": get_proc_str("seam_slope_min_length", "15"),
+    "seam_slope_steps": get_proc_str("seam_slope_steps", "15"),
+    "seam_gap": get_proc_str("seam_gap", "10%"),
+    "scarf_angle_threshold": get_proc_str("scarf_angle_threshold", "155"),
+    "wipe_on_loops": get_proc_str("wipe_on_loops", "1"),
+    "sparse_infill_pattern": get_proc_str("sparse_infill_pattern", "gyroid"),
+    "reduce_crossing_wall": get_proc_str("reduce_crossing_wall", "1"),
     "print_sequence": process.print_sequence,
     "flush_multiplier": derived_overrides
       .get("flush_multiplier")
@@ -828,6 +856,11 @@ mod tests {
     assert_eq!(ps_map["nozzle_diameter"], serde_json::json!(["0.4"]));
     assert_eq!(ps_map["printer_variant"], serde_json::json!("0.4"));
     assert_eq!(ps_map["outer_wall_line_width"], serde_json::json!("0.42"));
+    assert_eq!(ps_map["wall_generator"], serde_json::json!("arachne"));
+    assert_eq!(ps_map["seam_slope_type"], serde_json::json!("all"));
+    assert_eq!(ps_map["seam_slope_steps"], serde_json::json!("15"));
+    assert_eq!(ps_map["seam_slope_min_length"], serde_json::json!("15"));
+    assert_eq!(ps_map["sparse_infill_pattern"], serde_json::json!("gyroid"));
     assert_eq!(ps_map["filament_diameter"].as_array().unwrap().len(), 8);
     assert_eq!(ps_map["default_filament_colour"], ps_map["filament_colour"]);
     assert_eq!(

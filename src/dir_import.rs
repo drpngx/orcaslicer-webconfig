@@ -1226,7 +1226,9 @@ pub fn import_scanned_directory(
       notes: String::new(),
     };
     let disk_proc_notes = extract_str(p_val, "notes").unwrap_or_default();
-    if disk_proc_notes.trim().is_empty() {
+    if disk_proc_notes.trim().is_empty()
+      || disk_proc_notes.contains("[OrcaSlicer WebConfig Process")
+    {
       proc_prof.notes = proc_prof.generate_descriptive_notes();
     } else {
       proc_prof.notes = format!(
@@ -1633,6 +1635,22 @@ pub fn sync_live_state_to_entries(
       "initial_layer_speed": format!("{:.0}", proc.initial_layer_speed),
       "default_acceleration": format!("{:.0}", proc.default_acceleration),
       "wall_generator": proc.wall_generator,
+      "wall_transition_angle": "10",
+      "wall_transition_length": "100%",
+      "min_feature_size": "25%",
+      "min_bead_width": "85%",
+      "seam_slope_type": "all",
+      "seam_slope_conditional": "1",
+      "seam_slope_start_height": "10%",
+      "seam_slope_entire_loop": "0",
+      "seam_slope_inner_walls": "1",
+      "seam_slope_min_length": "15",
+      "seam_slope_steps": "15",
+      "seam_gap": "10%",
+      "scarf_angle_threshold": "155",
+      "wipe_on_loops": "1",
+      "sparse_infill_pattern": "gyroid",
+      "reduce_crossing_wall": "1",
       "print_sequence": proc.print_sequence,
       "notes": proc.notes,
       "version": "2.0.0.0"

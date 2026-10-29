@@ -601,7 +601,7 @@ impl OrcaProfile {
         label: "Scarf Joint Seam Mode".to_string(),
         category: "Walls & Seams".to_string(),
         unit: "".to_string(),
-        description: "OrcaSlicer scarf seam ramp mode (none, contour, all)".to_string(),
+        description: "OrcaSlicer scarf seam ramp mode (none = None, external = Contour, all = Contour and hole)".to_string(),
       },
       ParameterMeta {
         key: "seam_slope_conditional".to_string(),
@@ -923,12 +923,12 @@ impl OrcaProfile {
         label: "Scarf Joint Seam Mode".to_string(),
         section: "Walls & Seams".to_string(),
         unit: "".to_string(),
-        description: "OrcaSlicer scarf seam ramp mode (none = disabled, contour = outer wall, all = outer + inner)".to_string(),
+        description: "OrcaSlicer scarf seam ramp mode (none = None, external = Contour, all = Contour and hole)".to_string(),
         default_base_value: "none".to_string(),
         is_array_in_orca: false,
         decimals: 0,
         kind: SettingValueKind::EnumChoices {
-          options: vec!["none".to_string(), "contour".to_string(), "all".to_string()],
+          options: vec!["none".to_string(), "external".to_string(), "all".to_string()],
           suggested: "all".to_string(),
         },
       },

@@ -15,6 +15,7 @@ function apply(config, ctx)
   config["seam_slope_conditional"] = "1"
   config["seam_slope_start_height"] = "10%"
   config["seam_slope_entire_loop"] = "0"
+  config["seam_slope_inner_walls"] = "1"
   config["seam_slope_min_length"] = "15"
   config["seam_slope_steps"] = "15"
   config["seam_gap"] = "10%"
