@@ -941,7 +941,9 @@ end
 
     // 2. Check all filament spools for hardware compatibility, raw JSON anomalies, and polymer bounds
     let (_, rig_hrc) = rig.orca_machine_nozzle_type_and_hrc();
-    for spool in filaments {
+    let ams_capacity = rig.ace_pro_units * 4;
+    for (slot_idx, spool) in filaments.iter().enumerate() {
+      let in_active_ams_slot = rig.ace_pro_units > 0 && slot_idx < ams_capacity && spool.is_loaded;
       if let Some(compat_msg) = spool.compatibility_warning(&rig.nozzle_type, rig_hrc) {
         let is_hrc_danger = spool.required_nozzle_hrc > rig_hrc;
         push_warn(SafetyWarning {
@@ -962,19 +964,30 @@ end
         });
       }
 
-      // Check TPU loaded in ACE Pro multi-material hub
-      if spool.is_loaded
-        && rig.ace_pro_units > 0
-        && spool.material_type.to_uppercase().contains("TPU")
-      {
+      // Check TPU loaded in an active ACE Pro multi-material slot (slots #1..#ams_capacity; Reserve spools outside AMS are exempt, as are high-durometer 64D/68D TPUs like "TPU for ACE" / "TPU for AMS" / "TPU-CF" / "TPU-GF")
+      let mat_up = spool.material_type.to_uppercase();
+      let name_up = spool.name.to_uppercase();
+      let is_ams_safe_tpu = mat_up.contains("FOR ACE")
+        || mat_up.contains("FOR AMS")
+        || mat_up.contains("64D")
+        || mat_up.contains("68D")
+        || mat_up.contains("72D")
+        || mat_up.contains("-CF")
+        || mat_up.contains("-GF")
+        || name_up.contains("FOR ACE")
+        || name_up.contains("FOR AMS")
+        || name_up.contains("64D")
+        || name_up.contains("68D")
+        || name_up.contains("72D");
+      if in_active_ams_slot && mat_up.contains("TPU") && !is_ams_safe_tpu {
         push_warn(SafetyWarning {
           id: format!("spool_tpu_ace:{}", spool.id),
           severity: SafetySeverity::Warning,
-          scope_label: format!("ACE Pro Slot ({})", spool.color_name),
+          scope_label: format!("ACE Pro Slot #{} ({})", slot_idx + 1, spool.color_name),
           param_key: "Flexible TPU in Motorized AMS/ACE Hub".to_string(),
           current_value: format!("{} ({})", spool.name, spool.material_type),
-          safe_range: "Direct Spool Holder Bypass Recommended".to_string(),
-          explanation: "Flexible 95A TPU loaded in an active ACE Pro Bowden slot frequently buckles inside the motorized filament buffer and long PTFE path. Feed TPU via direct bypass unless using rigid high-Shore TPU.".to_string(),
+          safe_range: "Reserve / Direct Spool Holder Bypass or High-Shore TPU (TPU for ACE / 68D)".to_string(),
+          explanation: "Standard soft (85A–95A) TPU loaded in an active ACE Pro Bowden slot frequently buckles inside the motorized filament buffer and long PTFE path. Move soft TPU to a Reserve slot (direct bypass), or use rigid Shore 64D–68D 'TPU for ACE' / 'TPU for AMS'.".to_string(),
         });
       }
 
@@ -1121,14 +1134,38 @@ end
 
       // Check polymer temperature bounds on the spool
       let mat = spool.material_type.as_str();
-      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = match mat {
-        "PLA" | "PLA+" | "PLA-CF" => (190, 240, 228, 70),
-        "PETG" | "PETG-CF" => (220, 265, 255, 90),
-        "PCTG" => (240, 280, 272, 95),
-        "TPU" => (200, 245, 235, 65),
-        "ABS" | "ASA" => (235, 285, 275, 115),
-        "PA" | "PA12" | "PA6-CF" | "PC" => (255, 310, 295, 120),
-        _ => (185, 300, 285, 115),
+      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = if mat.contains("PEEK") {
+        (320, 360, 355, 135)
+      } else if mat.starts_with("PPS") {
+        (295, 345, 335, 125)
+      } else if mat.starts_with("PA")
+        || mat.starts_with("PPA")
+        || mat.starts_with("UltraPA")
+        || mat.starts_with("PC")
+        || mat.starts_with("PET-")
+        || mat.starts_with("Support for PA")
+        || mat == "PETG-ESD"
+      {
+        (255, 315, 308, 120)
+      } else if mat.starts_with("PCTG") {
+        (240, 280, 272, 95)
+      } else if mat.starts_with("PETG") || mat == "PET" {
+        (220, 265, 255, 90)
+      } else if mat.starts_with("ABS") || mat.starts_with("ASA") || mat == "SBS" || mat == "HIPS" {
+        (230, 290, 282, 115)
+      } else if mat.starts_with("PEBA")
+        || mat.contains("Foaming")
+        || mat == "TPU-CF"
+        || mat == "TPU-GF"
+        || mat == "TPU-AERO"
+      {
+        (210, 260, 255, 75)
+      } else if mat.contains("TPU") || mat == "FLEX" || mat == "EVA" {
+        (195, 245, 238, 65)
+      } else if mat.starts_with("PLA") || mat == "PHA" {
+        (190, 240, 228, 70)
+      } else {
+        (185, 300, 285, 115)
       };
 
       if spool.print_temp < min_nozzle || spool.print_temp > max_nozzle {
@@ -1482,11 +1519,11 @@ end
             id: "z_hop_style".to_string(),
             question: "3. Which Z-Hop Lift Style should be used during travel moves?".to_string(),
             hint: "Spiral lift corkscrews sideways as it rises, shearing sticky PCTG/PETG hairs instead of pulling them straight up.".to_string(),
-            default_value: "Spiral".to_string(),
+            default_value: "Spiral Lift".to_string(),
             unit: String::new(),
             quick_options: vec![
-              ("Spiral".to_string(), "Spiral Lift (0.15mm — Best for PCTG/PETG)".to_string()),
-              ("Slope".to_string(), "Slope Lift (0.15mm)".to_string()),
+              ("Spiral Lift".to_string(), "Spiral Lift (0.15mm — Best for PCTG/PETG)".to_string()),
+              ("Slope Lift".to_string(), "Slope Lift (0.15mm)".to_string()),
               ("Normal Lift".to_string(), "Normal Vertical Lift (0.20mm)".to_string()),
             ],
           },
@@ -1727,12 +1764,12 @@ end
             id: "z_hop_style".to_string(),
             question: "3. Which Z-Hop trajectory should be used on travel moves?".to_string(),
             hint: "Spiral (Corkscrew) and Slope wipe sideways as the nozzle lifts (0.75× layer height) so sticky PETG/PCTG strands snap off cleanly.".to_string(),
-            default_value: "Spiral".to_string(),
+            default_value: "Spiral Lift".to_string(),
             unit: String::new(),
             quick_options: vec![
-              ("Spiral".to_string(), "Spiral / Corkscrew (0.75× Layer Height — Recommended)".to_string()),
-              ("Slope".to_string(), "Slope / Diagonal Ramp (0.90× Layer Height)".to_string()),
-              ("Normal".to_string(), "Normal Vertical Lift (1.00× Layer Height)".to_string()),
+              ("Spiral Lift".to_string(), "Spiral / Corkscrew (0.75× Layer Height — Recommended)".to_string()),
+              ("Slope Lift".to_string(), "Slope / Diagonal Ramp (0.90× Layer Height)".to_string()),
+              ("Normal Lift".to_string(), "Normal Vertical Lift (1.00× Layer Height)".to_string()),
             ],
           },
           CalibrationQuestion {
@@ -3234,7 +3271,12 @@ impl ParameterizedCalibrationTemplate {
         let len_num: f64 = get_ans("retract_len", "0.95").parse().unwrap_or(0.95);
         let spd_num: i32 = get_ans("retract_speed", "45").parse().unwrap_or(45);
         let deretract_spd = (spd_num - 15).max(25);
-        let z_hop = get_ans("z_hop_style", "Spiral");
+        let z_hop = match get_ans("z_hop_style", "Spiral Lift").as_str() {
+          "Spiral" => "Spiral Lift".to_string(),
+          "Slope" => "Slope Lift".to_string(),
+          "Normal" => "Normal Lift".to_string(),
+          other => other.to_string(),
+        };
         let rbw = get_ans("retract_before_wipe", "70%");
         let badge = format!(
           "{:.2}mm @ {}mm/s (Deretract {}mm/s) • {} Z-Hop • {} Pre-Wipe",
@@ -3305,11 +3347,16 @@ impl ParameterizedCalibrationTemplate {
           .trim_start_matches('+')
           .parse()
           .unwrap_or(0.15);
-        let z_hop = get_ans("z_hop_style", "Spiral");
+        let z_hop = match get_ans("z_hop_style", "Spiral Lift").as_str() {
+          "Spiral" => "Spiral Lift".to_string(),
+          "Slope" => "Slope Lift".to_string(),
+          "Normal" => "Normal Lift".to_string(),
+          other => other.to_string(),
+        };
         let pre_wipe = get_ans("pre_wipe", "70%");
         let zh_mult = match z_hop.as_str() {
-          "Slope" => 0.90,
-          "Normal" => 1.00,
+          "Slope Lift" | "Slope" => 0.90,
+          "Normal Lift" | "Normal" => 1.00,
           _ => 0.75,
         };
         let badge = format!(
@@ -3627,7 +3674,7 @@ impl ParameterizedCalibrationTemplate {
           scope, t_drop, f_trim
         );
         let lua = format!(
-          "-- {title}\n-- {badge}\nfunction apply(config, ctx)\n  local cur_t = tonumber(config[\"nozzle_temperature\"]) or 240\n  config[\"nozzle_temperature\"] = tostring(cur_t + ({t_drop}))\n  local cur_f = tonumber(config[\"filament_flow_ratio\"]) or 0.96\n  config[\"filament_flow_ratio\"] = string.format(\"%.3f\", cur_f + ({f_trim:.3}))\n  config[\"filament_z_hop_types\"] = \"Spiral\"\n  print(\"[Symptom:WetFilament] {badge}\")\nend\n"
+          "-- {title}\n-- {badge}\nfunction apply(config, ctx)\n  local cur_t = tonumber(config[\"nozzle_temperature\"]) or 240\n  config[\"nozzle_temperature\"] = tostring(cur_t + ({t_drop}))\n  local cur_f = tonumber(config[\"filament_flow_ratio\"]) or 0.96\n  config[\"filament_flow_ratio\"] = string.format(\"%.3f\", cur_f + ({f_trim:.3}))\n  config[\"filament_z_hop_types\"] = \"Spiral Lift\"\n  print(\"[Symptom:WetFilament] {badge}\")\nend\n"
         );
         (title, desc, badge, lua)
       }
@@ -4359,5 +4406,109 @@ mod tests {
     // 360 * 0.75 = 270 mm/s; 0.60 * 1.12 = 0.67 mm
     assert_eq!(infill_out["sparse_infill_speed"], "270");
     assert_eq!(infill_out["sparse_infill_line_width"], "0.67");
+  }
+
+  #[test]
+  fn test_catalog_filaments_and_petg_translucent_equivalence_have_zero_warnings() {
+    let catalog = crate::catalog::load_merged_catalog();
+    let petg_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PETG")
+      .expect("PETG in catalog");
+    let petg_trans_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PETG Translucent")
+      .expect("PETG Translucent in catalog");
+
+    // 1. Adding PETG and flipping Finish to Translucent must produce the exact same spool
+    // as clicking PETG Translucent directly in the catalog (and via apply_material_change)
+    let mut petg_flipped = FilamentSpool::from_catalog_entry(1, petg_entry, "orca_hardened_steel");
+    petg_flipped.apply_finish_change("Translucent", "orca_hardened_steel");
+
+    let petg_direct = FilamentSpool::from_catalog_entry(1, petg_trans_entry, "orca_hardened_steel");
+
+    assert_eq!(petg_flipped.name, petg_direct.name);
+    assert_eq!(petg_flipped.material_type, "PETG");
+    assert_eq!(petg_direct.material_type, "PETG");
+    assert_eq!(petg_flipped.finish_type, "Translucent");
+    assert_eq!(petg_direct.finish_type, "Translucent");
+    assert_eq!(petg_flipped.opacity, petg_direct.opacity);
+    assert_eq!(petg_flipped.brass_base_temp, petg_direct.brass_base_temp);
+    assert_eq!(petg_flipped.hs_base_temp, petg_direct.hs_base_temp);
+    assert_eq!(petg_flipped.print_temp, petg_direct.print_temp);
+    assert_eq!(petg_flipped.bed_temp, petg_direct.bed_temp);
+    assert_eq!(
+      petg_flipped.max_volumetric_speed,
+      petg_direct.max_volumetric_speed
+    );
+    assert_eq!(
+      petg_flipped.fan_speed_percent,
+      petg_direct.fan_speed_percent
+    );
+    assert_eq!(petg_flipped.raw_disk_json, petg_direct.raw_disk_json);
+
+    // Also verify apply_material_change("PETG") + apply_finish_change("Translucent") matches
+    let mut petg_from_dropdown = petg_flipped.clone();
+    petg_from_dropdown.apply_material_change("PETG", "orca_hardened_steel");
+    petg_from_dropdown.apply_finish_change("Translucent", "orca_hardened_steel");
+    assert_eq!(petg_from_dropdown.print_temp, petg_direct.print_temp);
+    assert_eq!(petg_from_dropdown.bed_temp, petg_direct.bed_temp);
+    assert_eq!(petg_from_dropdown.finish_type, "Translucent");
+
+    // 2. Verify NO catalog filament triggers a print_temp or bed_temp warning on a Hardened Steel rig
+    let mut rig = MachineRig::kobra_s1_hardened_steel_png();
+    rig.nozzle_type = "orca_hardened_steel".to_string();
+    rig.nozzle_material = "Hardened Steel (55 HRC)".to_string();
+    rig.ace_pro_units = 1; // 4 active AMS slots (#1..#4), #5+ are Reserve
+    let profile = OrcaProfile::get_stock_kobra_s1();
+
+    for (idx, fil_entry) in catalog.filaments.iter().enumerate() {
+      let mut sp = FilamentSpool::from_catalog_entry(idx + 1, fil_entry, &rig.nozzle_type);
+      // Avoid soft-TPU-in-ACE warning when testing thermal bounds of catalog entries
+      sp.is_loaded = false;
+      let warnings =
+        TransformationEngine::evaluate_safety_warnings(&rig, &[sp.clone()], &profile, &[], &[]);
+      assert!(
+        warnings.is_empty(),
+        "Catalog filament '{}' (material '{}', print_temp {}°C, bed {}°C) triggered unexpected safety warnings: {:?}",
+        fil_entry.code,
+        sp.material_type,
+        sp.print_temp,
+        sp.bed_temp,
+        warnings
+      );
+    }
+
+    // 3. Verify soft TPU (TPU 95A) in Reserve slot (#5, index 4 on a 4-slot ACE Pro) does NOT trigger AMS warning,
+    // whereas TPU for ACE does not trigger AMS warning even in Slot #1 (index 0)
+    let tpu_95a_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "TPU 95A")
+      .expect("TPU 95A in catalog");
+    let tpu_ace_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "TPU for ACE")
+      .expect("TPU for ACE in catalog");
+    let s1 = FilamentSpool::from_catalog_entry(1, tpu_ace_entry, &rig.nozzle_type);
+    let s2 = FilamentSpool::from_catalog_entry(2, petg_entry, &rig.nozzle_type);
+    let s3 = FilamentSpool::from_catalog_entry(3, petg_entry, &rig.nozzle_type);
+    let s4 = FilamentSpool::from_catalog_entry(4, petg_entry, &rig.nozzle_type);
+    let s5_reserve_tpu = FilamentSpool::from_catalog_entry(5, tpu_95a_entry, &rig.nozzle_type);
+    let reserve_warnings = TransformationEngine::evaluate_safety_warnings(
+      &rig,
+      &[s1, s2, s3, s4, s5_reserve_tpu],
+      &profile,
+      &[],
+      &[],
+    );
+    assert!(
+      reserve_warnings.is_empty(),
+      "Soft TPU in Reserve slot #5 (outside 4-slot AMS) must not trigger AMS buckling warning, got: {:?}",
+      reserve_warnings
+    );
   }
 }

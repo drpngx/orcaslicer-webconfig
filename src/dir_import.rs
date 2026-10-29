@@ -497,7 +497,7 @@ pub fn import_scanned_directory(
 
     // Determine actual material type from profile name or `filament_type` field
     let upper_name = name.to_uppercase();
-    let mat_type = if upper_name.contains("PCTG") {
+    let raw_mat_type = if upper_name.contains("PCTG") {
       "PCTG".to_string()
     } else if upper_name.contains("PLA CARBON") || upper_name.contains("PLA-CF") {
       "PLA-CF".to_string()
@@ -532,6 +532,11 @@ pub fn import_scanned_directory(
             .and_then(|b| extract_str(b, "filament_type"))
         })
         .unwrap_or_else(|| "PLA".to_string())
+    };
+    let mat_type = match raw_mat_type.as_str() {
+      "PETG Translucent" => "PETG".to_string(),
+      "PLA Matte" | "PLA Silk" => "PLA".to_string(),
+      other => other.to_string(),
     };
 
     // Resolve true system base matching the actual `mat_type`
@@ -887,16 +892,33 @@ pub fn import_scanned_directory(
       .cloned()
       .unwrap_or_else(|| "#06B6D4".to_string());
 
-    let finish_type =
-      if name.to_lowercase().contains("clear") || name.to_lowercase().contains("transparent") {
-        "Translucent".to_string()
-      } else if name.to_lowercase().contains("matt") {
-        "Matte".to_string()
-      } else if name.to_lowercase().contains("carbon") || mat_type.contains("-CF") {
-        "Carbon Fiber".to_string()
-      } else {
-        "Basic".to_string()
-      };
+    let lower_name = name.to_lowercase();
+    let lower_inherits = raw_inherits.to_lowercase();
+    let lower_raw_mat = raw_mat_type.to_lowercase();
+    let finish_type = if lower_name.contains("translucent")
+      || lower_name.contains("clear")
+      || lower_name.contains("transparent")
+      || lower_inherits.contains("translucent")
+      || lower_raw_mat.contains("translucent")
+    {
+      "Translucent".to_string()
+    } else if lower_name.contains("matt")
+      || lower_inherits.contains("matt")
+      || lower_raw_mat.contains("matt")
+    {
+      "Matte".to_string()
+    } else if lower_name.contains("silk")
+      || lower_inherits.contains("silk")
+      || lower_raw_mat.contains("silk")
+    {
+      "Silk".to_string()
+    } else if lower_name.contains("carbon") || mat_type.contains("-CF") {
+      "Carbon Fiber".to_string()
+    } else if lower_name.contains("glass") || mat_type.contains("-GF") {
+      "Glass Fiber".to_string()
+    } else {
+      "Basic".to_string()
+    };
 
     let is_abrasive = finish_type.contains("Carbon")
       || finish_type.contains("Glass")
@@ -1216,10 +1238,9 @@ pub fn import_scanned_directory(
     processes.push(proc_prof);
   }
 
-  // Ensure all 3 Quality/Speed Toggle presets ("high_quality", "standard", "high_speed") exist
+  // Ensure all 5 default OC process presets (0.20mm Standard, 0.20mm Quality, 0.20mm Speed, 0.12mm Quality, 0.28mm Speed) exist
   for def_proc in ProcessProfile::get_default_processes() {
-    let tier = def_proc.quality_tier();
-    if !processes.iter().any(|p| p.quality_tier() == tier) {
+    if !processes.iter().any(|p| p.name == def_proc.name) {
       processes.push(def_proc);
     }
   }
@@ -1356,12 +1377,10 @@ pub fn apply_pending_updates_to_entries(
     if upd.source_relative_path.is_empty() {
       continue;
     }
-    if !entries
-      .iter()
-      .any(|e| e.relative_path == upd.source_relative_path)
-    {
-      let fname = upd
-        .source_relative_path
+    let target_rel_path = crate::models::sanitize_user_relative_path(&upd.source_relative_path);
+
+    if !entries.iter().any(|e| e.relative_path == target_rel_path) {
+      let fname = target_rel_path
         .rsplit('/')
         .next()
         .unwrap_or("profile.json")
@@ -1373,7 +1392,7 @@ pub fn apply_pending_updates_to_entries(
       }))
       .unwrap_or_else(|_| "{}".to_string());
       entries.push(ScannedFileEntry {
-        relative_path: upd.source_relative_path.clone(),
+        relative_path: target_rel_path.clone(),
         filename: fname,
         bytes: initial_json.as_bytes().to_vec(),
       });
@@ -1381,7 +1400,7 @@ pub fn apply_pending_updates_to_entries(
 
     if let Some(entry) = entries
       .iter_mut()
-      .find(|e| e.relative_path == upd.source_relative_path)
+      .find(|e| e.relative_path == target_rel_path)
     {
       let Ok(raw_text) = std::str::from_utf8(&entry.bytes) else {
         continue;
@@ -1463,6 +1482,321 @@ pub fn apply_pending_updates_to_entries(
   }
 
   let mut out: Vec<LocalFsSaveFileEntry> = modified_paths
+    .into_iter()
+    .map(|(relative_path, content)| LocalFsSaveFileEntry {
+      relative_path,
+      content,
+    })
+    .collect();
+  out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+  out
+}
+
+/// Synchronizes all live `filaments` (including newly added `OC:` spools), `machines`, `processes`,
+/// `AnycubicSlicerNext.conf` active slot bindings, and staged `PendingDiskUpdate`s into `entries`,
+/// returning all new or modified `LocalFsSaveFileEntry` items for direct disk save or `.zip` export.
+pub fn sync_live_state_to_entries(
+  entries: &mut Vec<ScannedFileEntry>,
+  machines: &[MachineRig],
+  active_machine_id: &str,
+  filaments: &[FilamentSpool],
+  processes: &[ProcessProfile],
+  active_process_id: &str,
+  flush_matrix: &[String],
+  flush_multiplier: f64,
+  conf_relative_path: &str,
+  pending_updates: &[PendingDiskUpdate],
+) -> Vec<LocalFsSaveFileEntry> {
+  let mut modified_map: HashMap<String, String> = HashMap::new();
+
+  // 1. Detect user_folder_id from existing `user/<id>/...` entries, defaulting to "default"
+  let mut user_folder_id = "default".to_string();
+  for entry in entries.iter() {
+    let rel = entry.relative_path.replace('\\', "/");
+    if let Some(after_user) = rel.strip_prefix("user/") {
+      if let Some(seg) = after_user.split('/').next() {
+        if !seg.is_empty() {
+          user_folder_id = seg.to_string();
+          break;
+        }
+      }
+    }
+  }
+
+  let active_rig = machines
+    .iter()
+    .find(|m| m.id == active_machine_id)
+    .or_else(|| machines.first())
+    .cloned()
+    .unwrap_or_else(MachineRig::kobra_s1_hardened_steel_png);
+
+  // Heal any existing `user/` `.json` entry paths that contain `:` or extra `/` inside the profile name
+  for entry in entries.iter_mut() {
+    if entry.relative_path.starts_with("user/") && entry.relative_path.ends_with(".json") {
+      let healed_rel = crate::models::sanitize_user_relative_path(&entry.relative_path);
+      if healed_rel != entry.relative_path {
+        if let Some((_, clean_fname)) = healed_rel.rsplit_once('/') {
+          entry.filename = clean_fname.to_string();
+        }
+        entry.relative_path = healed_rel;
+      }
+    }
+  }
+
+  // 2. Ensure every MachineRig in `machines` has an up-to-date file in `user/<user_folder_id>/machine/`
+  for rig in machines {
+    let fname = crate::models::sanitize_profile_filename(&rig.name);
+    let rel_path = format!("user/{}/machine/{}", user_folder_id, fname);
+    let (orca_noz, orca_hrc) = rig.orca_machine_nozzle_type_and_hrc();
+    let noz_diam_str = rig.formatted_nozzle_diameter();
+    let machine_json = serde_json::to_string_pretty(&serde_json::json!({
+      "type": "machine",
+      "from": "User",
+      "is_custom_defined": "0",
+      "inherits": format!("{} {} nozzle", rig.printer_model, noz_diam_str),
+      "name": rig.name,
+      "printer_settings_id": rig.name,
+      "printer_model": rig.printer_model,
+      "printer_variant": noz_diam_str,
+      "nozzle_type": orca_noz,
+      "nozzle_hrc": orca_hrc.to_string(),
+      "nozzle_diameter": [noz_diam_str],
+      "retraction_length": [format!("{:.2}", rig.base_retraction_length)],
+      "retraction_speed": ["40"],
+      "printer_notes": rig.notes,
+      "version": "2.0.0.0"
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+
+    if let Some(existing) = entries.iter_mut().find(|e| {
+      e.relative_path == rel_path
+        || e.filename == fname
+        || rig
+          .source_disk_profile
+          .as_deref()
+          .map(|sp| sp == e.relative_path)
+          .unwrap_or(false)
+    }) {
+      if !rig.id.starts_with("disk_")
+        || rig.name.starts_with("OC -")
+        || existing.bytes != machine_json.as_bytes()
+      {
+        if rig.source_disk_profile.is_none() || rig.name.starts_with("OC -") {
+          existing.bytes = machine_json.as_bytes().to_vec();
+          modified_map.insert(existing.relative_path.clone(), machine_json);
+        }
+      }
+    } else {
+      entries.push(ScannedFileEntry {
+        relative_path: rel_path.clone(),
+        filename: fname,
+        bytes: machine_json.as_bytes().to_vec(),
+      });
+      modified_map.insert(rel_path, machine_json);
+    }
+  }
+
+  // 3. Ensure every ProcessProfile in `processes` has a file in `user/<user_folder_id>/process/`
+  // and prune any stale `OC` process files from earlier naming conventions
+  let valid_proc_fnames: std::collections::HashSet<String> = processes
+    .iter()
+    .map(|p| crate::models::sanitize_profile_filename(&p.name))
+    .collect();
+  entries.retain(|e| {
+    if e.relative_path.contains("/process/") && e.filename.starts_with("OC") {
+      return valid_proc_fnames.contains(&e.filename);
+    }
+    true
+  });
+
+  let compat_printer = format!(
+    "{} {} nozzle",
+    active_rig.printer_model,
+    active_rig.formatted_nozzle_diameter()
+  );
+  for proc in processes {
+    let fname = crate::models::sanitize_profile_filename(&proc.name);
+    let rel_path = format!("user/{}/process/{}", user_folder_id, fname);
+    let proc_json = serde_json::to_string_pretty(&serde_json::json!({
+      "type": "process",
+      "from": "User",
+      "is_custom_defined": "0",
+      "inherits": proc.inherits,
+      "compatible_printers": [compat_printer],
+      "name": proc.name,
+      "print_settings_id": proc.name,
+      "layer_height": format!("{:.2}", proc.layer_height),
+      "line_width": format!("{:.2}", proc.line_width),
+      "outer_wall_line_width": format!("{:.2}", proc.line_width),
+      "outer_wall_speed": format!("{:.0}", proc.outer_wall_speed),
+      "inner_wall_speed": format!("{:.0}", proc.inner_wall_speed),
+      "sparse_infill_speed": format!("{:.0}", proc.sparse_infill_speed),
+      "initial_layer_speed": format!("{:.0}", proc.initial_layer_speed),
+      "default_acceleration": format!("{:.0}", proc.default_acceleration),
+      "wall_generator": proc.wall_generator,
+      "print_sequence": proc.print_sequence,
+      "notes": proc.notes,
+      "version": "2.0.0.0"
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+
+    if let Some(existing) = entries
+      .iter_mut()
+      .find(|e| e.relative_path == rel_path || e.filename == fname)
+    {
+      if !proc.id.starts_with("disk_") || existing.bytes != proc_json.as_bytes() {
+        existing.bytes = proc_json.as_bytes().to_vec();
+        modified_map.insert(existing.relative_path.clone(), proc_json);
+      }
+    } else {
+      entries.push(ScannedFileEntry {
+        relative_path: rel_path.clone(),
+        filename: fname,
+        bytes: proc_json.as_bytes().to_vec(),
+      });
+      modified_map.insert(rel_path, proc_json);
+    }
+  }
+
+  // 4. Synchronize all `filaments` (including newly added `OC:` spools and edited spools)
+  // into `user/<user_folder_id>/filament/<sanitized_name>.json`
+  for spool in filaments {
+    let fname = crate::models::sanitize_profile_filename(&spool.name);
+    let raw_fname = format!("{}.json", spool.name);
+    let default_rel_path = format!("user/{}/filament/{}", user_folder_id, fname);
+    let fil_json = crate::threemf::export_standalone_filament_json(spool, &active_rig);
+
+    if let Some(existing) = entries.iter_mut().find(|e| {
+      e.relative_path == default_rel_path
+        || (e.relative_path.contains("/filament/")
+          && (e.filename == fname || e.filename == raw_fname))
+    }) {
+      // If this is a newly added/custom OC: spool or its bytes differ, update it
+      if !spool.id.starts_with("disk_") || existing.bytes != fil_json.as_bytes() {
+        existing.bytes = fil_json.as_bytes().to_vec();
+        modified_map.insert(existing.relative_path.clone(), fil_json);
+      }
+    } else {
+      entries.push(ScannedFileEntry {
+        relative_path: default_rel_path.clone(),
+        filename: fname,
+        bytes: fil_json.as_bytes().to_vec(),
+      });
+      modified_map.insert(default_rel_path, fil_json);
+    }
+  }
+
+  // 5. Ensure `AnycubicSlicerNext.conf` exists and reflects active machine, process, AMS slots, colors, and flush matrix
+  let conf_path = if conf_relative_path.trim().is_empty() {
+    "AnycubicSlicerNext.conf".to_string()
+  } else {
+    conf_relative_path.to_string()
+  };
+  let ams_slots = (active_rig.ace_pro_units * 4).max(1).min(filaments.len());
+  let active_slots: Vec<&FilamentSpool> = filaments.iter().take(ams_slots).collect();
+  let active_proc_name = processes
+    .iter()
+    .find(|p| p.id == active_process_id)
+    .or_else(|| processes.first())
+    .map(|p| p.name.clone())
+    .unwrap_or_else(|| "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string());
+  let matrix_pipe = flush_matrix
+    .iter()
+    .map(|v| {
+      v.parse::<f64>()
+        .map(|f| format!("{:.6}", f))
+        .unwrap_or_else(|_| format!("{}.000000", v))
+    })
+    .collect::<Vec<_>>()
+    .join("|");
+  let colors_csv = active_slots
+    .iter()
+    .map(|s| s.color_hex.clone())
+    .collect::<Vec<_>>()
+    .join(",");
+
+  if !entries.iter().any(|e| e.relative_path == conf_path) {
+    let mut preset_obj = serde_json::Map::new();
+    preset_obj.insert(
+      "machine".to_string(),
+      serde_json::Value::String(active_rig.name.clone()),
+    );
+    preset_obj.insert(
+      "process".to_string(),
+      serde_json::Value::String(active_proc_name),
+    );
+    for (idx, sp) in active_slots.iter().enumerate() {
+      let key = if idx == 0 {
+        "filament".to_string()
+      } else {
+        format!("filament_{:02}", idx)
+      };
+      preset_obj.insert(key, serde_json::Value::String(sp.name.clone()));
+    }
+    preset_obj.insert(
+      "filament_colors".to_string(),
+      serde_json::Value::String(colors_csv),
+    );
+    if !matrix_pipe.is_empty() {
+      preset_obj.insert(
+        "flush_volumes_matrix".to_string(),
+        serde_json::Value::String(matrix_pipe),
+      );
+    }
+
+    let conf_json = serde_json::to_string_pretty(&serde_json::json!({
+      "app": {
+        "preset_folder": user_folder_id,
+        "version": "2.0.0.3",
+        "flush_multiplier": format!("{:.6}", flush_multiplier)
+      },
+      "models": [{
+        "model": active_rig.printer_model,
+        "nozzle_diameter": active_rig.formatted_nozzle_diameter(),
+        "vendor": "Anycubic"
+      }],
+      "presets": {
+        "machine": active_rig.name
+      },
+      "anycubic_presets": [serde_json::Value::Object(preset_obj)]
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+
+    let fname = conf_path
+      .rsplit('/')
+      .next()
+      .unwrap_or("AnycubicSlicerNext.conf")
+      .to_string();
+    entries.push(ScannedFileEntry {
+      relative_path: conf_path.clone(),
+      filename: fname,
+      bytes: conf_json.as_bytes().to_vec(),
+    });
+    modified_map.insert(conf_path, conf_json);
+  }
+
+  // 6. Apply any staged `PendingDiskUpdate` items on top (ignoring stale OC process filenames
+  // and skipping `notes` / `printer_notes` since Steps 2-4 already write the exact scalar string `notes` / `printer_notes`!)
+  let filtered_updates: Vec<PendingDiskUpdate> = pending_updates
+    .iter()
+    .filter(|upd| {
+      if upd.json_field_key == "notes" || upd.json_field_key == "printer_notes" {
+        return false;
+      }
+      let clean_rel = crate::models::sanitize_user_relative_path(&upd.source_relative_path);
+      if clean_rel.contains("/process/OC") {
+        let fname = clean_rel.rsplit('/').next().unwrap_or_default();
+        return valid_proc_fnames.contains(fname);
+      }
+      true
+    })
+    .cloned()
+    .collect();
+  for upd_file in apply_pending_updates_to_entries(entries, &filtered_updates) {
+    modified_map.insert(upd_file.relative_path, upd_file.content);
+  }
+
+  let mut out: Vec<LocalFsSaveFileEntry> = modified_map
     .into_iter()
     .map(|(relative_path, content)| LocalFsSaveFileEntry {
       relative_path,
@@ -1792,10 +2126,10 @@ mod tests {
       .iter()
       .any(|p| p.quality_tier() == "high_speed"));
 
-    // Verify descriptive notes and concise titles for Machine and Process profiles (prefixed with OC: and without ACE8)
+    // Verify descriptive notes and concise titles for Machine and Process profiles (prefixed with OC - and without ACE8 or Windows-forbidden ':')
     assert_eq!(
       active_rig.format_concise_title(),
-      "OC: Kobra S1 • 0.4 Hardened"
+      "OC - Kobra S1 • 0.4 Hardened"
     );
     assert_eq!(
       active_rig.orca_machine_nozzle_type_and_hrc(),
@@ -1908,5 +2242,129 @@ mod tests {
     assert_eq!(extracted.len(), entries.len());
     let reimported = import_scanned_directory(&extracted).unwrap();
     assert_eq!(reimported.user_folder_id, "434139");
+  }
+
+  #[test]
+  fn test_zip_export_sanitizes_filenames_and_sets_utf8_flag() {
+    let catalog = crate::catalog::load_merged_catalog();
+    let petg_cf = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PETG-CF")
+      .expect("PETG-CF should exist in catalog");
+    let spool = FilamentSpool::from_catalog_entry(1, petg_cf, "hardened_steel");
+    assert_eq!(spool.name, "OC - PETG-CF • 0.4 Hardened");
+    assert_eq!(
+      crate::models::sanitize_profile_filename("OC: PETG-CF • 0.4 Hardened"),
+      "OC - PETG-CF • 0.4 Hardened.json"
+    );
+    assert_eq!(
+      crate::models::sanitize_user_relative_path(
+        "user/default/process/OC: 0.20mm Std • 200/300 • Arachne • By-Obj @Kobra S1.json"
+      ),
+      "user/default/process/OC - 0.20mm Std • 200-300 • Arachne • By-Obj @Kobra S1.json"
+    );
+
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let procs = ProcessProfile::get_default_processes();
+    let mut entries = Vec::new();
+    let legacy_upd = PendingDiskUpdate {
+      param_key: "process.notes".to_string(),
+      param_label: "Process Profile Notes".to_string(),
+      source_relative_path:
+        "user/default/process/OC: 0.20mm Std • 200/300 • Arachne • By-Obj @KS1.json".to_string(),
+      json_field_key: "notes".to_string(),
+      old_disk_value: "(none)".to_string(),
+      new_clean_value: procs[2].notes.clone(),
+    };
+    let _ = sync_live_state_to_entries(
+      &mut entries,
+      std::slice::from_ref(&rig),
+      &rig.id,
+      std::slice::from_ref(&spool),
+      &procs,
+      &procs[0].id,
+      &["0".to_string()],
+      1.0,
+      "AnycubicSlicerNext.conf",
+      &[legacy_upd],
+    );
+
+    assert!(entries
+      .iter()
+      .any(|e| e.relative_path == "user/default/filament/OC - PETG-CF • 0.4 Hardened.json"));
+    // Verify all 5 process profiles exist right under `user/default/process/` with concise names
+    // (0.20mm Standard, 0.20mm Quality, 0.20mm Speed, 0.12mm Quality, 0.28mm Speed) and no clutter
+    let proc_entries: Vec<&ScannedFileEntry> = entries
+      .iter()
+      .filter(|e| e.relative_path.starts_with("user/default/process/"))
+      .collect();
+    assert_eq!(proc_entries.len(), 5);
+    assert!(proc_entries
+      .iter()
+      .any(|e| e.filename == "OC - 0.20mm Standard @Kobra S1.json"));
+    assert!(proc_entries
+      .iter()
+      .any(|e| e.filename == "OC - 0.20mm Quality @Kobra S1.json"));
+    assert!(proc_entries
+      .iter()
+      .any(|e| e.filename == "OC - 0.20mm Speed @Kobra S1.json"));
+    assert!(proc_entries
+      .iter()
+      .any(|e| e.filename == "OC - 0.12mm Quality @Kobra S1.json"));
+    assert!(proc_entries
+      .iter()
+      .any(|e| e.filename == "OC - 0.28mm Speed @Kobra S1.json"));
+    for pe in &proc_entries {
+      assert_eq!(
+        pe.relative_path.matches('/').count(),
+        3,
+        "Process path must be directly inside user/default/process/ with no subfolder: {}",
+        pe.relative_path
+      );
+      assert!(
+        !pe.filename.contains("Arachne")
+          && !pe.filename.contains("By-Obj")
+          && !pe.filename.contains("HQ")
+          && !pe.filename.contains("Std")
+          && !pe.filename.contains("High"),
+        "Process filename should use Quality/Speed/Standard without High/Arachne/By-Obj/speed clutter: {}",
+        pe.filename
+      );
+    }
+    for entry in &entries {
+      assert!(
+        !entry.filename.contains(':'),
+        "ZIP filename must not contain ':': {}",
+        entry.filename
+      );
+      if entry.relative_path.starts_with("user/") && entry.relative_path.ends_with(".json") {
+        let val: serde_json::Value =
+          serde_json::from_slice(&entry.bytes).expect("Valid JSON preset in ZIP");
+        let name_str = val["name"].as_str().expect("name must be string");
+        assert!(
+          !name_str.contains(':'),
+          "Internal JSON 'name' in {} must NEVER contain ':' (Windows NTFS forbidden char): {}",
+          entry.relative_path,
+          name_str
+        );
+        if let Some(nd) = val.get("nozzle_diameter") {
+          assert_eq!(nd, &serde_json::json!(["0.4"]));
+        }
+        if let Some(notes) = val.get("notes") {
+          assert!(
+            notes.is_string(),
+            "Process/machine 'notes' in {} must be a scalar string, not an array: {:?}",
+            entry.relative_path,
+            notes
+          );
+        }
+      }
+    }
+
+    let zip_bytes = build_directory_backup_zip(&entries);
+    // Verify Bit 11 (0x0800 UTF-8 Language Encoding Flag) is set in the Local File Header
+    let local_flags = u16::from_le_bytes([zip_bytes[6], zip_bytes[7]]);
+    assert_eq!(local_flags & 0x0800, 0x0800);
   }
 }

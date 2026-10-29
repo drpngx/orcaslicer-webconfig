@@ -12,7 +12,7 @@ function apply(config, ctx)
   config["filament_retraction_length"] = { "0.95" }
   config["filament_retraction_speed"] = { "50" }
   config["z_hop"] = { "0.20" }
-  config["z_hop_types"] = { "Spiral" }
+  config["z_hop_types"] = { "Spiral Lift" }
   config["travel_acceleration"] = "7000"
   config["wipe_on_loops"] = "1"
 

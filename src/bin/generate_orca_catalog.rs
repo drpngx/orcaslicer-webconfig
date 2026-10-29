@@ -219,7 +219,12 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
     || u.contains("SUPPORT")
     || u.starts_with("S-")
   {
-    ("PVA / Support", "Translucent", "#8E9299")
+    let finish = if u.contains("PVA") || u.contains("BVOH") || u.contains("TRANSLUCENT") {
+      "Translucent"
+    } else {
+      "Basic"
+    };
+    ("PVA / Support", finish, "#8E9299")
   } else if u.contains("PEBA")
     || u.contains("TPU")
     || u.contains("TPE")
@@ -230,6 +235,8 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
       "Carbon Fiber"
     } else if u.contains("-GF") {
       "Glass Fiber"
+    } else if u.contains("TRANSLUCENT") {
+      "Translucent"
     } else {
       "Basic"
     };
@@ -239,10 +246,23 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
       "Carbon Fiber"
     } else if u.contains("-GF") || u.contains("GF") {
       "Glass Fiber"
+    } else if u.contains("TRANSLUCENT") {
+      "Translucent"
     } else {
       "Basic"
     };
     ("Nylon (PA / PAHT / PPA)", finish, "#8E9299")
+  } else if u.contains("PETG") || u.contains("PCTG") || u.starts_with("PET") || u.contains("COPE") {
+    let finish = if u.contains("-CF") || u.contains("CF") {
+      "Carbon Fiber"
+    } else if u.contains("-GF") || u.contains("GF") {
+      "Glass Fiber"
+    } else if u.contains("TRANSLUCENT") {
+      "Translucent"
+    } else {
+      "Basic"
+    };
+    ("PETG / PCTG / PET", finish, "#8E9299")
   } else if u.contains("PC")
     || u.contains("PPS")
     || u.contains("PEEK")
@@ -255,7 +275,7 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
       "Carbon Fiber"
     } else if u.contains("-GF") {
       "Glass Fiber"
-    } else if u == "PC" {
+    } else if u.contains("TRANSLUCENT") {
       "Translucent"
     } else {
       "Basic"
@@ -266,19 +286,12 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
       "Carbon Fiber"
     } else if u.contains("-GF") {
       "Glass Fiber"
+    } else if u.contains("TRANSLUCENT") {
+      "Translucent"
     } else {
       "Basic"
     };
     ("ABS / ASA", finish, "#8E9299")
-  } else if u.contains("PETG") || u.contains("PCTG") || u.starts_with("PET") || u.contains("COPE") {
-    let finish = if u.contains("-CF") || u.contains("CF") {
-      "Carbon Fiber"
-    } else if u.contains("-GF") || u.contains("GF") {
-      "Glass Fiber"
-    } else {
-      "Basic"
-    };
-    ("PETG / PCTG / PET", finish, "#8E9299")
   } else {
     // PLA Family (includes PLA, PLA+, PLA-CF, PLA-GF, PLA Matte, PLA Silk, PLA Glow, PLA-AERO, PHA)
     let finish = if u.contains("-CF") {
@@ -289,6 +302,8 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
       "Matte"
     } else if u.contains("SILK") {
       "Silk"
+    } else if u.contains("TRANSLUCENT") || u.contains("GLOW") {
+      "Translucent"
     } else {
       "Basic"
     };
@@ -686,164 +701,312 @@ fn main() {
     },
   ];
 
-  // 4. Scan filament profiles across OrcaFilamentLibrary, Anycubic, BBL, Qidi, etc.
-  let mut filament_files = Vec::new();
-  collect_json_files(&profiles_dir, &mut filament_files);
-  let mut fil_by_name: HashMap<String, Value> = HashMap::new();
-  for ff in &filament_files {
-    if !ff.to_string_lossy().contains("/filament/") {
-      continue;
-    }
-    if let Ok(txt) = fs::read_to_string(ff) {
-      if let Ok(val) = serde_json::from_str::<Value>(&txt) {
-        if val.get("type").and_then(|v| v.as_str()) == Some("filament") {
-          if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
-            fil_by_name.insert(name.to_string(), val);
+  // 4. Scan filament profiles per vendor directory (including OrcaFilamentLibrary) so `inherits` chains
+  // resolve within their own vendor tree without cross-vendor name collisions.
+  let mut best_by_code: BTreeMap<String, (usize, CatalogFilament)> = BTreeMap::new();
+
+  let mut lib_fil_by_name: HashMap<String, Value> = HashMap::new();
+  let lib_dir = profiles_dir.join("OrcaFilamentLibrary");
+  if lib_dir.is_dir() {
+    let mut lib_files = Vec::new();
+    collect_json_files(&lib_dir, &mut lib_files);
+    for lf in &lib_files {
+      if let Ok(txt) = fs::read_to_string(lf) {
+        if let Ok(val) = serde_json::from_str::<Value>(&txt) {
+          if val.get("type").and_then(|v| v.as_str()) == Some("filament") {
+            if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+              lib_fil_by_name.insert(name.to_string(), val);
+            }
           }
         }
       }
     }
   }
 
-  // Extract representative resolved filament profiles by material code
-  let mut best_by_code: BTreeMap<String, (usize, CatalogFilament)> = BTreeMap::new();
-
-  for (name, _) in &fil_by_name {
-    let resolved = resolve_profile(name, &fil_by_name, 0);
-    let Some(ft_raw) = first_str(resolved.get("filament_type")) else {
-      continue;
-    };
-    let ft = match ft_raw.trim() {
-      "TPU-95A" => "TPU 95A",
-      "TPU-90A" => "TPU 90A",
-      "TPU-64D" => "TPU 64D",
-      "TPU-AMS" => "TPU for AMS",
-      "SILK" => "PLA Silk",
-      "PLA Basic" => "PLA",
-      "PLA Basic+" => "PLA+",
-      "PETG Basic" | "PETG Polymax" => "PETG",
-      "PETG-CF10" => "PETG-CF",
-      "S-PAHT" | "PAHT-S" => "Support for PAHT",
-      "PA-S" => "Support for PA/PET",
-      "S-Multi" => "Breakaway Support",
-      other => other,
-    };
-    if ft.is_empty()
-      || ft == "UNIV"
-      || ft.contains("Material4Print")
-      || ft.contains("HPP4GF25")
-      || ft.contains("VXL90")
-      || ft.contains("PACF Pro")
-    {
-      continue;
+  let mut all_vendor_fil_maps: Vec<HashMap<String, Value>> = Vec::new();
+  if !lib_fil_by_name.is_empty() {
+    all_vendor_fil_maps.push(lib_fil_by_name.clone());
+  }
+  if let Ok(vendor_entries) = fs::read_dir(&profiles_dir) {
+    let mut vdirs: Vec<PathBuf> = vendor_entries
+      .filter_map(|e| e.ok().map(|e| e.path()))
+      .filter(|p| {
+        p.is_dir() && p.file_name().and_then(|s| s.to_str()) != Some("OrcaFilamentLibrary")
+      })
+      .collect();
+    vdirs.sort();
+    for vd in vdirs {
+      let fdir = vd.join("filament");
+      if !fdir.is_dir() {
+        continue;
+      }
+      let mut ffiles = Vec::new();
+      collect_json_files(&fdir, &mut ffiles);
+      let mut vmap = lib_fil_by_name.clone();
+      for ff in &ffiles {
+        if let Ok(txt) = fs::read_to_string(ff) {
+          if let Ok(val) = serde_json::from_str::<Value>(&txt) {
+            if val.get("type").and_then(|v| v.as_str()) == Some("filament") {
+              if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+                vmap.insert(name.to_string(), val);
+              }
+            }
+          }
+        }
+      }
+      all_vendor_fil_maps.push(vmap);
     }
+  }
 
-    // Score higher for Generic @System, Bambu @System, Anycubic @Anycubic Kobra S1, fdm_filament_*
-    let score = if name.starts_with("Generic ") && name.contains("@System") {
-      100
-    } else if name.contains("@Anycubic Kobra S1") {
-      95
-    } else if name.starts_with("Bambu ") && name.contains("@System") {
-      90
-    } else if name.contains("@System") {
-      80
-    } else if name.contains("@base") {
-      70
-    } else if name.starts_with("fdm_filament_") {
-      60
-    } else {
-      20
-    };
+  for fil_by_name in &all_vendor_fil_maps {
+    for (name, _) in fil_by_name {
+      let resolved = resolve_profile(name, fil_by_name, 0);
+      let Some(ft_raw) = first_str(resolved.get("filament_type")) else {
+        continue;
+      };
+      let ft = match ft_raw.trim() {
+        "TPU-95A" => "TPU 95A",
+        "TPU-90A" => "TPU 90A",
+        "TPU-64D" => "TPU 64D",
+        "TPU-AMS" => "TPU for AMS",
+        "SILK" => "PLA Silk",
+        "PLA Basic" => "PLA",
+        "PLA Basic+" => "PLA+",
+        "PETG Basic" | "PETG Polymax" => "PETG",
+        "PETG-CF10" => "PETG-CF",
+        "S-PAHT" | "PAHT-S" => "Support for PAHT",
+        "PA-S" => "Support for PA/PET",
+        "S-Multi" => "Breakaway Support",
+        other => other,
+      };
+      if ft.is_empty()
+        || ft == "UNIV"
+        || ft.contains("Material4Print")
+        || ft.contains("HPP4GF25")
+        || ft.contains("VXL90")
+        || ft.contains("PACF Pro")
+      {
+        continue;
+      }
 
-    // Also detect specialized variants from profile name (e.g. PLA+, PLA High Speed, PLA Matte, PLA Silk, PLA Glow, PETG HF, PETG Translucent, TPU 95A HF)
-    let mut codes = vec![ft.to_string()];
-    let name_up = name.to_uppercase();
-    if ft == "PLA" {
-      if name_up.contains("PLA+") || name_up.contains("PLA PLUS") {
-        codes.push("PLA+".to_string());
-      } else if name_up.contains("HIGH SPEED") || name_up.contains("PLA-HS") {
-        codes.push("PLA High Speed".to_string());
-      } else if name_up.contains("MATTE") {
-        codes.push("PLA Matte".to_string());
-      } else if name_up.contains("SILK") {
-        codes.push("PLA Silk".to_string());
-      } else if name_up.contains("GLOW") || name_up.contains("LUMINOUS") {
-        codes.push("PLA Glow".to_string());
+      let explicit_nozzle = first_str(resolved.get("nozzle_temperature_BRASS"))
+        .or_else(|| first_str(resolved.get("nozzle_temperature")))
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|v| v.round() as u16);
+
+      // Score higher for profiles that actually resolve a temperature + Anycubic Kobra S1 / Generic @System / Bambu @System
+      let base_score = if name.contains("@Anycubic Kobra S1") {
+        110
+      } else if name.starts_with("Generic ") && name.contains("@System") {
+        100
+      } else if name.starts_with("Bambu ") && name.contains("@System") {
+        90
+      } else if name.contains("@System") {
+        80
+      } else if name.contains("@base") {
+        70
+      } else if name.starts_with("fdm_filament_") {
+        60
+      } else {
+        20
+      };
+      let score = if explicit_nozzle.is_some() {
+        base_score + 200
+      } else {
+        base_score
+      };
+
+      // Also detect specialized variants from profile name (e.g. PLA+, PLA High Speed, PLA Matte, PLA Silk, PLA Glow, PETG HF, PETG Translucent, TPU 95A HF)
+      let mut codes = vec![ft.to_string()];
+      let name_up = name.to_uppercase();
+      if ft == "PLA" {
+        if name_up.contains("PLA+") || name_up.contains("PLA PLUS") {
+          codes.push("PLA+".to_string());
+        } else if name_up.contains("HIGH SPEED") || name_up.contains("PLA-HS") {
+          codes.push("PLA High Speed".to_string());
+        } else if name_up.contains("MATTE") {
+          codes.push("PLA Matte".to_string());
+        } else if name_up.contains("SILK") {
+          codes.push("PLA Silk".to_string());
+        } else if name_up.contains("GLOW") || name_up.contains("LUMINOUS") {
+          codes.push("PLA Glow".to_string());
+        }
+      } else if ft == "PETG" {
+        if name_up.contains("PETG HF") || name_up.contains("HIGH SPEED") {
+          codes.push("PETG HF".to_string());
+        } else if name_up.contains("TRANSLUCENT") {
+          codes.push("PETG Translucent".to_string());
+        }
+      } else if ft == "TPU" {
+        if name_up.contains("95A HF") {
+          codes.push("TPU 95A HF".to_string());
+        } else if name_up.contains("95A") {
+          codes.push("TPU 95A".to_string());
+        }
       }
-    } else if ft == "PETG" {
-      if name_up.contains("PETG HF") || name_up.contains("HIGH SPEED") {
-        codes.push("PETG HF".to_string());
-      } else if name_up.contains("TRANSLUCENT") {
-        codes.push("PETG Translucent".to_string());
-      }
-    } else if ft == "TPU" {
-      if name_up.contains("95A HF") {
-        codes.push("TPU 95A HF".to_string());
-      } else if name_up.contains("95A") {
-        codes.push("TPU 95A".to_string());
+
+      let hrc = first_str(resolved.get("required_nozzle_HRC"))
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(3);
+
+      for code in codes {
+        let (category, default_finish, default_color) = categorize_filament(&code);
+        let (fallback_nozzle_c, fallback_bed_c, fallback_fan_pct): (u16, u16, u8) = match category {
+          "PC / Engineering" => {
+            if code.starts_with("PP") && !code.starts_with("PPS") {
+              (230, 85, 70)
+            } else if code.starts_with("PPS") {
+              (315, 105, 20)
+            } else if code.contains("PEEK") {
+              (340, 120, 15)
+            } else {
+              (270, 100, 20)
+            }
+          }
+          "Nylon (PA / PAHT / PPA)" => (280, 90, 15),
+          "ABS / ASA" => (255, 100, 25),
+          "PETG / PCTG / PET" => {
+            if code.contains("PCTG") {
+              (255, 80, 40)
+            } else if code.starts_with("PET-") {
+              (280, 90, 25)
+            } else {
+              (235, 70, 40)
+            }
+          }
+          "TPU / TPE / PEBA Flex" => (225, 50, 80),
+          _ => (215, 55, 100),
+        };
+
+        let raw_nozzle_c = explicit_nozzle.unwrap_or(fallback_nozzle_c).clamp(170, 350);
+        // Guard against broken vendor profiles or overly hot Generic @System defaults so Brass + 5°C (HS) stays in safe polymer range
+        let nozzle_c =
+          if category == "PC / Engineering" && code.contains("PEEK") && raw_nozzle_c < 325 {
+            fallback_nozzle_c
+          } else if category == "PC / Engineering" && code.starts_with("PPS") && raw_nozzle_c < 300
+          {
+            fallback_nozzle_c
+          } else if (category == "PC / Engineering"
+            && code.starts_with("PC")
+            && !(260..=285).contains(&raw_nozzle_c))
+            || (category == "Nylon (PA / PAHT / PPA)" && !(260..=285).contains(&raw_nozzle_c))
+            || (category == "ABS / ASA" && !(240..=265).contains(&raw_nozzle_c))
+            || (category == "PETG / PCTG / PET"
+              && code.starts_with("PETG")
+              && !code.contains("ESD")
+              && !(225..=245).contains(&raw_nozzle_c))
+            || (category == "TPU / TPE / PEBA Flex" && !(205..=228).contains(&raw_nozzle_c))
+            || (category == "PLA Family" && !(195..=220).contains(&raw_nozzle_c))
+          {
+            fallback_nozzle_c
+          } else {
+            raw_nozzle_c
+          };
+
+        let raw_bed_c = first_str(resolved.get("textured_plate_temp"))
+          .or_else(|| first_str(resolved.get("hot_plate_temp")))
+          .and_then(|s| s.parse::<f32>().ok())
+          .map(|v| v.round() as u16)
+          .unwrap_or(fallback_bed_c)
+          .clamp(30, 130);
+        let bed_c = if (category == "PC / Engineering"
+          && code.starts_with("PC")
+          && !(90..=115).contains(&raw_bed_c))
+          || (category == "Nylon (PA / PAHT / PPA)" && !(75..=110).contains(&raw_bed_c))
+          || (category == "ABS / ASA" && !(85..=110).contains(&raw_bed_c))
+          || (category == "PETG / PCTG / PET" && !(65..=85).contains(&raw_bed_c))
+          || (category == "TPU / TPE / PEBA Flex" && raw_bed_c > 60)
+          || (category == "PLA Family" && raw_bed_c > 65)
+        {
+          fallback_bed_c
+        } else {
+          raw_bed_c
+        };
+
+        let raw_max_vol = first_str(resolved.get("filament_max_volumetric_speed"))
+          .and_then(|s| s.parse::<f32>().ok())
+          .unwrap_or(12.0);
+        let max_vol = if category != "TPU / TPE / PEBA Flex"
+          && category != "PVA / Support"
+          && raw_max_vol < 6.0
+        {
+          12.0
+        } else {
+          raw_max_vol.clamp(1.5, 45.0)
+        };
+        let raw_fan_pct = first_str(resolved.get("fan_max_speed"))
+          .and_then(|s| s.parse::<f32>().ok())
+          .map(|v| v.round() as u8)
+          .unwrap_or(fallback_fan_pct)
+          .min(100);
+        let fan_pct =
+          if (category == "PC / Engineering" && !code.starts_with("PP") && raw_fan_pct > 50)
+            || (category == "Nylon (PA / PAHT / PPA)" && raw_fan_pct > 50)
+            || (category == "ABS / ASA" && raw_fan_pct > 50)
+            || (category == "PETG / PCTG / PET" && raw_fan_pct > 70)
+          {
+            fallback_fan_pct
+          } else {
+            raw_fan_pct
+          };
+
+        let requires_hardened =
+          hrc > 10 || code.contains("-CF") || code.contains("-GF") || code.contains("Glow");
+        let (dry_temp_c, dry_hr) = match category {
+          "PLA Family" => (45, 4),
+          "PETG / PCTG / PET" => (60, 6),
+          "ABS / ASA" => (65, 6),
+          "PC / Engineering" => (80, 8),
+          "Nylon (PA / PAHT / PPA)" => (80, 12),
+          "TPU / TPE / PEBA Flex" => (55, 6),
+          _ => (50, 6),
+        };
+
+        let entry = CatalogFilament {
+          code: code.clone(),
+          label: format!("{} (OrcaSlicer {})", code, ft),
+          category: category.to_string(),
+          default_finish: default_finish.to_string(),
+          default_color: default_color.to_string(),
+          base_nozzle_c: nozzle_c,
+          base_bed_c: bed_c,
+          max_vol_mm3s: max_vol,
+          fan_pct,
+          dry_temp_c,
+          dry_hr,
+          requires_hardened,
+          source: "OrcaSlicer GitHub".to_string(),
+        };
+
+        let replace = match best_by_code.get(&code) {
+          None => true,
+          Some((prev_score, _)) => score > *prev_score,
+        };
+        if replace {
+          best_by_code.insert(code, (score, entry));
+        }
       }
     }
+  }
 
-    let nozzle_c = first_str(resolved.get("nozzle_temperature"))
-      .and_then(|s| s.parse::<f32>().ok())
-      .map(|v| v.round() as u16)
-      .unwrap_or(220)
-      .clamp(170, 350);
-    let bed_c = first_str(resolved.get("textured_plate_temp"))
-      .or_else(|| first_str(resolved.get("hot_plate_temp")))
-      .and_then(|s| s.parse::<f32>().ok())
-      .map(|v| v.round() as u16)
-      .unwrap_or(60)
-      .clamp(30, 130);
-    let max_vol = first_str(resolved.get("filament_max_volumetric_speed"))
-      .and_then(|s| s.parse::<f32>().ok())
-      .unwrap_or(12.0)
-      .clamp(1.5, 45.0);
-    let fan_pct = first_str(resolved.get("fan_max_speed"))
-      .and_then(|s| s.parse::<f32>().ok())
-      .map(|v| v.round() as u8)
-      .unwrap_or(100)
-      .min(100);
-    let hrc = first_str(resolved.get("required_nozzle_HRC"))
-      .and_then(|s| s.parse::<i32>().ok())
-      .unwrap_or(3);
-
-    for code in codes {
-      let (category, default_finish, default_color) = categorize_filament(&code);
-      let requires_hardened =
-        hrc > 10 || code.contains("-CF") || code.contains("-GF") || code.contains("Glow");
-      let (dry_temp_c, dry_hr) = match category {
-        "PLA Family" => (45, 4),
-        "PETG / PCTG / PET" => (60, 6),
-        "ABS / ASA" => (65, 6),
-        "PC / Engineering" => (80, 8),
-        "Nylon (PA / PAHT / PPA)" => (80, 12),
-        "TPU / TPE / PEBA Flex" => (55, 6),
-        _ => (50, 6),
-      };
-
-      let entry = CatalogFilament {
-        code: code.clone(),
-        label: format!("{} (OrcaSlicer {})", code, ft),
-        category: category.to_string(),
-        default_finish: default_finish.to_string(),
-        default_color: default_color.to_string(),
-        base_nozzle_c: nozzle_c,
-        base_bed_c: bed_c,
-        max_vol_mm3s: max_vol,
-        fan_pct,
-        dry_temp_c,
-        dry_hr,
-        requires_hardened,
-        source: "OrcaSlicer GitHub".to_string(),
-      };
-
-      let replace = match best_by_code.get(&code) {
-        None => true,
-        Some((prev_score, _)) => score > *prev_score,
-      };
-      if replace {
-        best_by_code.insert(code, (score, entry));
+  // Ensure finish shortcut entries ("PETG Translucent", "PLA Matte", "PLA Silk") have identical
+  // base thermal/flow/fan parameters to their base polymer ("PETG", "PLA") so picking the base
+  // polymer and switching its Finish dropdown is 100% equivalent to clicking the finish shortcut.
+  for (child_code, parent_code, child_finish) in [
+    ("PETG Translucent", "PETG", "Translucent"),
+    ("PLA Matte", "PLA", "Matte"),
+    ("PLA Silk", "PLA", "Silk"),
+  ] {
+    if let Some((_, parent)) = best_by_code.get(parent_code).cloned() {
+      if let Some((_, child)) = best_by_code.get_mut(child_code) {
+        child.base_nozzle_c = parent.base_nozzle_c;
+        child.base_bed_c = parent.base_bed_c;
+        child.max_vol_mm3s = parent.max_vol_mm3s;
+        child.fan_pct = parent.fan_pct;
+        child.dry_temp_c = parent.dry_temp_c;
+        child.dry_hr = parent.dry_hr;
+        child.requires_hardened = parent.requires_hardened;
+        child.default_finish = child_finish.to_string();
       }
     }
   }

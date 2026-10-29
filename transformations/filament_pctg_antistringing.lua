@@ -20,7 +20,7 @@ function apply(config, ctx)
   config["filament_retract_before_wipe"] = { "70%" }
   config["filament_wipe_distance"] = { "2.0" }
   config["z_hop"] = { "0.20" }
-  config["z_hop_types"] = { "Spiral" }
+  config["z_hop_types"] = { "Spiral Lift" }
   config["travel_acceleration"] = "8000"
   config["wipe_on_loops"] = "1"
 

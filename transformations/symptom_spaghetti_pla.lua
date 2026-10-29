@@ -8,7 +8,7 @@ function apply(config, ctx)
   local lh = tonumber(config["layer_height"]) or 0.20
   local zhop_mm = string.format("%.2f", lh * 2.0)
   config["z_hop"] = { zhop_mm }
-  config["z_hop_types"] = { "Slope" }
+  config["z_hop_types"] = { "Slope Lift" }
   config["reduce_crossing_wall"] = "1"
 
   print("[Symptom:SpaghettiGuard] Sparse infill -> gyroid, Z-Hop -> " .. zhop_mm .. "mm (2.0x layer_height) Slope, reduce_crossing_wall -> 1")

@@ -36,8 +36,19 @@ struct WizardSpoolDraft {
 fn find_filament_entry<'a>(
   catalog: &'a [CatalogFilament],
   code: &str,
+  finish_type: &str,
 ) -> Option<&'a CatalogFilament> {
-  catalog.iter().find(|e| e.code.eq_ignore_ascii_case(code))
+  let variant_code = format!("{} {}", code, finish_type);
+  catalog
+    .iter()
+    .find(|e| e.code.eq_ignore_ascii_case(&variant_code))
+    .or_else(|| {
+      catalog.iter().find(|e| {
+        e.base_material_code().eq_ignore_ascii_case(code)
+          && e.default_finish.eq_ignore_ascii_case(finish_type)
+      })
+    })
+    .or_else(|| catalog.iter().find(|e| e.code.eq_ignore_ascii_case(code)))
 }
 
 #[function_component]
@@ -185,9 +196,30 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       let short_mach = rig.short_model_tag();
       let layer_std = ((diam * 0.5 * 100.0).round() / 100.0) as f64;
       let layer_hq = ((diam * 0.3 * 100.0).round() / 100.0) as f64;
+      let layer_speed_thick = ((diam * 0.7 * 100.0).round() / 100.0) as f64;
       let line_width = ((diam * 1.05 * 100.0).round() / 100.0) as f64;
+      let line_width_thick = ((diam * 1.10 * 100.0).round() / 100.0) as f64;
 
-      // 1. 0.20mm High Quality (Anycubic's best speed-vs-surface-finish tradeoff: 0.20mm layer, 60/150/250 mm/s)
+      // 1. 0.20mm Standard
+      let mut proc_std = ProcessProfile {
+        id: format!("proc_{:.2}mm_standard", layer_std),
+        name: String::new(),
+        inherits: "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        layer_height: layer_std,
+        line_width,
+        outer_wall_speed: 200.0,
+        inner_wall_speed: 300.0,
+        sparse_infill_speed: 270.0,
+        initial_layer_speed: 50.0,
+        default_acceleration: 10000.0,
+        print_sequence: "by object".to_string(),
+        wall_generator: "arachne".to_string(),
+        notes: String::new(),
+      };
+      proc_std.name = proc_std.format_concise_title(&short_mach);
+      proc_std.notes = proc_std.generate_descriptive_notes();
+
+      // 2. 0.20mm Quality
       let mut proc_hq = ProcessProfile {
         id: format!("proc_{:.2}mm_high_quality", layer_std),
         name: String::new(),
@@ -206,11 +238,30 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       proc_hq.name = proc_hq.format_concise_title(&short_mach);
       proc_hq.notes = proc_hq.generate_descriptive_notes();
 
-      // 2. 0.12mm Fine High Quality (Ultra-fine vertical detail)
+      // 3. 0.20mm Speed
+      let mut proc_hs = ProcessProfile {
+        id: format!("proc_{:.2}mm_high_speed", layer_std),
+        name: String::new(),
+        inherits: "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        layer_height: layer_std,
+        line_width,
+        outer_wall_speed: 300.0,
+        inner_wall_speed: 350.0,
+        sparse_infill_speed: 350.0,
+        initial_layer_speed: 60.0,
+        default_acceleration: 15000.0,
+        print_sequence: "by object".to_string(),
+        wall_generator: "arachne".to_string(),
+        notes: String::new(),
+      };
+      proc_hs.name = proc_hs.format_concise_title(&short_mach);
+      proc_hs.notes = proc_hs.generate_descriptive_notes();
+
+      // 4. 0.12mm Quality
       let mut proc_hq_fine = ProcessProfile {
         id: format!("proc_{:.2}mm_fine_hq", layer_hq),
         name: String::new(),
-        inherits: "0.12mm High Quality @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        inherits: "0.12mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
         layer_height: layer_hq,
         line_width,
         outer_wall_speed: 60.0,
@@ -225,44 +276,30 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       proc_hq_fine.name = proc_hq_fine.format_concise_title(&short_mach);
       proc_hq_fine.notes = proc_hq_fine.generate_descriptive_notes();
 
-      let mut proc_std = ProcessProfile {
-        id: format!("proc_{:.2}mm_standard", layer_std),
+      // 5. 0.28mm Speed
+      let mut proc_hs_thick = ProcessProfile {
+        id: format!("proc_{:.2}mm_high_speed", layer_speed_thick),
         name: String::new(),
-        inherits: "fdm_process_common".to_string(),
-        layer_height: layer_std,
-        line_width,
-        outer_wall_speed: 200.0,
-        inner_wall_speed: 300.0,
-        sparse_infill_speed: 270.0,
-        initial_layer_speed: 50.0,
-        default_acceleration: 10000.0,
+        inherits: "0.28mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        layer_height: layer_speed_thick,
+        line_width: line_width_thick,
+        outer_wall_speed: 250.0,
+        inner_wall_speed: 320.0,
+        sparse_infill_speed: 320.0,
+        initial_layer_speed: 60.0,
+        default_acceleration: 12000.0,
         print_sequence: "by object".to_string(),
         wall_generator: "arachne".to_string(),
         notes: String::new(),
       };
-      proc_std.name = proc_std.format_concise_title(&short_mach);
-      proc_std.notes = proc_std.generate_descriptive_notes();
-
-      let mut proc_hs = ProcessProfile {
-        id: format!("proc_{:.2}mm_high_speed", layer_std),
-        name: String::new(),
-        inherits: "fdm_process_common".to_string(),
-        layer_height: layer_std,
-        line_width,
-        outer_wall_speed: 300.0,
-        inner_wall_speed: 350.0,
-        sparse_infill_speed: 350.0,
-        initial_layer_speed: 60.0,
-        default_acceleration: 15000.0,
-        print_sequence: "by layer".to_string(),
-        wall_generator: "arachne".to_string(),
-        notes: String::new(),
-      };
-      proc_hs.name = proc_hs.format_concise_title(&short_mach);
-      proc_hs.notes = proc_hs.generate_descriptive_notes();
+      proc_hs_thick.name = proc_hs_thick.format_concise_title(&short_mach);
+      proc_hs_thick.notes = proc_hs_thick.generate_descriptive_notes();
 
       let mut initial_pending_updates: Vec<PendingDiskUpdate> = Vec::new();
-      let machine_rel_path = format!("user/default/machine/{}.json", rig.name);
+      let machine_rel_path = format!(
+        "user/default/machine/{}",
+        crate::models::sanitize_profile_filename(&rig.name)
+      );
       let (orca_machine_noz_type, orca_machine_hrc) = rig.orca_machine_nozzle_type_and_hrc();
       let default_orca_noz = if cur_machine
         .default_nozzle_material
@@ -325,22 +362,27 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         new_clean_value: rig.notes.clone(),
       });
 
-      let proc_rel_path = format!("user/default/process/{}.json", proc_std.name);
-      initial_pending_updates.push(PendingDiskUpdate {
-        param_key: "process.notes".to_string(),
-        param_label: format!("Process Profile Notes ({})", proc_std.name),
-        source_relative_path: proc_rel_path,
-        json_field_key: "notes".to_string(),
-        old_disk_value: "(none)".to_string(),
-        new_clean_value: proc_std.notes.clone(),
-      });
+      for p in [&proc_std, &proc_hq, &proc_hs, &proc_hq_fine, &proc_hs_thick] {
+        let proc_rel_path = format!(
+          "user/default/process/{}",
+          crate::models::sanitize_profile_filename(&p.name)
+        );
+        initial_pending_updates.push(PendingDiskUpdate {
+          param_key: format!("process.{}.notes", p.id),
+          param_label: format!("Process Profile Notes ({})", p.name),
+          source_relative_path: proc_rel_path,
+          json_field_key: "notes".to_string(),
+          old_disk_value: "(none)".to_string(),
+          new_clean_value: p.notes.clone(),
+        });
+      }
 
       let short_noz = rig.short_nozzle_tag();
       let filaments: Vec<FilamentSpool> = drafts
         .iter()
         .enumerate()
         .map(|(idx, d)| {
-          let mat_info = find_filament_entry(&fil_catalog, &d.material_type);
+          let mat_info = find_filament_entry(&fil_catalog, &d.material_type, &d.finish_type);
           let base_nozzle = mat_info.map(|m| m.base_nozzle_c as i32).unwrap_or(215);
           let base_bed = mat_info.map(|m| m.base_bed_c as i32).unwrap_or(60);
           let max_vol = mat_info.map(|m| m.max_vol_mm3s).unwrap_or(15.0);
@@ -378,11 +420,16 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
           );
           let clean_draft_name = d
             .name
+            .trim_start_matches("OC - ")
+            .trim_start_matches("OC -")
             .trim_start_matches("OC: ")
             .trim_start_matches("OC:")
             .trim();
-          let profile_name = format!("OC: {} • {:.1} {}", clean_draft_name, diam, short_noz);
-          let fil_rel_path = format!("user/default/filament/{}.json", profile_name);
+          let profile_name = format!("OC - {} • {:.1} {}", clean_draft_name, diam, short_noz);
+          let fil_rel_path = format!(
+            "user/default/filament/{}",
+            crate::models::sanitize_profile_filename(&profile_name)
+          );
           let is_abrasive = d.finish_type.contains("Carbon")
             || d.finish_type.contains("Glass")
             || d.material_type.contains("-CF")
@@ -445,9 +492,9 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             "name": profile_name,
             "filament_settings_id": [profile_name],
             "filament_type": [d.material_type],
-            "nozzle_type": [orca_machine_noz_type],
             "required_nozzle_HRC": [req_hrc.to_string()],
             "filament_colour": [d.color_hex],
+            "default_filament_colour": [d.color_hex],
             "nozzle_temperature": [effective_nozzle.to_string()],
             "nozzle_temperature_BRASS": [base_nozzle.to_string()],
             "nozzle_temperature_HS": [hs_nozzle.to_string()],
@@ -467,7 +514,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             "fan_max_speed_BRASS": [fan_pct.to_string()],
             "fan_max_speed_HS": [fan_pct.to_string()],
             "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
-            "filament_z_hop_types": [if is_pctg_or_petg { "Spiral" } else { "Normal Lift" }],
+            "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
             "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
             "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
             "version": "2.0.0.0"
@@ -545,7 +592,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       on_complete.emit(ScratchWizardOutput {
         rig,
         filaments,
-        processes: vec![proc_hq, proc_hq_fine, proc_std, proc_hs],
+        processes: vec![proc_std, proc_hq, proc_hs, proc_hq_fine, proc_hs_thick],
         base_profile,
         rules,
         initial_pending_updates,
@@ -1456,7 +1503,11 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                           let sd_down = spool_drafts.clone();
                           let sd_del = spool_drafts.clone();
 
-                          let mat_info = find_filament_entry(&catalog.filaments, &draft.material_type);
+                          let mat_info = find_filament_entry(
+                            &catalog.filaments,
+                            &draft.material_type,
+                            &draft.finish_type,
+                          );
                           let base_n = mat_info.map(|m| m.base_nozzle_c).unwrap_or(215);
                           let base_b = mat_info.map(|m| m.base_bed_c).unwrap_or(60);
                           let eff_nozzle = (base_n as i32 + cur_nozzle.temp_offset_c).clamp(175, 350);
@@ -1669,7 +1720,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                         <div class="flex items-center justify-between bg-surface-container-lowest p-2.5 rounded-lg border border-outline-variant/60 hover:border-outline gap-2">
                           <div class="flex flex-col min-w-0">
                             <div class="flex items-center gap-1.5 flex-wrap">
-                              <span class="text-xs font-bold text-on-surface font-mono">{&mat.code}</span>
+                              <span class="text-xs font-bold text-on-surface font-mono">{mat.base_material_code()}</span>
                               <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-container-high text-on-surface-variant">
                                 {&mat.default_finish}
                               </span>
@@ -1710,8 +1761,8 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                             onclick={Callback::from(move |_| {
                               let mut list = (*sd).clone();
                               list.push(WizardSpoolDraft {
-                                name: mat_clone.code.clone(),
-                                material_type: mat_clone.code.clone(),
+                                name: mat_clone.base_material_code().to_string(),
+                                material_type: mat_clone.base_material_code().to_string(),
                                 color_hex: "#8E9299".to_string(),
                                 finish_type: mat_clone.default_finish.clone(),
                               });

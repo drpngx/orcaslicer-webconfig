@@ -1991,7 +1991,35 @@ pub fn execute_transformation_lua(
     )?;
   }
 
-  let resulting_config = lua_config.to_json();
+  let mut resulting_config = lua_config.to_json();
+  if let Some(obj) = resulting_config.as_object_mut() {
+    for key in ["z_hop_types", "filament_z_hop_types"] {
+      if let Some(val) = obj.get_mut(key) {
+        let normalize = |s: &str| -> String {
+          match s.trim() {
+            "Normal" | "normal" => "Normal Lift".to_string(),
+            "Spiral" | "spiral" => "Spiral Lift".to_string(),
+            "Slope" | "slope" | "z-hop-slope" => "Slope Lift".to_string(),
+            "Auto" | "auto" => "Auto Lift".to_string(),
+            other => other.to_string(),
+          }
+        };
+        match val {
+          serde_json::Value::String(s) => {
+            *s = normalize(s);
+          }
+          serde_json::Value::Array(arr) => {
+            for elem in arr.iter_mut() {
+              if let serde_json::Value::String(s) = elem {
+                *s = normalize(s);
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+  }
   Ok((
     resulting_config,
     interpreter.stdout,
@@ -2126,7 +2154,7 @@ mod tests {
 
     let (c4, _, _) = execute_transformation_lua(stringing_lua, &c3, &ctx).unwrap();
     assert_eq!(c4["filament_retraction_length"][0], "0.95");
-    assert_eq!(c4["z_hop_types"][0], "Spiral");
+    assert_eq!(c4["z_hop_types"][0], "Spiral Lift");
 
     let (c5, _, _) = execute_transformation_lua(clog_lua, &c4, &ctx).unwrap();
     assert_eq!(c5["flush_multiplier"], "1.45");

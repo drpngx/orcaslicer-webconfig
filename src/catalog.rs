@@ -132,6 +132,19 @@ impl CatalogNozzle {
   }
 }
 
+impl CatalogFilament {
+  /// Returns the base polymer code without finish suffixes (e.g., `"PETG Translucent"` -> `"PETG"`,
+  /// `"PLA Matte"` -> `"PLA"`, `"PLA Silk"` -> `"PLA"`), so finish variants are modeled as
+  /// `base_material_code() + default_finish` (e.g., `PETG` / `Translucent`) rather than a special material.
+  pub fn base_material_code(&self) -> &str {
+    match self.code.as_str() {
+      "PETG Translucent" => "PETG",
+      "PLA Matte" | "PLA Silk" => "PLA",
+      other => other,
+    }
+  }
+}
+
 fn category_order(cat: &str) -> usize {
   match cat {
     "PLA Family" => 0,
@@ -314,6 +327,26 @@ mod tests {
     assert_eq!(pla_gf.category, "PLA Family");
     assert_ne!(pla_cf.default_finish, pla_gf.default_finish);
     assert_ne!(pla_cf.base_nozzle_c, pla_gf.base_nozzle_c);
+
+    // Verify PC defaults to Basic finish (not Translucent) and has safe engineering temperatures (≥255°C nozzle, ≥90°C bed)
+    let pc = cat.filaments.iter().find(|f| f.code == "PC").unwrap();
+    assert_eq!(pc.default_finish, "Basic");
+    assert!(
+      pc.base_nozzle_c >= 255 && pc.base_nozzle_c <= 310,
+      "Expected PC base_nozzle_c in 255..=310, got {}",
+      pc.base_nozzle_c
+    );
+    assert!(
+      pc.base_bed_c >= 90,
+      "Expected PC base_bed_c >= 90, got {}",
+      pc.base_bed_c
+    );
+
+    // Verify PETG Translucent maps to base material "PETG" with "Translucent" finish (not Basic)
+    if let Some(petg_trans) = cat.filaments.iter().find(|f| f.code == "PETG Translucent") {
+      assert_eq!(petg_trans.base_material_code(), "PETG");
+      assert_eq!(petg_trans.default_finish, "Translucent");
+    }
 
     for f in &cat.filaments {
       assert_eq!(

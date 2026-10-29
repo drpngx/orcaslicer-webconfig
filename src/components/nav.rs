@@ -16,10 +16,7 @@ pub struct NavProps {
   pub bound_filename: String,
   pub active_rig_name: String,
   pub ace_pro_units: usize,
-  pub on_commit_save: Callback<()>,
-  pub on_export_3mf: Callback<()>,
-  pub on_import_zip: Callback<Event>,
-  pub on_backup_zip: Callback<()>,
+  pub on_open_export_modal: Callback<()>,
   pub on_toggle_diff: Callback<()>,
   pub on_reset_all: Callback<()>,
   pub has_unapplied_changes: bool,
@@ -87,7 +84,7 @@ pub fn NavigationBar(props: &NavProps) -> Html {
             </div>
           </div>
 
-          // Right header actions: Prominent Reset Button + Backup ZIP + Exports
+          // Right header actions: Prominent Reset Button + Live Diff + single Save & Export button
           <div class="flex items-center gap-space-sm">
             // Reset Button: clears everything and opens the startup import modal
             <button
@@ -103,32 +100,6 @@ pub fn NavigationBar(props: &NavProps) -> Html {
             </button>
 
             if props.is_config_loaded {
-              <label
-                class="flex items-center gap-space-xs bg-surface-container-highest text-secondary border border-secondary/40 px-space-md py-space-xs rounded font-medium hover:bg-surface-bright transition-colors cursor-pointer"
-                title="Import a slicer directory backup .zip archive"
-              >
-                <span class="material-symbols-outlined text-[16px]">{"upload_file"}</span>
-                <span class="font-code-md text-code-md font-medium">{"Import .zip"}</span>
-                <input
-                  type="file"
-                  accept=".zip"
-                  class="hidden"
-                  onchange={props.on_import_zip.clone()}
-                />
-              </label>
-
-              <button
-                class="flex items-center gap-space-xs bg-surface-container-highest text-secondary border border-secondary/40 px-space-md py-space-xs rounded font-medium hover:bg-surface-bright transition-colors cursor-pointer"
-                title="Zip the entire loaded slicer directory and download as a .zip backup"
-                onclick={
-                  let cb = props.on_backup_zip.clone();
-                  Callback::from(move |_| cb.emit(()))
-                }
-              >
-                <span class="material-symbols-outlined text-[16px]">{"folder_zip"}</span>
-                <span class="font-code-md text-code-md font-medium">{"Export .zip"}</span>
-              </button>
-
               // Live diff drawer toggle
               <button
                 class="flex items-center gap-space-xs bg-surface-container-high text-on-surface px-space-md py-space-xs rounded hover:bg-surface-bright transition-colors cursor-pointer"
@@ -143,38 +114,25 @@ pub fn NavigationBar(props: &NavProps) -> Html {
                 <span class="font-code-md text-code-md font-medium">{"Live Diff"}</span>
               </button>
 
-              // Export .3mf Project Container
-              <button
-                class="flex items-center gap-space-xs bg-surface-container-highest text-tertiary border border-tertiary/40 px-space-md py-space-xs rounded font-medium hover:bg-surface-bright transition-colors cursor-pointer"
-                title="Export .3mf Project Container with active 4/8-slot ACE Pro loadout and flush_volumes_matrix"
-                onclick={
-                  let cb = props.on_export_3mf.clone();
-                  Callback::from(move |_| cb.emit(()))
-                }
-              >
-                <span class="material-symbols-outlined text-[16px]">{"deployed_code"}</span>
-                <span class="font-code-md text-code-md font-medium">{"Export .3mf Loadout"}</span>
-              </button>
-
-              // Save Changes to Local Disk button
+              // Single Save & Export button opening the Save & Export popup menu
               <button
                 class={if props.pending_save_count > 0 || props.has_unapplied_changes {
                   "flex items-center gap-space-xs bg-primary-container text-on-primary-container px-space-md py-space-xs rounded font-bold hover:bg-primary transition-colors shadow-lg border border-primary cursor-pointer"
                 } else {
-                  "flex items-center gap-space-xs bg-surface-container-highest text-on-surface px-space-md py-space-xs rounded font-medium hover:bg-surface-bright transition-colors cursor-pointer"
+                  "flex items-center gap-space-xs bg-primary text-on-primary px-space-md py-space-xs rounded font-bold hover:opacity-90 transition-opacity shadow cursor-pointer"
                 }}
-                title="Write staged Clean Rule Values and profile changes back to the local disk directory"
+                title="Open Save & Export menu (Orca WebConfig, OrcaSlicer Config ZIP, 3MF Loadout, Save to Disk)"
                 onclick={
-                  let cb = props.on_commit_save.clone();
+                  let cb = props.on_open_export_modal.clone();
                   Callback::from(move |_| cb.emit(()))
                 }
               >
-                <span class="material-symbols-outlined text-[16px]">{"save"}</span>
+                <span class="material-symbols-outlined text-[16px]">{"ios_share"}</span>
                 <span class="font-code-md text-code-md font-bold">
                   if props.pending_save_count > 0 {
-                    {format!("Save to Disk ({} Staged)", props.pending_save_count)}
+                    {format!("Save & Export ({} Staged)", props.pending_save_count)}
                   } else {
-                    {"Save Changes to Disk"}
+                    {"Save & Export"}
                   }
                 </span>
               </button>

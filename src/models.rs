@@ -215,8 +215,30 @@ impl MachineRig {
     }
   }
 
-  /// Concise, easy-to-read title prefixed with `OC:` highlighting the big hardware traits (without ACE8 since AMS/ACE is configured separately):
-  /// e.g. `OC: Kobra S1 • 0.4 Hardened` or `OC: Kobra S1 • 0.4 Diamondback +FlowTech`
+  /// Normalized nozzle diameter string (e.g. `"0.4"`, `"0.6"`, `"0.8"`, `"0.2"`),
+  /// repairing any accidentally truncated `"0"` back to `"0.4"`.
+  pub fn formatted_nozzle_diameter(&self) -> String {
+    self
+      .nozzle_diameter
+      .trim()
+      .parse::<f64>()
+      .ok()
+      .filter(|&d| (0.1..=2.0).contains(&d))
+      .map(|d| {
+        let s = format!("{:.2}", d);
+        let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+        if trimmed.contains('.') {
+          trimmed.to_string()
+        } else {
+          format!("{}.0", trimmed)
+        }
+      })
+      .unwrap_or_else(|| "0.4".to_string())
+  }
+
+  /// Concise, easy-to-read title prefixed with `OC -` (no colon `:`, which is forbidden in Windows filenames!)
+  /// highlighting the big hardware traits:
+  /// e.g. `OC - Kobra S1 • 0.4 Hardened` or `OC - Kobra S1 • 0.4 Diamondback +FlowTech`
   pub fn format_concise_title(&self) -> String {
     let model = self.short_model_tag();
     let noz = self.short_nozzle_tag();
@@ -237,8 +259,11 @@ impl MachineRig {
       format!(" +{}Mods", self.addons.len())
     };
     format!(
-      "OC: {} • {} {}{}",
-      model, self.nozzle_diameter, noz, addon_tag
+      "OC - {} • {} {}{}",
+      model,
+      self.formatted_nozzle_diameter(),
+      noz,
+      addon_tag
     )
   }
 
@@ -323,7 +348,7 @@ impl MachineRig {
   pub fn kobra_s1_hardened_steel_png() -> Self {
     let mut rig = Self {
       id: "kobra_s1_hs_png".to_string(),
-      name: "OC: Kobra S1 • 0.4 Hardened".to_string(),
+      name: "OC - Kobra S1 • 0.4 Hardened".to_string(),
       printer_model: "Anycubic Kobra S1".to_string(),
       bed_size: "250 × 250 × 250 mm".to_string(),
       kinematics: "CoreXY Enclosed S-Series".to_string(),
@@ -464,17 +489,85 @@ impl MachineRig {
   }
 }
 
+/// Converts a profile display name into a clean Windows-NTFS-safe `.json` filename,
+/// preserving `•` (since ZIP archives use the `0x0800` UTF-8 flag) while replacing Windows-forbidden
+/// path/filename characters (`:`, `/`, `\`, `*`, `?`, `"`, `<`, `>`, `|`) with `-`.
+/// For example: `"OC: PETG-CF • 0.4 Hardened"` -> `"OC - PETG-CF • 0.4 Hardened.json"`.
+pub fn sanitize_profile_filename(name: &str) -> String {
+  let base = name.trim().trim_end_matches(".json");
+  let replaced = base.replace(": ", " - ").replace(':', "-");
+  let mut out = String::with_capacity(replaced.len() + 5);
+  for ch in replaced.chars() {
+    if ch.is_ascii_alphanumeric()
+      || matches!(
+        ch,
+        ' ' | '-' | '_' | '.' | '+' | '@' | '(' | ')' | '#' | '•'
+      )
+    {
+      out.push(ch);
+    } else {
+      out.push('-');
+    }
+  }
+  let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
+  format!("{}.json", collapsed.trim_matches([' ', '-']))
+}
+
+/// Sanitizes the filename portion of a `user/<folder>/<category>/<filename>` relative path,
+/// splitting after the 3rd `/` (`user/<folder>/<category>/`) so that any `/` inside a profile name
+/// (such as `200/300` in process speeds) is converted to `-` in the filename rather than creating a subdirectory.
+pub fn sanitize_user_relative_path(rel_path: &str) -> String {
+  let norm = rel_path.replace('\\', "/");
+  if norm.starts_with("user/") && norm.ends_with(".json") {
+    let mut parts = norm.splitn(4, '/');
+    if let (Some(u), Some(folder), Some(cat), Some(rest)) =
+      (parts.next(), parts.next(), parts.next(), parts.next())
+    {
+      if let Some(base_rest) = rest.strip_prefix("base/") {
+        return format!(
+          "{}/{}/{}/base/{}",
+          u,
+          folder,
+          cat,
+          sanitize_profile_filename(base_rest)
+        );
+      }
+      return format!(
+        "{}/{}/{}/{}",
+        u,
+        folder,
+        cat,
+        sanitize_profile_filename(rest)
+      );
+    }
+  }
+  norm
+}
+
 impl FilamentSpool {
-  /// Concise, scannable `OC:` display name for the filament spool including its nozzle type tag
+  /// Concise, scannable `OC -` display name for the filament spool including its nozzle type tag
+  /// (never uses `:`, which is forbidden in Windows filenames when OrcaSlicer saves imported presets!)
   pub fn format_concise_title(&self) -> String {
-    let base_name = if let Some(rest) = self.name.strip_prefix("OC: ") {
+    if self.id.starts_with("disk_")
+      && !self.name.starts_with("OC:")
+      && !self.name.starts_with("OC -")
+    {
+      return self.name.replace(": ", " - ").replace(':', "-");
+    }
+    let cleaned = self.name.replace(" - 0.", " • 0.");
+    let base_name = if let Some(rest) = cleaned.strip_prefix("OC: ") {
       rest
-    } else if let Some(rest) = self.name.strip_prefix("OC:") {
+    } else if let Some(rest) = cleaned.strip_prefix("OC - ") {
+      rest
+    } else if let Some(rest) = cleaned.strip_prefix("OC:") {
+      rest.trim()
+    } else if let Some(rest) = cleaned.strip_prefix("OC -") {
       rest.trim()
     } else {
-      self.name.as_str()
+      cleaned.as_str()
     };
-    format!("OC: {}", base_name)
+    let safe_base = base_name.replace(": ", " - ").replace(':', "-");
+    format!("OC - {}", safe_base)
   }
 
   /// Recomputes `base_print_temp` and `print_temp` when switching the Machine Rig to `new_nozzle_type`,
@@ -578,7 +671,15 @@ impl FilamentSpool {
       (brass_temp + 5).clamp(185, 350)
     };
 
-    self.material_type = new_material.to_string();
+    let base_mat_code = mat_entry
+      .map(|m| m.base_material_code().to_string())
+      .unwrap_or_else(|| match new_material {
+        "PETG Translucent" => "PETG".to_string(),
+        "PLA Matte" | "PLA Silk" => "PLA".to_string(),
+        other => other.to_string(),
+      });
+
+    self.material_type = base_mat_code.clone();
     self.brass_base_temp = brass_temp;
     self.hs_base_temp = hs_temp;
     self.base_bed_temp = bed_temp;
@@ -588,23 +689,27 @@ impl FilamentSpool {
     self.drying_temp_c = dry_c;
     self.drying_time_hr = dry_hr;
 
-    let is_abrasive = new_material.contains("-CF") || new_material.contains("-GF");
+    let is_abrasive = mat_entry.map(|m| m.requires_hardened).unwrap_or(false)
+      || new_material.contains("-CF")
+      || new_material.contains("-GF")
+      || new_material.contains("Glow");
     self.required_nozzle_hrc = if is_abrasive { 55 } else { 3 };
-    if new_material.contains("-CF") {
+    if let Some(m) = mat_entry {
+      self.finish_type = m.default_finish.clone();
+    } else if new_material.contains("-CF") {
       self.finish_type = "Carbon Fiber".to_string();
-      if self.pigment_stickiness < 1.3 {
-        self.pigment_stickiness = 1.65;
-      }
     } else if new_material.contains("-GF") {
       self.finish_type = "Glass Fiber".to_string();
+    } else if new_material.to_lowercase().contains("translucent") {
+      self.finish_type = "Translucent".to_string();
     } else if self.finish_type == "Carbon Fiber" || self.finish_type == "Glass Fiber" {
       self.finish_type = "Basic".to_string();
     }
 
-    if new_material.contains("PCTG") {
+    if base_mat_code.contains("PCTG") {
       self.flow_ratio = 0.95;
       self.pressure_advance = 0.048;
-    } else if new_material.contains("PETG") {
+    } else if base_mat_code.contains("PETG") {
       self.flow_ratio = 0.95;
       self.pressure_advance = 0.045;
     } else {
@@ -612,20 +717,317 @@ impl FilamentSpool {
       self.pressure_advance = 0.035;
     }
 
-    let base_mat_tag = match new_material {
+    let base_mat_tag = match base_mat_code.as_str() {
       "PCTG" | "PCTG-CF" | "PCTG-GF" => "PETG",
       "PLA-CF" | "PLA-GF" | "PLA Glow" => "PLA",
       other => other,
     };
     self.inherits = format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", base_mat_tag);
-    let brand_label = if self.brand.trim().is_empty() {
-      "Anycubic".to_string()
+    let nt_low = active_nozzle_type.to_lowercase();
+    let short_noz = if nt_low.contains("diamondback") {
+      "Diamond"
+    } else if nt_low.contains("ruby") {
+      "Ruby"
+    } else if nt_low.contains("cht") {
+      "CHT"
+    } else if nt_low.contains("cm2") {
+      "CM2"
+    } else if nt_low.contains("hardened") {
+      "Hardened"
     } else {
-      self.brand.clone()
+      "Brass"
     };
-    self.name = format!("OC: {} {}", brand_label, new_material);
+    self.name = format!("OC - {} • 0.4 {}", base_mat_code, short_noz);
     self.deltas_from_base.clear();
     self.recompute_for_nozzle(active_nozzle_type);
+    let fin = self.finish_type.clone();
+    self.apply_finish_change(&fin, active_nozzle_type);
+  }
+
+  /// Updates the spool's finish (`Basic`, `Matte`, `Silk`, `Translucent`, `Carbon Fiber`, `Glass Fiber`)
+  /// and synchronizes its optical opacity, pigment stickiness, nozzle hardness requirement, and synthetic JSON
+  /// so picking a base polymer (e.g. `PETG`) and flipping its finish to `Translucent` produces the exact same
+  /// spool as clicking `PETG Translucent` directly in the catalog.
+  pub fn apply_finish_change(&mut self, new_finish: &str, active_nozzle_type: &str) {
+    self.finish_type = new_finish.to_string();
+    if new_finish == "Translucent" {
+      if self.opacity > 0.6 {
+        self.opacity = 0.35;
+      }
+      self.pigment_stickiness = 1.0;
+    } else {
+      if self.opacity < 0.5 {
+        self.opacity = 1.0;
+      }
+      self.pigment_stickiness =
+        if new_finish == "Carbon Fiber" || self.material_type.contains("-CF") {
+          1.15
+        } else if new_finish == "Silk" {
+          1.20
+        } else if new_finish == "Glass Fiber" || self.material_type.contains("-GF") {
+          1.10
+        } else {
+          1.0
+        };
+    }
+
+    let is_abrasive = new_finish.contains("Carbon")
+      || new_finish.contains("Glass")
+      || self.material_type.contains("-CF")
+      || self.material_type.contains("-GF")
+      || self.material_type.contains("Glow")
+      || self.material_type.starts_with("PA");
+    self.required_nozzle_hrc = if is_abrasive { 55 } else { 3 };
+    self.rebuild_synthetic_disk_json(active_nozzle_type);
+  }
+
+  pub fn rebuild_synthetic_disk_json(&mut self, active_nozzle_type: &str) {
+    let nt_low = active_nozzle_type.to_lowercase();
+    let short_noz = if nt_low.contains("diamondback") {
+      "Diamond"
+    } else if nt_low.contains("ruby") {
+      "Ruby"
+    } else if nt_low.contains("cht") {
+      "CHT"
+    } else if nt_low.contains("cm2") {
+      "CM2"
+    } else if nt_low.contains("hardened") {
+      "Hardened"
+    } else {
+      "Brass"
+    };
+    let _orca_noz = if nt_low.contains("hardened")
+      || nt_low.contains("diamondback")
+      || nt_low.contains("ruby")
+      || nt_low.contains("cm2")
+    {
+      "hardened_steel"
+    } else {
+      "brass"
+    };
+    let is_pctg_or_petg =
+      self.material_type.contains("PCTG") || self.material_type.contains("PETG");
+
+    self.deltas_from_base.clear();
+    if self.print_temp != self.brass_base_temp {
+      self.deltas_from_base.push(FilamentDeltaEntry {
+        param_key: "nozzle_temperature".to_string(),
+        base_value: format!("{}°C", self.brass_base_temp),
+        disk_value: format!("{}°C", self.print_temp),
+        reconstructed_by_lua: true,
+        rule_explanation: format!(
+          "{} {:+}°C thermal rule",
+          short_noz,
+          self.print_temp - self.brass_base_temp
+        ),
+      });
+    }
+
+    self.raw_disk_json = Some(
+      serde_json::to_string_pretty(&serde_json::json!({
+        "from": "User",
+        "inherits": self.inherits,
+        "name": self.name,
+        "filament_settings_id": [self.name],
+        "filament_type": [self.material_type],
+        "required_nozzle_HRC": [self.required_nozzle_hrc.to_string()],
+        "filament_colour": [self.color_hex],
+        "default_filament_colour": [self.color_hex],
+        "nozzle_temperature": [self.print_temp.to_string()],
+        "nozzle_temperature_BRASS": [self.brass_base_temp.to_string()],
+        "nozzle_temperature_HS": [self.hs_base_temp.to_string()],
+        "nozzle_temperature_initial_layer": [(self.print_temp + 5).min(350).to_string()],
+        "nozzle_temperature_initial_layer_BRASS": [(self.brass_base_temp + 5).min(350).to_string()],
+        "nozzle_temperature_initial_layer_HS": [(self.hs_base_temp + 5).min(350).to_string()],
+        "nozzle_temperature_range_low": [(self.brass_base_temp - 10).max(175).to_string()],
+        "nozzle_temperature_range_high": [(self.hs_base_temp + 15).min(350).to_string()],
+        "hot_plate_temp": [self.bed_temp.to_string()],
+        "hot_plate_temp_initial_layer": [self.bed_temp.to_string()],
+        "textured_plate_temp": [self.bed_temp.to_string()],
+        "textured_plate_temp_initial_layer": [self.bed_temp.to_string()],
+        "filament_flow_ratio": [format!("{:.2}", self.flow_ratio)],
+        "pressure_advance": [format!("{:.3}", self.pressure_advance)],
+        "filament_max_volumetric_speed": [format!("{:.1}", self.max_volumetric_speed)],
+        "fan_max_speed": [self.fan_speed_percent.to_string()],
+        "fan_max_speed_BRASS": [self.fan_speed_percent.to_string()],
+        "fan_max_speed_HS": [self.fan_speed_percent.to_string()],
+        "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
+        "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
+        "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
+        "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
+        "version": "2.0.0.0"
+      }))
+      .unwrap_or_default(),
+    );
+  }
+
+  /// Creates a clean `FilamentSpool` from a `CatalogFilament` entry (using the active rig's nozzle type),
+  /// matching the Start-From-Scratch Setup Wizard's spool construction.
+  pub fn from_catalog_entry(
+    idx: usize,
+    mat: &crate::catalog::CatalogFilament,
+    active_nozzle_type: &str,
+  ) -> Self {
+    let base_mat_code = mat.base_material_code().to_string();
+    let finish_type = mat.default_finish.clone();
+    let base_nozzle = mat.base_nozzle_c as i32;
+    let base_bed = mat.base_bed_c as i32;
+    let hs_nozzle = (base_nozzle + 5).clamp(180, 350);
+    let nt_low = active_nozzle_type.to_lowercase();
+    let effective_nozzle =
+      if nt_low.contains("hardened") || nt_low.contains("stainless") || nt_low.contains("cm2") {
+        hs_nozzle
+      } else if nt_low.contains("diamondback") {
+        (base_nozzle - 10).max(180)
+      } else {
+        base_nozzle
+      };
+    let is_pctg_or_petg = base_mat_code.contains("PCTG") || base_mat_code.contains("PETG");
+    let default_pa = if base_mat_code.contains("PCTG") {
+      0.048f32
+    } else if base_mat_code.contains("PETG") {
+      0.045f32
+    } else {
+      0.035f32
+    };
+    let default_flow = if is_pctg_or_petg { 0.95f32 } else { 0.98f32 };
+    let base_mat_tag = match base_mat_code.as_str() {
+      "PCTG" | "PCTG-CF" | "PCTG-GF" => "PETG",
+      "PLA-CF" | "PLA-GF" | "PLA Glow" => "PLA",
+      other => other,
+    };
+    let inherits = format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", base_mat_tag);
+    let short_noz = if nt_low.contains("diamondback") {
+      "Diamond"
+    } else if nt_low.contains("ruby") {
+      "Ruby"
+    } else if nt_low.contains("cht") {
+      "CHT"
+    } else if nt_low.contains("cm2") {
+      "CM2"
+    } else if nt_low.contains("hardened") {
+      "Hardened"
+    } else {
+      "Brass"
+    };
+    let profile_name = format!("OC - {} • 0.4 {}", base_mat_code, short_noz);
+    let is_abrasive = mat.requires_hardened
+      || finish_type.contains("Carbon")
+      || finish_type.contains("Glass")
+      || base_mat_code.contains("-CF")
+      || base_mat_code.contains("-GF");
+    let req_hrc: u32 = if is_abrasive { 55 } else { 3 };
+    let _orca_noz = if nt_low.contains("hardened")
+      || nt_low.contains("diamondback")
+      || nt_low.contains("ruby")
+      || nt_low.contains("cm2")
+    {
+      "hardened_steel"
+    } else {
+      "brass"
+    };
+    let fan_pct = mat.fan_pct as i32;
+    let max_vol = mat.max_vol_mm3s;
+    let color_hex = "#8E9299".to_string();
+
+    let mut deltas_from_base = Vec::new();
+    if effective_nozzle != base_nozzle {
+      deltas_from_base.push(FilamentDeltaEntry {
+        param_key: "nozzle_temperature".to_string(),
+        base_value: format!("{}°C", base_nozzle),
+        disk_value: format!("{}°C", effective_nozzle),
+        reconstructed_by_lua: true,
+        rule_explanation: format!(
+          "{} {:+}°C thermal rule",
+          short_noz,
+          effective_nozzle - base_nozzle
+        ),
+      });
+    }
+
+    let raw_disk_json = serde_json::to_string_pretty(&serde_json::json!({
+      "from": "User",
+      "inherits": inherits,
+      "name": profile_name,
+      "filament_settings_id": [profile_name],
+      "filament_type": [base_mat_code],
+      "required_nozzle_HRC": [req_hrc.to_string()],
+      "filament_colour": [color_hex],
+      "default_filament_colour": [color_hex],
+      "nozzle_temperature": [effective_nozzle.to_string()],
+      "nozzle_temperature_BRASS": [base_nozzle.to_string()],
+      "nozzle_temperature_HS": [hs_nozzle.to_string()],
+      "nozzle_temperature_initial_layer": [(effective_nozzle + 5).min(350).to_string()],
+      "nozzle_temperature_initial_layer_BRASS": [(base_nozzle + 5).min(350).to_string()],
+      "nozzle_temperature_initial_layer_HS": [(hs_nozzle + 5).min(350).to_string()],
+      "nozzle_temperature_range_low": [(base_nozzle - 10).max(175).to_string()],
+      "nozzle_temperature_range_high": [(hs_nozzle + 15).min(350).to_string()],
+      "hot_plate_temp": [base_bed.to_string()],
+      "hot_plate_temp_initial_layer": [base_bed.to_string()],
+      "textured_plate_temp": [base_bed.to_string()],
+      "textured_plate_temp_initial_layer": [base_bed.to_string()],
+      "filament_flow_ratio": [format!("{:.2}", default_flow)],
+      "pressure_advance": [format!("{:.3}", default_pa)],
+      "filament_max_volumetric_speed": [format!("{:.1}", max_vol)],
+      "fan_max_speed": [fan_pct.to_string()],
+      "fan_max_speed_BRASS": [fan_pct.to_string()],
+      "fan_max_speed_HS": [fan_pct.to_string()],
+      "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
+      "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
+      "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
+      "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
+      "version": "2.0.0.0"
+    }))
+    .unwrap_or_default();
+
+    FilamentSpool {
+      id: format!(
+        "spool_catalog_{}_{}",
+        idx,
+        mat.code.to_lowercase().replace(' ', "_")
+      ),
+      name: profile_name,
+      brand: "Custom".to_string(),
+      inherits,
+      material_type: base_mat_code.clone(),
+      nozzle_type: active_nozzle_type.to_string(),
+      tuned_for_nozzle_type: active_nozzle_type.to_string(),
+      required_nozzle_hrc: req_hrc,
+      color_hex: color_hex.clone(),
+      color_name: "Cool Gray".to_string(),
+      brass_base_temp: base_nozzle,
+      hs_base_temp: hs_nozzle,
+      base_print_temp: base_nozzle,
+      print_temp: effective_nozzle,
+      base_bed_temp: base_bed,
+      bed_temp: base_bed,
+      flow_ratio: default_flow,
+      pressure_advance: default_pa,
+      max_volumetric_speed: max_vol,
+      fan_speed_percent: fan_pct,
+      remaining_grams: 1000,
+      is_loaded: true,
+      finish_type: finish_type.clone(),
+      opacity: if finish_type == "Translucent" {
+        0.35
+      } else {
+        1.0
+      },
+      pigment_stickiness: if finish_type == "Carbon Fiber" || base_mat_code.contains("-CF") {
+        1.15
+      } else if finish_type == "Silk" {
+        1.20
+      } else if finish_type == "Glass Fiber" {
+        1.10
+      } else {
+        1.0
+      },
+      drying_temp_c: mat.dry_temp_c as i32,
+      drying_time_hr: mat.dry_hr as i32,
+      is_rfid_synced: false,
+      deltas_from_base,
+      raw_disk_json: Some(raw_disk_json),
+    }
   }
 }
 
@@ -660,7 +1062,78 @@ impl WebConfigStateSnapshot {
   /// 3. Any newly introduced built-in transformation rules (such as Scarf Seams & Arachne or PCTG Anti-Stringing)
   ///    are merged into `rules` if not already present.
   pub fn sanitize(&mut self) {
+    if self.bound_filename.contains("From Scratch")
+      || self.bound_path_hint.contains("Start-From-Scratch")
+    {
+      self.disk_flush_matrix.clear();
+      self.disk_flush_slot_count = 0;
+    }
+
+    let catalog = crate::catalog::load_merged_catalog();
     for sp in &mut self.filaments {
+      if sp.name.contains(':') {
+        sp.name = sp.name.replace(": ", " - ").replace(':', "-");
+      }
+      if (sp.name.starts_with("OC:") || sp.name.starts_with("OC -")) && sp.name.contains(" - 0.") {
+        sp.name = sp.name.replace(" - 0.", " • 0.");
+      }
+      if sp.material_type.eq_ignore_ascii_case("PETG Translucent") {
+        sp.material_type = "PETG".to_string();
+        sp.finish_type = "Translucent".to_string();
+        if sp.opacity > 0.6 {
+          sp.opacity = 0.35;
+        }
+      } else if sp.material_type.eq_ignore_ascii_case("PLA Matte") {
+        sp.material_type = "PLA".to_string();
+        sp.finish_type = "Matte".to_string();
+      } else if sp.material_type.eq_ignore_ascii_case("PLA Silk") {
+        sp.material_type = "PLA".to_string();
+        sp.finish_type = "Silk".to_string();
+      } else if sp.material_type.eq_ignore_ascii_case("PC") {
+        let lower_name = sp.name.to_lowercase();
+        if sp.finish_type == "Translucent"
+          && !lower_name.contains("translucent")
+          && !lower_name.contains("clear")
+          && !lower_name.contains("transparent")
+        {
+          sp.finish_type = "Basic".to_string();
+          sp.opacity = 1.0;
+        }
+      }
+
+      // Heal any scratch/catalog spool in localStorage whose base temperature came from an older catalog snapshot
+      if !sp.id.starts_with("disk_") {
+        if let Some(cat_entry) = catalog
+          .filaments
+          .iter()
+          .find(|f| f.code.eq_ignore_ascii_case(&sp.material_type))
+        {
+          if sp.brass_base_temp != cat_entry.base_nozzle_c as i32 {
+            let noz = sp.nozzle_type.clone();
+            let fin = sp.finish_type.clone();
+            let saved_name = sp.name.clone();
+            let col_hex = sp.color_hex.clone();
+            let col_name = sp.color_name.clone();
+            let mat = sp.material_type.clone();
+            sp.apply_material_change(&mat, &noz);
+            sp.name = saved_name;
+            sp.color_hex = col_hex;
+            sp.color_name = col_name;
+            sp.apply_finish_change(&fin, &noz);
+          }
+          let mat_up = sp.material_type.to_uppercase();
+          if !mat_up.contains("TPU")
+            && !mat_up.contains("TPE")
+            && !mat_up.contains("PEBA")
+            && !mat_up.contains("PVA")
+            && !mat_up.contains("BVOH")
+            && sp.max_volumetric_speed <= 2.5
+          {
+            sp.max_volumetric_speed = cat_entry.max_vol_mm3s.max(12.0);
+          }
+        }
+      }
+
       sp.deltas_from_base.retain(|d| {
         let base_head = d
           .base_value
@@ -678,9 +1151,122 @@ impl WebConfigStateSnapshot {
       });
     }
 
+    for mach in &mut self.machines {
+      mach.nozzle_diameter = mach.formatted_nozzle_diameter();
+      if mach.name.contains(':') {
+        mach.name = mach.name.replace(": ", " - ").replace(':', "-");
+      }
+    }
+    let short_mach = self
+      .machines
+      .iter()
+      .find(|m| m.id == self.active_machine_id)
+      .or_else(|| self.machines.first())
+      .map(|m| m.short_model_tag())
+      .unwrap_or_else(|| "Kobra S1".to_string());
+    for proc in &mut self.processes {
+      if proc.name.contains(':') {
+        proc.name = proc.name.replace(": ", " - ").replace(':', "-");
+      }
+      if proc.name.starts_with("OC:")
+        || proc.name.starts_with("OC -")
+        || proc.id.starts_with("proc_")
+      {
+        if proc.print_sequence.eq_ignore_ascii_case("by layer") {
+          proc.print_sequence = "by object".to_string();
+        }
+        if proc.inherits == "fdm_process_common" || proc.inherits.trim().is_empty() {
+          proc.inherits = if (proc.layer_height - 0.12).abs() < 0.015 {
+            "0.12mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string()
+          } else if (proc.layer_height - 0.28).abs() < 0.015 {
+            "0.28mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string()
+          } else {
+            "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string()
+          };
+        } else if proc.inherits == "0.12mm High Quality @Anycubic Kobra S1 0.4 nozzle" {
+          proc.inherits = "0.12mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string();
+        }
+        proc.name = proc.format_concise_title(&short_mach);
+        proc.notes = proc.generate_descriptive_notes();
+      }
+    }
+    for mut def_proc in ProcessProfile::get_default_processes() {
+      def_proc.name = def_proc.format_concise_title(&short_mach);
+      def_proc.notes = def_proc.generate_descriptive_notes();
+      if !self.processes.iter().any(|p| p.name == def_proc.name) {
+        self.processes.push(def_proc);
+      }
+    }
+    // Deduplicate process profiles by name so we never have duplicate profiles
+    let mut seen_proc_names = std::collections::HashSet::new();
+    self
+      .processes
+      .retain(|p| seen_proc_names.insert(p.name.clone()));
+
+    let valid_proc_fnames: std::collections::HashSet<String> = self
+      .processes
+      .iter()
+      .map(|p| sanitize_profile_filename(&p.name))
+      .collect();
+    self.pending_updates.retain_mut(|upd| {
+      if upd.json_field_key == "nozzle_diameter" && upd.new_clean_value == "0" {
+        upd.new_clean_value = "0.4".to_string();
+      }
+      if upd.source_relative_path.starts_with("user/")
+        && upd.source_relative_path.ends_with(".json")
+      {
+        upd.source_relative_path = sanitize_user_relative_path(&upd.source_relative_path);
+        if upd.source_relative_path.contains("/process/OC") {
+          let fname = upd
+            .source_relative_path
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+          return valid_proc_fnames.contains(fname);
+        }
+      }
+      true
+    });
+
     let stock = crate::orca_profile::OrcaProfile::get_stock_kobra_s1();
     for (k, v) in stock.values {
       self.base_profile.values.entry(k).or_insert(v);
+    }
+
+    for key in ["z_hop_types", "filament_z_hop_types"] {
+      if let Some(val) = self.base_profile.values.get_mut(key) {
+        let normalize = |s: &str| -> String {
+          match s.trim() {
+            "Normal" | "normal" => "Normal Lift".to_string(),
+            "Spiral" | "spiral" => "Spiral Lift".to_string(),
+            "Slope" | "slope" | "z-hop-slope" => "Slope Lift".to_string(),
+            "Auto" | "auto" => "Auto Lift".to_string(),
+            other => other.to_string(),
+          }
+        };
+        match val {
+          serde_json::Value::String(s) => *s = normalize(s),
+          serde_json::Value::Array(arr) => {
+            for elem in arr.iter_mut() {
+              if let serde_json::Value::String(s) = elem {
+                *s = normalize(s);
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    for rule in &mut self.rules {
+      rule.lua_code = rule
+        .lua_code
+        .replace("{ \"Slope\" }", "{ \"Slope Lift\" }")
+        .replace("{ \"Spiral\" }", "{ \"Spiral Lift\" }")
+        .replace("{ \"Normal\" }", "{ \"Normal Lift\" }")
+        .replace("= \"Slope\"", "= \"Slope Lift\"")
+        .replace("= \"Spiral\"", "= \"Spiral Lift\"")
+        .replace("= \"Normal\"", "= \"Normal Lift\"");
     }
 
     for default_rule in crate::transformations::TransformationEngine::get_default_rules() {
@@ -694,11 +1280,10 @@ impl WebConfigStateSnapshot {
 impl ProcessProfile {
   pub fn quality_tier(&self) -> &'static str {
     let lower = format!("{} {}", self.id.to_lowercase(), self.name.to_lowercase());
-    if lower.contains("high quality") || lower.contains("hq") || lower.contains("fine") {
+    if lower.contains("quality") || lower.contains("hq") || lower.contains("fine") {
       "high_quality"
-    } else if lower.contains("high speed")
-      || lower.contains("_hs_")
-      || lower.contains("speed")
+    } else if lower.contains("speed")
+      || lower.contains("_hs")
       || lower.contains("draft")
       || lower.contains("fast")
       || lower.contains("sport")
@@ -709,41 +1294,26 @@ impl ProcessProfile {
     }
   }
 
-  /// Concise, easy-to-read title prefixed with `OC:` highlighting the big process traits without being too long:
-  /// e.g. `OC: 0.20mm HQ • 60/180 • Arachne • By-Obj @KS1`
+  /// Concise, easy-to-read title prefixed with `OC -` (`Standard`, `Quality`, `Speed` without redundant `High` or Windows-forbidden `:`):
+  /// e.g. `OC - 0.20mm Standard @Kobra S1`, `OC - 0.20mm Quality @Kobra S1`, `OC - 0.20mm Speed @Kobra S1`,
+  /// `OC - 0.12mm Quality @Kobra S1`, `OC - 0.28mm Speed @Kobra S1`
   pub fn format_concise_title(&self, short_machine: &str) -> String {
-    let tier_short = match self.quality_tier() {
-      "high_quality" => "HQ",
+    let tier_label = match self.quality_tier() {
+      "high_quality" => "Quality",
       "high_speed" => "Speed",
-      _ => "Std",
-    };
-    let wall_tag = if self.wall_generator.eq_ignore_ascii_case("arachne") {
-      "Arachne"
-    } else {
-      "Classic"
-    };
-    let seq_tag = if self.print_sequence.eq_ignore_ascii_case("by object") {
-      " • By-Obj"
-    } else {
-      ""
+      _ => "Standard",
     };
     format!(
-      "OC: {:.2}mm {} • {:.0}/{:.0} • {}{} @{}",
-      self.layer_height,
-      tier_short,
-      self.outer_wall_speed,
-      self.inner_wall_speed,
-      wall_tag,
-      seq_tag,
-      short_machine
+      "OC - {:.2}mm {} @{}",
+      self.layer_height, tier_label, short_machine
     )
   }
 
   /// Generate a full descriptive note (`notes`) summarizing the process tier, speeds, acceleration, and slicing strategy
   pub fn generate_descriptive_notes(&self) -> String {
     let tier_label = match self.quality_tier() {
-      "high_quality" => "High Quality (Fine Surface Detail & Overhang Precision)",
-      "high_speed" => "High Speed (Rapid Prototyping Capped by Volumetric Speed Ceiling)",
+      "high_quality" => "Quality (Fine Surface Detail & Overhang Precision)",
+      "high_speed" => "Speed (Rapid Prototyping Capped by Volumetric Speed Ceiling)",
       _ => "Standard (Balanced Structural Strength & Throughput)",
     };
     format!(
@@ -762,7 +1332,26 @@ impl ProcessProfile {
   }
 
   pub fn get_default_processes() -> Vec<Self> {
-    // 1. Anycubic's 0.20mm High Quality (Best speed-vs-surface-finish tradeoff: 0.20mm layer, 60 mm/s outer wall, 150 mm/s inner wall, 250 mm/s infill)
+    // 1. 0.20mm Standard (Balanced structural strength & everyday speed)
+    let mut std_020 = ProcessProfile {
+      id: "proc_020_std_png".to_string(),
+      name: String::new(),
+      inherits: "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+      layer_height: 0.20,
+      line_width: 0.42,
+      outer_wall_speed: 200.0,
+      inner_wall_speed: 300.0,
+      sparse_infill_speed: 270.0,
+      initial_layer_speed: 50.0,
+      default_acceleration: 10000.0,
+      print_sequence: "by object".to_string(),
+      wall_generator: "arachne".to_string(),
+      notes: String::new(),
+    };
+    std_020.name = std_020.format_concise_title("Kobra S1");
+    std_020.notes = std_020.generate_descriptive_notes();
+
+    // 2. 0.20mm Quality (Best speed-vs-surface-finish tradeoff: 0.20mm layer, 60 mm/s outer wall, 150 mm/s inner wall, 250 mm/s infill)
     let mut hq_020 = ProcessProfile {
       id: "proc_020_hq_png".to_string(),
       name: String::new(),
@@ -778,49 +1367,11 @@ impl ProcessProfile {
       wall_generator: "arachne".to_string(),
       notes: String::new(),
     };
-    hq_020.name = hq_020.format_concise_title("KS1");
+    hq_020.name = hq_020.format_concise_title("Kobra S1");
     hq_020.notes = hq_020.generate_descriptive_notes();
 
-    // 2. Anycubic's 0.12mm Fine High Quality (Ultra-fine vertical detail)
-    let mut hq_012 = ProcessProfile {
-      id: "proc_012_hq_png".to_string(),
-      name: String::new(),
-      inherits: "0.12mm High Quality @Anycubic Kobra S1 0.4 nozzle".to_string(),
-      layer_height: 0.12,
-      line_width: 0.42,
-      outer_wall_speed: 60.0,
-      inner_wall_speed: 150.0,
-      sparse_infill_speed: 200.0,
-      initial_layer_speed: 50.0,
-      default_acceleration: 5000.0,
-      print_sequence: "by object".to_string(),
-      wall_generator: "arachne".to_string(),
-      notes: String::new(),
-    };
-    hq_012.name = hq_012.format_concise_title("KS1");
-    hq_012.notes = hq_012.generate_descriptive_notes();
-
-    // 3. Anycubic's 0.20mm Standard
-    let mut std_proc = ProcessProfile {
-      id: "proc_020_std_png".to_string(),
-      name: String::new(),
-      inherits: "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
-      layer_height: 0.20,
-      line_width: 0.42,
-      outer_wall_speed: 200.0,
-      inner_wall_speed: 300.0,
-      sparse_infill_speed: 270.0,
-      initial_layer_speed: 50.0,
-      default_acceleration: 10000.0,
-      print_sequence: "by object".to_string(),
-      wall_generator: "arachne".to_string(),
-      notes: String::new(),
-    };
-    std_proc.name = std_proc.format_concise_title("KS1");
-    std_proc.notes = std_proc.generate_descriptive_notes();
-
-    // 4. 0.20mm High Speed
-    let mut hs = ProcessProfile {
+    // 3. 0.20mm Speed (Rapid 0.20mm prototyping capped by Volumetric Speed Ceiling)
+    let mut hs_020 = ProcessProfile {
       id: "proc_020_hs_png".to_string(),
       name: String::new(),
       inherits: "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
@@ -835,9 +1386,47 @@ impl ProcessProfile {
       wall_generator: "arachne".to_string(),
       notes: String::new(),
     };
-    hs.name = hs.format_concise_title("KS1");
-    hs.notes = hs.generate_descriptive_notes();
+    hs_020.name = hs_020.format_concise_title("Kobra S1");
+    hs_020.notes = hs_020.generate_descriptive_notes();
 
-    vec![hq_020, hq_012, std_proc, hs]
+    // 4. 0.12mm Quality (Ultra-fine vertical detail)
+    let mut hq_012 = ProcessProfile {
+      id: "proc_012_hq_png".to_string(),
+      name: String::new(),
+      inherits: "0.12mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+      layer_height: 0.12,
+      line_width: 0.42,
+      outer_wall_speed: 60.0,
+      inner_wall_speed: 150.0,
+      sparse_infill_speed: 200.0,
+      initial_layer_speed: 50.0,
+      default_acceleration: 5000.0,
+      print_sequence: "by object".to_string(),
+      wall_generator: "arachne".to_string(),
+      notes: String::new(),
+    };
+    hq_012.name = hq_012.format_concise_title("Kobra S1");
+    hq_012.notes = hq_012.generate_descriptive_notes();
+
+    // 5. 0.28mm Speed (Thick-layer high-throughput functional draft)
+    let mut hs_028 = ProcessProfile {
+      id: "proc_028_hs_png".to_string(),
+      name: String::new(),
+      inherits: "0.28mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+      layer_height: 0.28,
+      line_width: 0.44,
+      outer_wall_speed: 250.0,
+      inner_wall_speed: 320.0,
+      sparse_infill_speed: 320.0,
+      initial_layer_speed: 60.0,
+      default_acceleration: 12000.0,
+      print_sequence: "by object".to_string(),
+      wall_generator: "arachne".to_string(),
+      notes: String::new(),
+    };
+    hs_028.name = hs_028.format_concise_title("Kobra S1");
+    hs_028.notes = hs_028.generate_descriptive_notes();
+
+    vec![std_020, hq_020, hs_020, hq_012, hs_028]
   }
 }

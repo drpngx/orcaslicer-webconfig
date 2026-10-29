@@ -20,8 +20,9 @@ use crate::components::nav::{ActiveTab, NavigationBar};
 use crate::components::scratch_wizard::{ScratchWizard, ScratchWizardOutput};
 use crate::components::wizard_tab::WizardTab;
 use crate::dir_import::{
-  apply_pending_updates_to_entries, build_directory_backup_zip, build_reference_anycubic_entries,
+  build_directory_backup_zip, build_reference_anycubic_entries,
   build_user_disk_config_summary_json, extract_directory_backup_zip, import_scanned_directory,
+  sync_live_state_to_entries,
 };
 use crate::fs_access::{
   DetectedClientOs, FsManager, LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload,
@@ -160,6 +161,7 @@ pub fn App() -> Html {
 
   // UI & Flushing Matrix / Multiplier state
   let show_diff_drawer = use_state(|| false);
+  let show_export_modal = use_state(|| false);
   let toast_message = use_state(|| None::<String>);
   let conflicts = use_state(|| {
     (*saved_state)
@@ -749,22 +751,39 @@ pub fn App() -> Html {
     })
   };
 
-  // Requirement #1: Zip the entire loaded directory and save as a .zip backup!
+  // Requirement #1: Zip the entire loaded directory (including all added/edited OC: filaments, rigs, processes, and staged updates) and save as a .zip backup!
   let on_backup_zip = {
     let scanned_entries = scanned_entries.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let flush_matrix = eval_result.flush_matrix.clone();
+    let flush_multiplier = *flush_multiplier;
+    let conf_relative_path = conf_relative_path.clone();
+    let pending_updates = pending_updates.clone();
     let toast = toast_message.clone();
     Callback::from(move |_| {
-      let entries = if scanned_entries.is_empty() {
-        build_reference_anycubic_entries()
-      } else {
-        (*scanned_entries).clone()
-      };
+      let mut entries = (*scanned_entries).clone();
+      let _ = sync_live_state_to_entries(
+        &mut entries,
+        &machines,
+        &active_machine_id,
+        &filaments,
+        &processes,
+        &active_process_id,
+        &flush_matrix,
+        flush_multiplier,
+        &conf_relative_path,
+        &pending_updates,
+      );
       let zip_bytes = build_directory_backup_zip(&entries);
       let filename = "AnycubicSlicerNext_Config_Backup.zip";
       match FsManager::trigger_binary_download(filename, &zip_bytes, "application/zip") {
         Ok(()) => {
           toast.set(Some(format!(
-            "Created full directory backup '{}' ({} files archived, {} bytes)!",
+            "Created full directory backup '{}' ({} files archived including all OC: filaments/rigs/processes, {} bytes)!",
             filename,
             entries.len(),
             zip_bytes.len()
@@ -965,6 +984,8 @@ pub fn App() -> Html {
     let bound_filename = bound_filename.clone();
     let bound_path_hint = bound_path_hint.clone();
     let last_saved_time = last_saved_time.clone();
+    let disk_flush_matrix = disk_flush_matrix.clone();
+    let disk_flush_slot_count = disk_flush_slot_count.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -981,6 +1002,8 @@ pub fn App() -> Html {
       scanned_entries.set(Vec::new());
       rules.set(Vec::new());
       execution_logs.set(Vec::new());
+      disk_flush_matrix.set(Vec::new());
+      disk_flush_slot_count.set(0);
       detected_hardware_summary.set("Unconnected".to_string());
       bound_filename.set("No Config Loaded".to_string());
       bound_path_hint.set(
@@ -1014,6 +1037,8 @@ pub fn App() -> Html {
     let bound_filename = bound_filename.clone();
     let bound_path_hint = bound_path_hint.clone();
     let last_saved_time = last_saved_time.clone();
+    let disk_flush_matrix = disk_flush_matrix.clone();
+    let disk_flush_slot_count = disk_flush_slot_count.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |out: ScratchWizardOutput| {
@@ -1033,6 +1058,8 @@ pub fn App() -> Html {
       conflicts.set(Vec::new());
       pending_updates.set(out.initial_pending_updates);
       scanned_entries.set(Vec::new());
+      disk_flush_matrix.set(Vec::new());
+      disk_flush_slot_count.set(0);
       detected_hardware_summary.set(out.summary_label.clone());
       bound_filename.set("Created From Scratch (Unsaved)".to_string());
       bound_path_hint.set(format!(
@@ -1245,8 +1272,12 @@ pub fn App() -> Html {
         let diam_str = m.nozzle_diameter.clone();
         for sp in fil_list.iter_mut() {
           sp.recompute_for_nozzle(&new_nozzle_type);
-          if sp.id.starts_with("spool_scratch_") {
-            if let Some((prefix, _)) = sp.name.split_once(" • ") {
+          if sp.id.starts_with("spool_scratch_") || sp.id.starts_with("spool_catalog_") {
+            if let Some((prefix, _)) = sp
+              .name
+              .split_once(" • ")
+              .or_else(|| sp.name.rsplit_once(" - "))
+            {
               sp.name = format!("{} • {} {}", prefix, diam_str, short_noz);
             }
           }
@@ -1298,71 +1329,20 @@ pub fn App() -> Html {
   let on_change_ace_units = {
     let machines = machines.clone();
     let active_machine_id = active_machine_id.clone();
-    let filaments = filaments.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |units: usize| {
       let mut mach_list = (*machines).clone();
-      let mut noz_type = "hardened_steel".to_string();
       if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
         m.ace_pro_units = units;
-        noz_type = m.nozzle_type.clone();
         m.refresh_title_and_notes(m.source_disk_profile.is_none());
       }
       machines.set(mach_list);
 
-      let target_slots = units * 4;
-      let mut fil_list = (*filaments).clone();
-      let default_extra = [
-        ("PLA+", "#FF9500", "Orange"),
-        ("PETG", "#00D4FF", "Cyan"),
-        ("PCTG", "#A855F7", "Purple"),
-        ("ASA", "#EF4444", "Red"),
-      ];
-      while fil_list.len() < target_slots {
-        let next_idx = fil_list.len();
-        let (mat, hex, cname) = default_extra[next_idx % default_extra.len()];
-        let mut sp = FilamentSpool {
-          id: format!("spool_slot_{}", next_idx + 1),
-          name: format!("OC: Anycubic {} #{}", mat, next_idx + 1),
-          brand: "Anycubic".to_string(),
-          inherits: format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", mat),
-          material_type: mat.to_string(),
-          nozzle_type: noz_type.clone(),
-          tuned_for_nozzle_type: noz_type.clone(),
-          required_nozzle_hrc: 3,
-          color_hex: hex.to_string(),
-          color_name: cname.to_string(),
-          brass_base_temp: 215,
-          hs_base_temp: 220,
-          base_print_temp: 220,
-          print_temp: 220,
-          base_bed_temp: 60,
-          bed_temp: 60,
-          flow_ratio: 0.98,
-          pressure_advance: 0.035,
-          max_volumetric_speed: 16.0,
-          fan_speed_percent: 100,
-          remaining_grams: 1000,
-          is_loaded: true,
-          finish_type: "Basic".to_string(),
-          opacity: 1.0,
-          pigment_stickiness: 1.0,
-          drying_temp_c: 45,
-          drying_time_hr: 4,
-          is_rfid_synced: false,
-          deltas_from_base: Vec::new(),
-          raw_disk_json: None,
-        };
-        sp.apply_material_change(mat, &noz_type);
-        fil_list.push(sp);
-      }
-      filaments.set(fil_list);
-
       let label = if units == 2 {
-        "Double ACE Pro 2 (8 Slots / 8×8 Flushing Matrix)"
+        "Double ACE Pro 2 (8 Slots / up to 8×8 Flushing Matrix)"
       } else {
-        "Single ACE Pro (4 Slots / 4×4 Flushing Matrix)"
+        "Single ACE Pro (4 Slots / up to 4×4 Flushing Matrix)"
       };
       toast.set(Some(format!("Switched multi-material bank to {}!", label)));
     })
@@ -1383,53 +1363,21 @@ pub fn App() -> Html {
   let on_update_spool = {
     let filaments = filaments.clone();
     let toast = toast_message.clone();
-    Callback::from(move |mut updated: FilamentSpool| {
+    Callback::from(move |updated: FilamentSpool| {
       let mut list = (*filaments).clone();
       let mut changed_mat_msg = None;
       if let Some(pos) = list.iter().position(|s| s.id == updated.id) {
         let is_mat_change = list[pos].material_type != updated.material_type;
         if is_mat_change {
-          if list[pos].id.starts_with("disk_") {
-            // If another imported spool in the bank already matches the requested material, swap it into this slot
-            // so we don't overwrite the imported disk profile!
-            if let Some(match_idx) = list.iter().enumerate().position(|(i, s)| {
-              i != pos && s.material_type.eq_ignore_ascii_case(&updated.material_type)
-            }) {
-              list.swap(pos, match_idx);
-              changed_mat_msg = Some(format!(
-                "Loaded imported '{}' ({}) into Slot #{} without modifying base catalog!",
-                list[pos].format_concise_title(),
-                list[pos].material_type,
-                pos + 1
-              ));
-            } else {
-              // Keep the original imported disk profile intact in the bank and place a new slot spool in `pos`
-              let preserved_disk_spool = list[pos].clone();
-              updated.id = format!("spool_slot_custom_{}_{}", pos + 1, list.len() + 1);
-              changed_mat_msg = Some(format!(
-                "Set Slot #{} to {} ({}°C / {}°C) while preserving imported '{}' in the catalog!",
-                pos + 1,
-                updated.material_type,
-                updated.print_temp,
-                updated.bed_temp,
-                preserved_disk_spool.format_concise_title()
-              ));
-              list[pos] = updated;
-              list.push(preserved_disk_spool);
-            }
-          } else {
-            changed_mat_msg = Some(format!(
-              "Updated '{}' material to {} ({}°C nozzle / {}°C bed) & recalculated flushing matrix!",
-              updated.format_concise_title(),
-              updated.material_type,
-              updated.print_temp,
-              updated.bed_temp
-            ));
-            list[pos] = updated;
-          }
-        } else {
-          list[pos] = updated;
+          changed_mat_msg = Some(format!(
+            "Updated '{}' material to {} ({}°C nozzle / {}°C bed) & recalculated flushing matrix!",
+            updated.format_concise_title(),
+            updated.material_type,
+            updated.print_temp,
+            updated.bed_temp
+          ));
         }
+        list[pos] = updated;
       }
       filaments.set(list);
       if let Some(msg) = changed_mat_msg {
@@ -1448,7 +1396,7 @@ pub fn App() -> Html {
         let assigned_name = list[slot_idx].format_concise_title();
         filaments.set(list);
         toast.set(Some(format!(
-          "Assigned '{}' to Slot #{} and recalculated Flushing Volume Matrix!",
+          "Moved '{}' to Slot #{} and recalculated Flushing Volume Matrix!",
           assigned_name,
           slot_idx + 1
         )));
@@ -1458,17 +1406,56 @@ pub fn App() -> Html {
 
   let on_add_spool = {
     let filaments = filaments.clone();
+    let active_filament_type = active_filament_type.clone();
     let toast = toast_message.clone();
     Callback::from(move |new_spool: FilamentSpool| {
       let mut list = (*filaments).clone();
       let title = new_spool.format_concise_title();
+      if list.is_empty() {
+        active_filament_type.set(new_spool.material_type.clone());
+      }
       list.push(new_spool);
       let new_slot_num = list.len();
       filaments.set(list);
       toast.set(Some(format!(
-        "Added new spool '{}' (Slot #{}) to filament bank!",
+        "Added spool '{}' (#{}) to filament bank!",
         title, new_slot_num
       )));
+    })
+  };
+
+  let on_remove_spool = {
+    let filaments = filaments.clone();
+    let active_filament_type = active_filament_type.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |remove_idx: usize| {
+      let mut list = (*filaments).clone();
+      if remove_idx < list.len() {
+        let removed = list.remove(remove_idx);
+        if let Some(first) = list.first() {
+          if !list
+            .iter()
+            .any(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
+          {
+            active_filament_type.set(first.material_type.clone());
+          }
+        }
+        filaments.set(list);
+        toast.set(Some(format!(
+          "Removed spool '{}' (#{}) from filament bank.",
+          removed.format_concise_title(),
+          remove_idx + 1
+        )));
+      }
+    })
+  };
+
+  let on_clear_spools = {
+    let filaments = filaments.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |_| {
+      filaments.set(Vec::new());
+      toast.set(Some("Cleared all filament spools.".to_string()));
     })
   };
 
@@ -1538,7 +1525,7 @@ pub fn App() -> Html {
           .remove(0)
       });
       let json_content = export_standalone_filament_json(&spool, &active_rig);
-      let safe_name = spool.name.replace([' ', '/', '\\'], "_") + ".json";
+      let safe_name = crate::models::sanitize_profile_filename(&spool.name);
       if let Err(e) = FsManager::trigger_browser_download(&safe_name, &json_content) {
         toast.set(Some(format!("Download error: {}", e)));
       } else {
@@ -1556,7 +1543,7 @@ pub fn App() -> Html {
 
     Callback::from(move |spool: FilamentSpool| {
       let json_content = export_standalone_filament_json(&spool, &active_rig);
-      let safe_name = spool.name.replace([' ', '/', '\\'], "_") + ".json";
+      let safe_name = crate::models::sanitize_profile_filename(&spool.name);
       let _ = FsManager::trigger_browser_download(&safe_name, &json_content);
       toast.set(Some(format!(
         "Exported standalone OrcaSlicer filament preset '{}'!",
@@ -1615,10 +1602,18 @@ pub fn App() -> Html {
     })
   };
 
-  // Save Changes to Disk: applies staged `pending_updates` (from "Keep Clean Rule Value") and writes directly via `/api/local-slicer-save`
+  // Save Changes to Disk: synchronizes all added/edited OC: filaments, rigs, processes, and staged `pending_updates` and writes directly via `/api/local-slicer-save`
   let on_commit_save = {
     let last_saved_time = last_saved_time.clone();
     let scanned_entries = scanned_entries.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let flush_matrix = eval_result.flush_matrix.clone();
+    let flush_multiplier = *flush_multiplier;
+    let conf_relative_path = conf_relative_path.clone();
     let pending_updates = pending_updates.clone();
     let toast = toast_message.clone();
 
@@ -1630,8 +1625,18 @@ pub fn App() -> Html {
 
       let mut entries_copy = (*scanned_entries).clone();
       let staged_list = (*pending_updates).clone();
-      let modified_files = apply_pending_updates_to_entries(&mut entries_copy, &staged_list);
-      let staged_count = staged_list.len();
+      let modified_files = sync_live_state_to_entries(
+        &mut entries_copy,
+        &machines,
+        &active_machine_id,
+        &filaments,
+        &processes,
+        &active_process_id,
+        &flush_matrix,
+        flush_multiplier,
+        &conf_relative_path,
+        &staged_list,
+      );
 
       spawn_local(async move {
         let req_payload = LocalFsSaveRequest {
@@ -1658,14 +1663,13 @@ pub fn App() -> Html {
 
         if saved_via_api {
           t.set(Some(format!(
-            "Saved {} staged Clean Rule Value(s) across {} file(s) directly to local disk!",
-            staged_count,
+            "Saved {} profile & configuration file(s) directly to local disk!",
             modified_files.len()
           )));
         } else {
           t.set(Some(format!(
-            "Applied {} staged Clean Rule Value(s) to configuration state!",
-            staged_count
+            "Synchronized {} profile & configuration file(s) to configuration state!",
+            modified_files.len()
           )));
         }
       });
@@ -1961,6 +1965,10 @@ pub fn App() -> Html {
   };
 
   let modal_os = *selected_modal_os;
+  let on_open_export_modal = {
+    let sem = show_export_modal.clone();
+    Callback::from(move |_| sem.set(true))
+  };
 
   html! {
     <div class="min-h-screen bg-surface text-on-surface font-sans flex flex-col">
@@ -1972,10 +1980,7 @@ pub fn App() -> Html {
         bound_filename={(*bound_filename).clone()}
         active_rig_name={active_rig.name.clone()}
         ace_pro_units={active_rig.ace_pro_units}
-        on_commit_save={on_commit_save_guarded.clone()}
-        on_export_3mf={on_export_3mf_guarded.clone()}
-        on_import_zip={on_import_zip.clone()}
-        on_backup_zip={on_backup_zip_guarded.clone()}
+        on_open_export_modal={on_open_export_modal.clone()}
         on_toggle_diff={
           let sdd = show_diff_drawer.clone();
           Callback::from(move |_| sdd.set(!*sdd))
@@ -1984,6 +1989,154 @@ pub fn App() -> Html {
         has_unapplied_changes={!pending_updates.is_empty()}
         pending_save_count={pending_updates.len()}
       />
+
+      // Save & Export Popup Modal Menu
+      if *show_export_modal {
+        <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
+          <div class="bg-surface-container-low border-2 border-primary rounded-2xl max-w-2xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
+            <div class="flex items-start justify-between gap-space-md border-b border-surface-container pb-space-sm">
+              <div class="flex flex-col gap-0.5">
+                <span class="bg-primary text-on-primary text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded w-fit">
+                  {"Save & Export Menu"}
+                </span>
+                <h2 class="font-headline-lg text-headline-sm text-on-surface font-bold mt-1">
+                  {"Save & Export Configuration"}
+                </h2>
+                <p class="text-xs text-on-surface-variant">
+                  {"Choose an export format or write your configuration directly to disk."}
+                </p>
+              </div>
+              <button
+                class="text-on-surface-variant hover:text-on-surface p-1 cursor-pointer"
+                onclick={
+                  let sem = show_export_modal.clone();
+                  Callback::from(move |_| sem.set(false))
+                }
+              >
+                <span class="material-symbols-outlined">{"close"}</span>
+              </button>
+            </div>
+
+            <div class="flex flex-col gap-space-sm">
+              // Option 1: Export Orca WebConfig (.json)
+              <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
+                <div class="flex flex-col gap-1">
+                  <span class="font-code-md text-code-md text-primary font-bold">
+                    {"Export Orca WebConfig (.json)"}
+                  </span>
+                  <span class="text-xs text-on-surface">
+                    {"Exports your full Orca WebConfig state (machine rigs, filaments, processes, Lua rules, and flush matrix)."}
+                  </span>
+                  <span class="text-[11px] font-mono text-on-surface-variant">
+                    {"How to load: Click Reset All → Load Orca WebConfig (.json) in this web app."}
+                  </span>
+                </div>
+                <button
+                  class="shrink-0 flex items-center gap-space-xs bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                  onclick={
+                    let cb = on_export_webconfig_json_guarded.clone();
+                    Callback::from(move |_| cb.emit(()))
+                  }
+                >
+                  <span class="material-symbols-outlined text-[16px]">{"data_object"}</span>
+                  {"Export Orca WebConfig"}
+                </button>
+              </div>
+
+              // Option 2: Export OrcaSlicer Config (.zip)
+              <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
+                <div class="flex flex-col gap-1">
+                  <span class="font-code-md text-code-md text-secondary font-bold">
+                    {"Export OrcaSlicer Config (.zip)"}
+                  </span>
+                  <span class="text-xs text-on-surface">
+                    {"Exports a ZIP archive containing your custom OC - machine, process, and filament .json presets."}
+                  </span>
+                  <span class="text-[11px] font-mono text-on-surface-variant">
+                    {"How to load: In OrcaSlicer / AnycubicSlicerNext, click File → Import → Import Configs... and select the .zip file."}
+                  </span>
+                </div>
+                <button
+                  class="shrink-0 flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-secondary border border-secondary/50 px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                  onclick={
+                    let cb = on_backup_zip_guarded.clone();
+                    Callback::from(move |_| cb.emit(()))
+                  }
+                >
+                  <span class="material-symbols-outlined text-[16px]">{"folder_zip"}</span>
+                  {"Export OrcaSlicer Config"}
+                </button>
+              </div>
+
+              // Option 3: Export OrcaSlicer 3MF Loadout (.3mf)
+              <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
+                <div class="flex flex-col gap-1">
+                  <span class="font-code-md text-code-md text-tertiary font-bold">
+                    {"Export OrcaSlicer 3MF Loadout (.3mf)"}
+                  </span>
+                  <span class="text-xs text-on-surface">
+                    {"Exports a 3MF project pre-loaded with your active machine, process, 8-slot filament loadout, and flushing volumes matrix."}
+                  </span>
+                  <span class="text-[11px] font-mono text-on-surface-variant">
+                    {"How to load: In OrcaSlicer / AnycubicSlicerNext, click File → Open Project... (Ctrl+O) and select the .3mf file."}
+                  </span>
+                </div>
+                <button
+                  class="shrink-0 flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-tertiary border border-tertiary/50 px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                  onclick={
+                    let cb = on_export_3mf_guarded.clone();
+                    Callback::from(move |_| cb.emit(()))
+                  }
+                >
+                  <span class="material-symbols-outlined text-[16px]">{"deployed_code"}</span>
+                  {"Export OrcaSlicer 3MF Loadout"}
+                </button>
+              </div>
+
+              // Option 4: Save to Disk
+              <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
+                <div class="flex flex-col gap-1">
+                  <span class="font-code-md text-code-md text-on-surface font-bold">
+                    {"Save to Disk"}
+                  </span>
+                  <span class="text-xs text-on-surface">
+                    {"Writes all custom machine, process, filament presets, and .conf flushing volumes directly into your local slicer folder."}
+                  </span>
+                  <span class="text-[11px] font-mono text-on-surface-variant">
+                    {"How to load: Close the slicer before clicking Save, then launch OrcaSlicer / AnycubicSlicerNext to load automatically."}
+                  </span>
+                </div>
+                <button
+                  class="shrink-0 flex items-center gap-space-xs bg-primary hover:opacity-90 text-on-primary px-space-md py-2 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer"
+                  onclick={
+                    let cb = on_commit_save_guarded.clone();
+                    Callback::from(move |_| cb.emit(()))
+                  }
+                >
+                  <span class="material-symbols-outlined text-[16px]">{"save"}</span>
+                  if !pending_updates.is_empty() {
+                    {format!("Save to Disk ({} Staged)", pending_updates.len())}
+                  } else {
+                    {"Save to Disk"}
+                  }
+                </button>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-end pt-space-sm border-t border-surface-container">
+              <button
+                class="bg-surface-container-highest hover:bg-surface-bright text-on-surface border border-outline-variant px-space-xl py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                onclick={
+                  let sem = show_export_modal.clone();
+                  Callback::from(move |_| sem.set(false))
+                }
+              >
+                {"OK"}
+              </button>
+            </div>
+          </div>
+        </div>
+      }
 
       // Safety & Warning Confirmation Modal Dialog at Export / Save
       if let Some(pending_act) = &*pending_confirmed_action {
@@ -2439,6 +2592,7 @@ pub fn App() -> Html {
               on_backup_zip={on_backup_zip_guarded}
               on_export_webconfig_json={on_export_webconfig_json_guarded}
               on_import_webconfig_json={on_import_webconfig_json}
+              on_open_export_modal={on_open_export_modal.clone()}
               on_reset_all={on_reset_all}
               on_commit_save={on_commit_save_guarded.clone()}
               on_export_3mf={on_export_3mf_guarded.clone()}
@@ -2591,6 +2745,8 @@ pub fn App() -> Html {
               on_update_spool={on_update_spool}
               on_swap_slot_spool={on_swap_slot_spool}
               on_add_spool={on_add_spool}
+              on_remove_spool={on_remove_spool}
+              on_clear_spools={on_clear_spools}
               on_create_rule={on_create_rule.clone()}
               on_export_spool_json={on_export_spool_json}
               on_export_3mf={on_export_3mf_guarded}

@@ -19,6 +19,7 @@ pub struct HomeTabProps {
   pub on_backup_zip: Callback<()>,
   pub on_export_webconfig_json: Callback<()>,
   pub on_import_webconfig_json: Callback<Event>,
+  pub on_open_export_modal: Callback<()>,
   pub on_reset_all: Callback<()>,
   pub on_commit_save: Callback<()>,
   pub on_export_3mf: Callback<()>,
@@ -112,38 +113,15 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
 
         <div class="flex items-center gap-space-sm flex-wrap">
           <button
-            class="flex items-center gap-space-xs bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
-            title="Export the entire site state (machines, filaments, processes, Lua rules) as an Orca WebConfig JSON"
+            class="flex items-center gap-space-xs bg-primary hover:opacity-90 text-on-primary px-space-md py-1.5 rounded-lg text-xs font-mono font-bold transition-opacity shadow cursor-pointer"
+            title="Open Save & Export menu"
             onclick={
-              let cb = props.on_export_webconfig_json.clone();
+              let cb = props.on_open_export_modal.clone();
               Callback::from(move |_| cb.emit(()))
             }
           >
-            <span class="material-symbols-outlined text-[16px]">{"data_object"}</span>
-            {"Export Orca WebConfig (.json)"}
-          </button>
-          <label
-            class="flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-primary border border-primary/50 px-space-md py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
-            title="Load a previously exported orcaslicer_webconfig.json state file"
-          >
-            <span class="material-symbols-outlined text-[16px]">{"upload_file"}</span>
-            {"Load WebConfig (.json)"}
-            <input
-              type="file"
-              accept=".json,application/json"
-              class="hidden"
-              onchange={props.on_import_webconfig_json.clone()}
-            />
-          </label>
-          <button
-            class="flex items-center gap-space-xs bg-secondary/20 hover:bg-secondary/30 text-secondary border border-secondary/50 px-space-md py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
-            onclick={
-              let cb = props.on_backup_zip.clone();
-              Callback::from(move |_| cb.emit(()))
-            }
-          >
-            <span class="material-symbols-outlined text-[16px]">{"folder_zip"}</span>
-            {"Download Full Directory Backup (.zip)"}
+            <span class="material-symbols-outlined text-[16px]">{"ios_share"}</span>
+            {"Save & Export"}
           </button>
           <button
             class="flex items-center gap-space-xs bg-error-container/30 hover:bg-error-container text-error border border-error/50 px-space-md py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
@@ -414,39 +392,17 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
 
               <div class="flex items-center gap-space-xs flex-wrap">
                 <button
-                  class="flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-secondary border border-secondary/40 px-space-md py-space-xs rounded text-xs font-semibold transition-colors cursor-pointer"
-                  title="Export Standalone OrcaSlicer Filament/Machine Delta Preset (.json)"
-                  onclick={
-                    let cb = props.on_export_standalone_json.clone();
-                    Callback::from(move |_| cb.emit(()))
-                  }
-                >
-                  <span class="material-symbols-outlined text-[14px]">{"data_object"}</span>
-                  {"1. Standalone Preset (.json)"}
-                </button>
-                <button
-                  class="flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-tertiary border border-tertiary/40 px-space-md py-space-xs rounded text-xs font-semibold transition-colors cursor-pointer"
-                  title="Export Project Container (.3mf) with 4/8-slot ACE Pro arrays & flush_volumes_matrix"
-                  onclick={
-                    let cb = props.on_export_3mf.clone();
-                    Callback::from(move |_| cb.emit(()))
-                  }
-                >
-                  <span class="material-symbols-outlined text-[14px]">{"deployed_code"}</span>
-                  {"2. Project Container (.3mf)"}
-                </button>
-                <button
                   class="flex items-center gap-space-xs bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-space-xs rounded text-xs font-bold transition-colors shadow cursor-pointer"
                   onclick={
-                    let cb = props.on_commit_save.clone();
+                    let cb = props.on_open_export_modal.clone();
                     Callback::from(move |_| cb.emit(()))
                   }
                 >
-                  <span class="material-symbols-outlined text-[14px]">{"save"}</span>
+                  <span class="material-symbols-outlined text-[14px]">{"ios_share"}</span>
                   if !props.pending_updates.is_empty() {
-                    {format!("Save to Disk ({} Staged)", props.pending_updates.len())}
+                    {format!("Save & Export ({} Staged)", props.pending_updates.len())}
                   } else {
-                    {"Save Changes to Disk"}
+                    {"Save & Export"}
                   }
                 </button>
               </div>
@@ -477,16 +433,6 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                 />
               </label>
               <button
-                class="flex items-center gap-1 bg-surface-container-highest hover:bg-surface-bright text-secondary border border-secondary/40 px-2.5 py-1 rounded text-xs font-mono font-semibold cursor-pointer transition-colors"
-                onclick={
-                  let cb = props.on_backup_zip.clone();
-                  Callback::from(move |_| cb.emit(()))
-                }
-              >
-                <span class="material-symbols-outlined text-[14px]">{"folder_zip"}</span>
-                {"Export .zip"}
-              </button>
-              <button
                 class="flex items-center gap-1 text-xs text-primary hover:underline font-semibold cursor-pointer"
                 onclick={
                   let cb = props.on_load_reference_snapshot.clone();
@@ -497,6 +443,29 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                 {"Refresh Local FS"}
               </button>
             </div>
+          </div>
+
+          <div class="bg-amber-500/10 border border-amber-400/40 rounded-lg px-space-md py-space-sm text-[11px] text-on-surface-variant flex flex-col gap-0.5">
+            <span class="font-mono font-bold text-amber-300">
+              {"⚠️ Slicer Import Note: .zip Config Import vs. .3mf Flushing Volumes"}
+            </span>
+            <span>
+              {"OrcaSlicer's "}
+              <span class="font-mono text-on-surface">{"File → Import → Import Configs... (.zip)"}</span>
+              {" only loads Machine/Filament/Process "}
+              <span class="font-mono text-on-surface">{".json"}</span>
+              {" presets and ignores "}
+              <span class="font-mono text-on-surface">{".conf"}</span>
+              {" (where "}
+              <span class="font-mono text-on-surface">{"flush_volumes_matrix"}</span>
+              {" is stored). To import flushing volumes into the slicer, use "}
+              <strong class="text-on-surface">{"Export .3mf"}</strong>
+              {" (or "}
+              <strong class="text-on-surface">{"Save to Disk"}</strong>
+              {" while the slicer is closed), and set "}
+              <span class="font-mono text-amber-200">{"Preferences → Control → Behaviour → \"Auto flush after changing...\" = None"}</span>
+              {" so auto-recalculate does not overwrite them."}
+            </span>
           </div>
         </div>
 

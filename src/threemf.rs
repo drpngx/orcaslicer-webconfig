@@ -29,9 +29,11 @@ pub fn build_zip_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     let local_header_offset = out.len() as u32;
 
     // Local File Header (30 bytes + filename)
+    // Bit 11 (0x0800) = Language encoding flag (EFS): filename and comment are UTF-8 encoded
+    let utf8_flag: u16 = 0x0800;
     out.extend_from_slice(&0x0403_4B50u32.to_le_bytes()); // signature
     out.extend_from_slice(&20u16.to_le_bytes()); // version needed (2.0)
-    out.extend_from_slice(&0u16.to_le_bytes()); // general purpose bit flag
+    out.extend_from_slice(&utf8_flag.to_le_bytes()); // general purpose bit flag (UTF-8)
     out.extend_from_slice(&0u16.to_le_bytes()); // compression method: 0 = STORE
     out.extend_from_slice(&0u16.to_le_bytes()); // last mod file time
     out.extend_from_slice(&0u16.to_le_bytes()); // last mod file date
@@ -47,7 +49,7 @@ pub fn build_zip_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     central_dir.extend_from_slice(&0x0201_4B50u32.to_le_bytes()); // signature
     central_dir.extend_from_slice(&20u16.to_le_bytes()); // version made by
     central_dir.extend_from_slice(&20u16.to_le_bytes()); // version needed
-    central_dir.extend_from_slice(&0u16.to_le_bytes()); // flags
+    central_dir.extend_from_slice(&utf8_flag.to_le_bytes()); // flags (UTF-8)
     central_dir.extend_from_slice(&0u16.to_le_bytes()); // compression method: 0 = STORE
     central_dir.extend_from_slice(&0u16.to_le_bytes()); // mod time
     central_dir.extend_from_slice(&0u16.to_le_bytes()); // mod date
@@ -127,74 +129,113 @@ pub fn extract_file_from_zip(zip_bytes: &[u8], target_name: &str) -> Option<Stri
   None
 }
 
-/// Export a standalone OrcaSlicer Filament `.json` delta preset (Section 4.A)
-pub fn export_standalone_filament_json(spool: &FilamentSpool, rig: &MachineRig) -> String {
-  // Thermal Conductivity Rule (Section 3 Dynamic Combination Logic)
-  let temp_offset = match rig.short_nozzle_tag() {
-    "Hardened" | "Stainless" => 5,
-    "Diamondback" => -10,
-    _ => 0,
-  };
-  let brass_temp = if spool.brass_base_temp > 0 {
-    spool.brass_base_temp
-  } else {
-    spool.base_print_temp
-  };
-  let hs_temp = if spool.hs_base_temp > 0 {
-    spool.hs_base_temp
-  } else {
-    brass_temp + 5
-  };
-  let effective_temp = spool.base_print_temp + temp_offset;
-  let initial_temp = effective_temp + 5;
-  let (orca_nozzle_type, _) = rig.orca_machine_nozzle_type_and_hrc();
+/// Resolve a guaranteed-valid system filament preset name for Anycubic Kobra S1 0.4 nozzle
+pub fn resolve_kobra_s1_filament_inherits(spool: &FilamentSpool) -> String {
+  if spool.id.starts_with("disk_")
+    && !spool.inherits.trim().is_empty()
+    && !spool.inherits.contains("TPU for ACE @Anycubic Kobra S1 ")
+    && !spool.inherits.contains("TPU 95A @Anycubic Kobra S1 ")
+    && !spool.inherits.contains("PCTG @Anycubic Kobra S1 ")
+  {
+    return spool.inherits.clone();
+  }
+  match spool.material_type.trim() {
+    "PLA+" => "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA-CF" | "PLA-GF" => "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA Matte" => "Anycubic PLA Matte @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA Silk" => "Anycubic PLA Silk @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA Glow" => "Anycubic PLA Glow @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA High Speed" => "Anycubic PLA High Speed @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PETG-CF" | "PETG-GF" | "PCTG-CF" | "PCTG-GF" => {
+      "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle".to_string()
+    }
+    "PET-CF" | "PET-GF" => "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PETG" | "PCTG" | "PETG Translucent" | "PETG HF" => {
+      "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle".to_string()
+    }
+    "TPU" | "TPU for ACE" | "TPU for AMS" | "TPU 95A" | "TPU 95A HF" | "TPU 90A" | "TPU 85A"
+    | "TPU 64D" | "Rebound TPU" | "TPE" => "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PEBA" | "PEBA 90A" | "PEBA-CF" => "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "ASA" | "ASA-CF" | "ASA-GF" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "ABS" | "ABS-CF" | "ABS-GF" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PC" | "PC-CF" | "PC-GF" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PA" | "PA-CF" | "PA6-CF" | "PA6-GF" | "PA12" | "PA12-CF" | "PAHT" | "PAHT-CF" | "PAHT-GF"
+    | "PPA" | "PPA-CF" | "PPA-GF" => "Anycubic PA6-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    _ => "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle".to_string(),
+  }
+}
+
+/// Map internal material codes to OrcaSlicer / AnycubicSlicerNext valid `filament_type` enum strings
+pub fn resolve_orca_filament_type(material_type: &str) -> String {
+  match material_type.trim() {
+    "PLA+" | "PLA Matte" | "PLA Silk" | "PLA Glow" | "PLA High Speed" => "PLA".to_string(),
+    "PLA-GF" => "PLA-CF".to_string(),
+    "PCTG" | "PETG Translucent" | "PETG HF" => "PETG".to_string(),
+    "PCTG-CF" | "PCTG-GF" | "PETG-GF" => "PETG-CF".to_string(),
+    "PET-GF" => "PET-CF".to_string(),
+    "TPU 95A" | "TPU 95A HF" | "TPU 90A" | "TPU 85A" | "TPU 64D" | "TPU for AMS"
+    | "Rebound TPU" | "TPE" => "TPU".to_string(),
+    "PEBA 90A" | "PEBA-CF" => "PEBA".to_string(),
+    "ASA-CF" | "ASA-GF" => "ASA".to_string(),
+    "ABS-CF" | "ABS-GF" => "ABS".to_string(),
+    "PA-CF" | "PA6-GF" | "PA12-CF" => "PA6-CF".to_string(),
+    "PAHT" | "PAHT-GF" | "PPA" | "PPA-CF" | "PPA-GF" => "PAHT-CF".to_string(),
+    "PA12" => "PA".to_string(),
+    other => other.to_string(),
+  }
+}
+
+const FILAMENT_DIFF_KEYS: &str = "default_filament_colour;fan_max_speed;filament_colour;filament_deretraction_speed;filament_diameter;filament_flow_ratio;filament_max_volumetric_speed;filament_retract_before_wipe;filament_type;filament_z_hop;filament_z_hop_types;hot_plate_temp;hot_plate_temp_initial_layer;nozzle_temperature;nozzle_temperature_initial_layer;pressure_advance;required_nozzle_HRC;textured_plate_temp;textured_plate_temp_initial_layer";
+
+fn build_filament_preset_json_with_source(
+  spool: &FilamentSpool,
+  _rig: &MachineRig,
+  from_src: &str,
+) -> String {
+  let effective_temp = spool.print_temp;
+  let initial_temp = (effective_temp + 5).min(350);
   let export_name = spool.format_concise_title();
+  let inherits = resolve_kobra_s1_filament_inherits(spool);
+  let orca_fil_type = resolve_orca_filament_type(&spool.material_type);
   let is_pctg_or_petg =
     spool.material_type.contains("PCTG") || spool.material_type.contains("PETG");
 
   let json_val = serde_json::json!({
-    "from": "User",
-    "inherits": spool.inherits,
+    "type": "filament",
+    "from": from_src,
+    "is_custom_defined": "0",
+    "inherits": inherits,
     "name": export_name,
     "filament_settings_id": [export_name],
-    "filament_type": [spool.material_type],
-    "nozzle_type": [orca_nozzle_type],
+    "compatible_printers": ["Anycubic Kobra S1 0.4 nozzle"],
+    "filament_type": [orca_fil_type],
+    "filament_diameter": ["1.75"],
     "required_nozzle_HRC": [spool.required_nozzle_hrc.to_string()],
+    "default_filament_colour": [spool.color_hex],
     "filament_colour": [spool.color_hex],
     "nozzle_temperature": [effective_temp.to_string()],
-    "nozzle_temperature_BRASS": [brass_temp.to_string()],
-    "nozzle_temperature_HS": [hs_temp.to_string()],
     "nozzle_temperature_initial_layer": [initial_temp.to_string()],
-    "nozzle_temperature_initial_layer_BRASS": [(brass_temp + 5).to_string()],
-    "nozzle_temperature_initial_layer_HS": [(hs_temp + 5).to_string()],
     "hot_plate_temp": [spool.bed_temp.to_string()],
-    "textured_plate_temp": [spool.bed_temp.to_string()],
     "hot_plate_temp_initial_layer": [spool.bed_temp.to_string()],
+    "textured_plate_temp": [spool.bed_temp.to_string()],
     "textured_plate_temp_initial_layer": [spool.bed_temp.to_string()],
     "filament_flow_ratio": [format!("{:.2}", spool.flow_ratio)],
     "pressure_advance": [format!("{:.3}", spool.pressure_advance)],
     "filament_max_volumetric_speed": [format!("{:.1}", spool.max_volumetric_speed)],
     "fan_max_speed": [spool.fan_speed_percent.to_string()],
-    "fan_max_speed_BRASS": [spool.fan_speed_percent.to_string()],
-    "fan_max_speed_HS": [spool.fan_speed_percent.to_string()],
     "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
-    "filament_z_hop_types": [if is_pctg_or_petg { "Spiral" } else { "Normal Lift" }],
+    "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
     "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
     "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
-    "orcaslicer_webconfig_metadata": {
-      "finish_type": spool.finish_type,
-      "nozzle_type": spool.nozzle_type,
-      "required_nozzle_hrc": spool.required_nozzle_hrc,
-      "opacity": spool.opacity,
-      "pigment_stickiness": spool.pigment_stickiness,
-      "drying_temp_c": spool.drying_temp_c,
-      "drying_time_hr": spool.drying_time_hr,
-      "is_rfid_synced": spool.is_rfid_synced
-    },
     "version": "2.0.0.0"
   });
 
   serde_json::to_string_pretty(&json_val).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Export a standalone OrcaSlicer Filament `.json` delta preset (Section 4.A)
+pub fn export_standalone_filament_json(spool: &FilamentSpool, rig: &MachineRig) -> String {
+  build_filament_preset_json_with_source(spool, rig, "User")
 }
 
 /// Build the `Metadata/project_settings.config` JSON string for 4-slot or 8-slot ACE Pro loadouts (Section 4.B)
@@ -205,12 +246,7 @@ pub fn build_project_settings_config_json(
   flush_matrix: &[String],
   derived_overrides: &serde_json::Map<String, serde_json::Value>,
 ) -> String {
-  let temp_offset = match rig.short_nozzle_tag() {
-    "Hardened" | "Stainless" => 5,
-    "Diamondback" => -10,
-    _ => 0,
-  };
-  let (orca_nozzle_type, orca_nozzle_hrc) = rig.orca_machine_nozzle_type_and_hrc();
+  let (orca_nozzle_type, _) = rig.orca_machine_nozzle_type_and_hrc();
 
   let ids: Vec<String> = active_slots
     .iter()
@@ -218,11 +254,7 @@ pub fn build_project_settings_config_json(
     .collect();
   let types: Vec<String> = active_slots
     .iter()
-    .map(|s| s.material_type.clone())
-    .collect();
-  let fil_nozzle_types: Vec<String> = active_slots
-    .iter()
-    .map(|_| orca_nozzle_type.to_string())
+    .map(|s| resolve_orca_filament_type(&s.material_type))
     .collect();
   let fil_required_hrcs: Vec<String> = active_slots
     .iter()
@@ -231,11 +263,11 @@ pub fn build_project_settings_config_json(
   let colors: Vec<String> = active_slots.iter().map(|s| s.color_hex.clone()).collect();
   let temps: Vec<String> = active_slots
     .iter()
-    .map(|s| (s.print_temp + temp_offset).to_string())
+    .map(|s| s.print_temp.to_string())
     .collect();
   let init_temps: Vec<String> = active_slots
     .iter()
-    .map(|s| (s.print_temp + temp_offset + 5).to_string())
+    .map(|s| (s.print_temp + 5).min(350).to_string())
     .collect();
   let bed_temps: Vec<String> = active_slots
     .iter()
@@ -253,81 +285,143 @@ pub fn build_project_settings_config_json(
     .iter()
     .map(|s| format!("{:.1}", s.max_volumetric_speed))
     .collect();
-  let finishes: Vec<String> = active_slots.iter().map(|s| s.finish_type.clone()).collect();
-  let opacities: Vec<f32> = active_slots.iter().map(|s| s.opacity).collect();
-  let stickiness: Vec<f32> = active_slots.iter().map(|s| s.pigment_stickiness).collect();
-  let drying_temps: Vec<i32> = active_slots.iter().map(|s| s.drying_temp_c).collect();
-  let drying_hours: Vec<i32> = active_slots.iter().map(|s| s.drying_time_hr).collect();
-
-  // Volumetric Speed Ceiling Rule (Section 3)
-  let min_fil_flow = active_slots
+  let fan_max: Vec<String> = active_slots
     .iter()
-    .map(|s| s.max_volumetric_speed as f64)
-    .fold(rig.max_volumetric_flow_limit, f64::min);
-  let effective_flow = rig.max_volumetric_flow_limit.min(min_fil_flow);
-  let cross_section = (process.layer_height * process.line_width).max(0.01);
-  let safe_speed_ceiling = (effective_flow / cross_section).floor();
+    .map(|s| s.fan_speed_percent.to_string())
+    .collect();
+  let fil_z_hop: Vec<String> = active_slots
+    .iter()
+    .map(|s| {
+      if s.material_type.contains("PCTG") || s.material_type.contains("PETG") {
+        "0.15".to_string()
+      } else {
+        "0.2".to_string()
+      }
+    })
+    .collect();
+  let fil_z_hop_types: Vec<String> = active_slots
+    .iter()
+    .map(|s| {
+      if s.material_type.contains("PCTG") || s.material_type.contains("PETG") {
+        "Spiral Lift".to_string()
+      } else {
+        "Normal Lift".to_string()
+      }
+    })
+    .collect();
+  let fil_rbw: Vec<String> = active_slots
+    .iter()
+    .map(|s| {
+      if s.material_type.contains("PCTG") || s.material_type.contains("PETG") {
+        "70%".to_string()
+      } else {
+        "0%".to_string()
+      }
+    })
+    .collect();
+  let fil_deretract: Vec<String> = active_slots
+    .iter()
+    .map(|s| {
+      if s.material_type.contains("PCTG") || s.material_type.contains("PETG") {
+        "30".to_string()
+      } else {
+        "0".to_string()
+      }
+    })
+    .collect();
+
+  // Build inherits_group and different_settings_to_system (length = 1 process + N filaments + 1 printer)
+  let proc_inherits = if process.inherits.trim().is_empty() {
+    "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string()
+  } else {
+    process.inherits.clone()
+  };
+  let mach_inherits = "Anycubic Kobra S1 0.4 nozzle".to_string();
+  let mut inherits_group: Vec<String> = Vec::with_capacity(active_slots.len() + 2);
+  inherits_group.push(proc_inherits);
+  for s in active_slots {
+    inherits_group.push(resolve_kobra_s1_filament_inherits(s));
+  }
+  inherits_group.push(mach_inherits);
+
+  let mut different_settings_to_system: Vec<String> = Vec::with_capacity(active_slots.len() + 2);
+  different_settings_to_system.push(
+    "default_acceleration;initial_layer_speed;inner_wall_speed;layer_height;line_width;notes;outer_wall_line_width;outer_wall_speed;print_sequence;sparse_infill_speed;wall_generator".to_string(),
+  );
+  for _ in active_slots {
+    different_settings_to_system.push(FILAMENT_DIFF_KEYS.to_string());
+  }
+  different_settings_to_system.push(
+    "nozzle_diameter;nozzle_type;printer_notes;retraction_length;retraction_speed".to_string(),
+  );
 
   let flush_vec: Vec<String> = vec!["140".to_string(); active_slots.len() * 2];
+  let fil_diameters: Vec<String> = vec!["1.75".to_string(); active_slots.len()];
 
-  let mut config_obj = serde_json::json!({
+  let noz_diam_str = rig.formatted_nozzle_diameter();
+
+  let config_obj = serde_json::json!({
+    "from": "project",
     "printer_model": rig.printer_model,
+    "printer_variant": noz_diam_str,
     "printer_settings_id": rig.format_concise_title(),
     "printer_notes": rig.notes,
     "print_settings_id": process.format_concise_title(&rig.short_model_tag()),
     "notes": process.notes,
-    "nozzle_diameter": [rig.nozzle_diameter],
+    "nozzle_diameter": [noz_diam_str],
     "nozzle_type": orca_nozzle_type,
-    "nozzle_hrc": orca_nozzle_hrc.to_string(),
-    "nozzle_material": rig.nozzle_material,
-    "ace_pro_units": rig.ace_pro_units,
-    "active_slot_count": active_slots.len(),
-    "melt_zone_multiplier": rig.melt_zone_multiplier,
+    "retraction_length": [format!("{:.2}", rig.base_retraction_length)],
+    "retraction_speed": ["40"],
+    "printable_area": ["0x0", "250x0", "250x250", "0x250"],
+    "printable_height": "250",
+    "compatible_printers": ["Anycubic Kobra S1 0.4 nozzle"],
+    "inherits_group": inherits_group,
+    "different_settings_to_system": different_settings_to_system,
     "filament_settings_id": ids,
     "filament_type": types,
-    "filament_nozzle_type": fil_nozzle_types,
+    "filament_diameter": fil_diameters,
     "required_nozzle_HRC": fil_required_hrcs,
+    "default_filament_colour": colors.clone(),
     "filament_colour": colors,
     "nozzle_temperature": temps,
     "nozzle_temperature_initial_layer": init_temps,
-    "hot_plate_temp": bed_temps,
+    "hot_plate_temp": bed_temps.clone(),
+    "hot_plate_temp_initial_layer": bed_temps.clone(),
+    "textured_plate_temp": bed_temps.clone(),
+    "textured_plate_temp_initial_layer": bed_temps,
     "filament_flow_ratio": flows,
     "pressure_advance": pas,
     "filament_max_volumetric_speed": mvs,
-    "filament_finish_type": finishes,
-    "filament_opacity": opacities,
-    "filament_pigment_stickiness": stickiness,
-    "filament_drying_temp_c": drying_temps,
-    "filament_drying_time_hr": drying_hours,
+    "fan_max_speed": fan_max,
+    "filament_z_hop": fil_z_hop,
+    "filament_z_hop_types": fil_z_hop_types,
+    "filament_retract_before_wipe": fil_rbw,
+    "filament_deretraction_speed": fil_deretract,
     "layer_height": format!("{:.2}", process.layer_height),
+    "line_width": format!("{:.2}", process.line_width),
     "outer_wall_line_width": format!("{:.2}", process.line_width),
-    "outer_wall_speed": format!("{:.0}", process.outer_wall_speed.min(safe_speed_ceiling)),
-    "inner_wall_speed": format!("{:.0}", process.inner_wall_speed.min(safe_speed_ceiling)),
-    "sparse_infill_speed": format!("{:.0}", process.sparse_infill_speed.min(safe_speed_ceiling)),
+    "outer_wall_speed": format!("{:.0}", process.outer_wall_speed),
+    "inner_wall_speed": format!("{:.0}", process.inner_wall_speed),
+    "sparse_infill_speed": format!("{:.0}", process.sparse_infill_speed),
     "initial_layer_speed": format!("{:.0}", process.initial_layer_speed),
     "default_acceleration": format!("{:.0}", process.default_acceleration),
-    "computed_safe_speed_ceiling_mm_s": safe_speed_ceiling,
+    "wall_generator": process.wall_generator,
+    "print_sequence": process.print_sequence,
     "flush_multiplier": derived_overrides
       .get("flush_multiplier")
       .and_then(|v| v.as_str())
       .unwrap_or("1.0"),
     "flush_volumes_vector": flush_vec,
     "flush_volumes_matrix": flush_matrix,
-    "version": "2.0.0.0"
+    "version": "02.03.00.03"
   });
-
-  if let Some(map) = config_obj.as_object_mut() {
-    for (k, v) in derived_overrides {
-      if !map.contains_key(k) {
-        map.insert(k.clone(), v.clone());
-      }
-    }
-  }
 
   serde_json::to_string_pretty(&config_obj).unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Build a complete `.3mf` Project Container (ZIP archive) with `Metadata/project_settings.config`
+/// Build a complete `.3mf` Project Container (ZIP archive) with `Metadata/project_settings.config`,
+/// embedded `Metadata/filament_settings_<k>.config`, `Metadata/process_settings_1.config`,
+/// `Metadata/machine_settings_1.config`, and `Metadata/orcaslicer_webconfig_loadout.json`.
 pub fn build_3mf_project_container(
   rig: &MachineRig,
   process: &ProcessProfile,
@@ -340,6 +434,7 @@ pub fn build_3mf_project_container(
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
   <Default Extension="config" ContentType="application/json"/>
+  <Default Extension="json" ContentType="application/json"/>
 </Types>"#;
 
   let rels_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -349,7 +444,7 @@ pub fn build_3mf_project_container(
 
   let model_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
-  <metadata name="Application">OrcaSlicer-WebConfig-2.1</metadata>
+  <metadata name="Application">BambuStudio-02.03.00.03</metadata>
   <resources/>
   <build/>
 </model>"#;
@@ -357,7 +452,81 @@ pub fn build_3mf_project_container(
   let project_settings_json =
     build_project_settings_config_json(rig, process, active_slots, flush_matrix, derived_overrides);
 
-  let files = [
+  let (orca_nozzle_type, orca_nozzle_hrc) = rig.orca_machine_nozzle_type_and_hrc();
+  let mach_title = rig.format_concise_title();
+  let noz_diam_str = rig.formatted_nozzle_diameter();
+  let mach_inherits = format!("{} {} nozzle", rig.printer_model, noz_diam_str);
+  let machine_settings_json = serde_json::to_string_pretty(&serde_json::json!({
+    "type": "machine",
+    "from": "project",
+    "is_custom_defined": "0",
+    "name": mach_title,
+    "printer_settings_id": mach_title,
+    "inherits": mach_inherits,
+    "printer_model": rig.printer_model,
+    "printer_variant": noz_diam_str,
+    "nozzle_diameter": [noz_diam_str],
+    "nozzle_type": orca_nozzle_type,
+    "nozzle_hrc": orca_nozzle_hrc.to_string(),
+    "retraction_length": [format!("{:.2}", rig.base_retraction_length)],
+    "retraction_speed": ["40"],
+    "printer_notes": rig.notes,
+    "version": "2.0.0.0"
+  }))
+  .unwrap_or_else(|_| "{}".to_string());
+
+  let proc_title = process.format_concise_title(&rig.short_model_tag());
+  let proc_inherits = if process.inherits.trim().is_empty() {
+    "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string()
+  } else {
+    process.inherits.clone()
+  };
+  let process_settings_json = serde_json::to_string_pretty(&serde_json::json!({
+    "type": "process",
+    "from": "project",
+    "is_custom_defined": "0",
+    "name": proc_title,
+    "print_settings_id": proc_title,
+    "inherits": proc_inherits,
+    "compatible_printers": ["Anycubic Kobra S1 0.4 nozzle"],
+    "layer_height": format!("{:.2}", process.layer_height),
+    "line_width": format!("{:.2}", process.line_width),
+    "outer_wall_line_width": format!("{:.2}", process.line_width),
+    "outer_wall_speed": format!("{:.0}", process.outer_wall_speed),
+    "inner_wall_speed": format!("{:.0}", process.inner_wall_speed),
+    "sparse_infill_speed": format!("{:.0}", process.sparse_infill_speed),
+    "initial_layer_speed": format!("{:.0}", process.initial_layer_speed),
+    "default_acceleration": format!("{:.0}", process.default_acceleration),
+    "wall_generator": process.wall_generator,
+    "print_sequence": process.print_sequence,
+    "notes": process.notes,
+    "version": "2.0.0.0"
+  }))
+  .unwrap_or_else(|_| "{}".to_string());
+
+  let webconfig_loadout_json = serde_json::to_string_pretty(&serde_json::json!({
+    "ace_pro_units": rig.ace_pro_units,
+    "filament_material_type": active_slots.iter().map(|s| s.material_type.clone()).collect::<Vec<_>>(),
+    "filament_finish_type": active_slots.iter().map(|s| s.finish_type.clone()).collect::<Vec<_>>(),
+    "filament_opacity": active_slots.iter().map(|s| s.opacity).collect::<Vec<_>>(),
+    "filament_pigment_stickiness": active_slots.iter().map(|s| s.pigment_stickiness).collect::<Vec<_>>(),
+    "filament_drying_temp_c": active_slots.iter().map(|s| s.drying_temp_c).collect::<Vec<_>>(),
+    "filament_drying_time_hr": active_slots.iter().map(|s| s.drying_time_hr).collect::<Vec<_>>()
+  }))
+  .unwrap_or_else(|_| "{}".to_string());
+
+  let filament_jsons: Vec<(String, String)> = active_slots
+    .iter()
+    .enumerate()
+    .map(|(idx, spool)| {
+      (
+        format!("Metadata/filament_settings_{}.config", idx + 1),
+        build_filament_preset_json_with_source(spool, rig, "project"),
+      )
+    })
+    .collect();
+
+  let mut files: Vec<(&str, &[u8])> = vec![
     ("[Content_Types].xml", content_types_xml.as_bytes()),
     ("_rels/.rels", rels_xml.as_bytes()),
     ("3D/3dmodel.model", model_xml.as_bytes()),
@@ -365,7 +534,22 @@ pub fn build_3mf_project_container(
       "Metadata/project_settings.config",
       project_settings_json.as_bytes(),
     ),
+    (
+      "Metadata/machine_settings_1.config",
+      machine_settings_json.as_bytes(),
+    ),
+    (
+      "Metadata/process_settings_1.config",
+      process_settings_json.as_bytes(),
+    ),
+    (
+      "Metadata/orcaslicer_webconfig_loadout.json",
+      webconfig_loadout_json.as_bytes(),
+    ),
   ];
+  for (path, content) in &filament_jsons {
+    files.push((path.as_str(), content.as_bytes()));
+  }
 
   build_zip_archive(&files)
 }
@@ -380,14 +564,20 @@ pub struct ImportedAceLoadout {
 /// Parse an imported `.3mf` archive, `Metadata/project_settings.config` JSON, or `OrcaSlicer.conf`
 /// to populate either a 4-slot Single ACE Pro or 8-slot Double ACE Pro 2 loadout!
 pub fn parse_ace_loadout_from_bytes_or_json(data: &[u8]) -> Result<ImportedAceLoadout, String> {
-  let json_text = if data.len() >= 4 && &data[0..4] == b"PK\x03\x04" {
-    extract_file_from_zip(data, "Metadata/project_settings.config").ok_or_else(|| {
+  let (json_text, webconfig_meta_val) = if data.len() >= 4 && &data[0..4] == b"PK\x03\x04" {
+    let ps = extract_file_from_zip(data, "Metadata/project_settings.config").ok_or_else(|| {
       "ZIP/.3mf archive does not contain Metadata/project_settings.config".to_string()
-    })?
+    })?;
+    let meta = extract_file_from_zip(data, "Metadata/orcaslicer_webconfig_loadout.json")
+      .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    (ps, meta)
   } else {
-    std::str::from_utf8(data)
-      .map_err(|e| format!("Invalid UTF-8 in config file: {}", e))?
-      .to_string()
+    (
+      std::str::from_utf8(data)
+        .map_err(|e| format!("Invalid UTF-8 in config file: {}", e))?
+        .to_string(),
+      None,
+    )
   };
 
   let val: serde_json::Value =
@@ -413,7 +603,11 @@ pub fn parse_ace_loadout_from_bytes_or_json(data: &[u8]) -> Result<ImportedAceLo
     return Err("Filament array in config is empty".to_string());
   }
 
-  let types = val.get("filament_type").and_then(|v| v.as_array());
+  let types = webconfig_meta_val
+    .as_ref()
+    .and_then(|m| m.get("filament_material_type"))
+    .and_then(|v| v.as_array())
+    .or_else(|| val.get("filament_type").and_then(|v| v.as_array()));
   let colors = val.get("filament_colour").and_then(|v| v.as_array());
   let temps = val.get("nozzle_temperature").and_then(|v| v.as_array());
   let bed_temps = val.get("hot_plate_temp").and_then(|v| v.as_array());
@@ -422,11 +616,25 @@ pub fn parse_ace_loadout_from_bytes_or_json(data: &[u8]) -> Result<ImportedAceLo
   let mvs = val
     .get("filament_max_volumetric_speed")
     .and_then(|v| v.as_array());
-  let finishes = val.get("filament_finish_type").and_then(|v| v.as_array());
-  let opacities = val.get("filament_opacity").and_then(|v| v.as_array());
-  let stickiness = val
-    .get("filament_pigment_stickiness")
-    .and_then(|v| v.as_array());
+  let finishes = webconfig_meta_val
+    .as_ref()
+    .and_then(|m| m.get("filament_finish_type"))
+    .and_then(|v| v.as_array())
+    .or_else(|| val.get("filament_finish_type").and_then(|v| v.as_array()));
+  let opacities = webconfig_meta_val
+    .as_ref()
+    .and_then(|m| m.get("filament_opacity"))
+    .and_then(|v| v.as_array())
+    .or_else(|| val.get("filament_opacity").and_then(|v| v.as_array()));
+  let stickiness = webconfig_meta_val
+    .as_ref()
+    .and_then(|m| m.get("filament_pigment_stickiness"))
+    .and_then(|v| v.as_array())
+    .or_else(|| {
+      val
+        .get("filament_pigment_stickiness")
+        .and_then(|v| v.as_array())
+    });
 
   let mut spools = Vec::new();
   for idx in 0..count {
@@ -582,5 +790,68 @@ mod tests {
     assert_eq!(imported.spools.len(), 8);
     assert!(!imported.spools[0].name.is_empty());
     assert_eq!(imported.flush_matrix.unwrap().len(), 64);
+
+    // Verify all 8 filament presets are embedded and project_settings.config has strict string/string-array types
+    for slot_idx in 1..=8 {
+      let fil_cfg = extract_file_from_zip(
+        &zip_bytes,
+        &format!("Metadata/filament_settings_{}.config", slot_idx),
+      )
+      .expect("Missing embedded filament_settings config");
+      let fil_val: serde_json::Value = serde_json::from_str(&fil_cfg).unwrap();
+      for (k, v) in fil_val.as_object().unwrap() {
+        assert!(
+          v.is_string() || (v.is_array() && v.as_array().unwrap().iter().all(|x| x.is_string())),
+          "Non-string/string-array key {} in filament_settings_{}.config: {:?}",
+          k,
+          slot_idx,
+          v
+        );
+      }
+    }
+
+    let mut noisy_overrides = serde_json::Map::new();
+    noisy_overrides.insert(
+      "fan_cooling_layer_time".to_string(),
+      serde_json::json!(["30"]),
+    );
+    noisy_overrides.insert("z_hop_types".to_string(), serde_json::json!(["Slope"]));
+    let ps_json =
+      build_project_settings_config_json(&rig, &proc, &spools, &dummy_matrix, &noisy_overrides);
+    let ps_val: serde_json::Value = serde_json::from_str(&ps_json).unwrap();
+    let ps_map = ps_val.as_object().unwrap();
+    assert!(
+      !ps_map.contains_key("fan_cooling_layer_time"),
+      "1-element filament array from base_profile must never leak into project_settings.config"
+    );
+    assert_eq!(ps_map["nozzle_diameter"], serde_json::json!(["0.4"]));
+    assert_eq!(ps_map["printer_variant"], serde_json::json!("0.4"));
+    assert_eq!(ps_map["outer_wall_line_width"], serde_json::json!("0.42"));
+    assert_eq!(ps_map["filament_diameter"].as_array().unwrap().len(), 8);
+    assert_eq!(ps_map["default_filament_colour"], ps_map["filament_colour"]);
+    assert_eq!(ps_map["inherits_group"].as_array().unwrap().len(), 10);
+
+    let model_xml = extract_file_from_zip(&zip_bytes, "3D/3dmodel.model").unwrap();
+    assert!(model_xml.contains("BambuStudio-02.03.00.03"));
+
+    let mach_cfg = extract_file_from_zip(&zip_bytes, "Metadata/machine_settings_1.config").unwrap();
+    let mach_val: serde_json::Value = serde_json::from_str(&mach_cfg).unwrap();
+    assert_eq!(mach_val["nozzle_diameter"], serde_json::json!(["0.4"]));
+    assert_eq!(mach_val["printer_variant"], serde_json::json!("0.4"));
+    assert_eq!(
+      ps_map["different_settings_to_system"]
+        .as_array()
+        .unwrap()
+        .len(),
+      10
+    );
+    for (k, v) in ps_map {
+      assert!(
+        v.is_string() || (v.is_array() && v.as_array().unwrap().iter().all(|x| x.is_string())),
+        "Key {} in project_settings.config is not string or Vec<String>: {:?}",
+        k,
+        v
+      );
+    }
   }
 }
