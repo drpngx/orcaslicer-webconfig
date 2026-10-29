@@ -1,11 +1,26 @@
+use crate::catalog::load_merged_catalog;
+use crate::components::wizard_tab::render_issue_illustration;
 use crate::models::FilamentSpool;
+use crate::transformations::{
+  ParameterizedCalibrationTemplate, TransformationEngine, TransformationRule,
+};
+use std::collections::HashMap;
+use web_sys::HtmlInputElement;
 use yew::prelude::*;
+
+fn extract_event_value(e: &Event) -> Option<String> {
+  let target = e.target()?;
+  js_sys::Reflect::get(&target, &wasm_bindgen::JsValue::from_str("value"))
+    .ok()
+    .and_then(|v| v.as_string())
+}
 
 #[derive(Properties, PartialEq)]
 pub struct FilamentTabProps {
   pub is_config_loaded: bool,
   pub filaments: Vec<FilamentSpool>,
   pub active_filament_type: String,
+  pub active_nozzle_type: String,
   pub ace_pro_units: usize, // 1 = 4 slots, 2 = 8 slots Double ACE Pro 2
   pub flush_matrix: Vec<String>,
   pub disk_flush_matrix: Vec<String>,
@@ -18,6 +33,9 @@ pub struct FilamentTabProps {
   pub on_select_active_filament: Callback<String>,
   pub on_change_ace_units: Callback<usize>,
   pub on_update_spool: Callback<FilamentSpool>,
+  pub on_swap_slot_spool: Callback<(usize, usize)>,
+  pub on_add_spool: Callback<FilamentSpool>,
+  pub on_create_rule: Callback<TransformationRule>,
   pub on_export_spool_json: Callback<FilamentSpool>,
   pub on_export_3mf: Callback<()>,
   pub on_open_bind_modal: Callback<()>,
@@ -30,6 +48,12 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
   let show_raw_disk_json = use_state(|| false);
   // "diff" = Before (Disk) -> After (Lua), "lua" = Lua Output Only, "disk" = Imported Disk Only
   let matrix_view_mode = use_state(|| "diff".to_string());
+  let qa_templates = use_memo((), |_| {
+    TransformationEngine::get_parameterized_calibration_templates()
+  });
+  let qa_tree_cat = use_state(|| "all".to_string());
+  let active_qa_id = use_state(|| None::<String>);
+  let qa_answers = use_state(HashMap::<String, String>::new);
 
   if !props.is_config_loaded || props.filaments.is_empty() {
     return html! {
@@ -59,7 +83,12 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
   let on_select = props.on_select_active_filament.clone();
   let on_change_ace = props.on_change_ace_units.clone();
   let on_update_spool = props.on_update_spool.clone();
+  let on_swap_slot = props.on_swap_slot_spool.clone();
+  let on_add_spool = props.on_add_spool.clone();
   let on_export_spool = props.on_export_spool_json.clone();
+  let active_noz = props.active_nozzle_type.clone();
+  let catalog = use_memo((), |_| load_merged_catalog());
+  let material_choices: Vec<String> = catalog.filaments.iter().map(|f| f.code.clone()).collect();
 
   let editing_spool = props
     .filaments
@@ -183,6 +212,55 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
           </div>
 
           <button
+            class="flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-primary border border-primary/50 px-space-md py-space-xs rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+            title="Add a new filament spool to the bank (and next available ACE Pro slot)"
+            onclick={{
+              let cb = on_add_spool.clone();
+              let next_idx = props.filaments.len() + 1;
+              let noz = active_noz.clone();
+              Callback::from(move |_| {
+                let mut sp = FilamentSpool {
+                  id: format!("spool_custom_{}", next_idx),
+                  name: format!("OC: Anycubic PETG #{}", next_idx),
+                  brand: "Anycubic".to_string(),
+                  inherits: "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle".to_string(),
+                  material_type: "PETG".to_string(),
+                  nozzle_type: noz.clone(),
+                  tuned_for_nozzle_type: noz.clone(),
+                  required_nozzle_hrc: 3,
+                  color_hex: "#00D4FF".to_string(),
+                  color_name: "Cyan".to_string(),
+                  brass_base_temp: 230,
+                  hs_base_temp: 235,
+                  base_print_temp: 235,
+                  print_temp: 235,
+                  base_bed_temp: 70,
+                  bed_temp: 70,
+                  flow_ratio: 0.95,
+                  pressure_advance: 0.045,
+                  max_volumetric_speed: 13.0,
+                  fan_speed_percent: 40,
+                  remaining_grams: 1000,
+                  is_loaded: true,
+                  finish_type: "Basic".to_string(),
+                  opacity: 1.0,
+                  pigment_stickiness: 1.0,
+                  drying_temp_c: 55,
+                  drying_time_hr: 6,
+                  is_rfid_synced: false,
+                  deltas_from_base: Vec::new(),
+                  raw_disk_json: None,
+                };
+                sp.apply_material_change("PETG", &noz);
+                cb.emit(sp);
+              })
+            }}
+          >
+            <span class="material-symbols-outlined text-[16px]">{"add_circle"}</span>
+            {"+ Add Spool"}
+          </button>
+
+          <button
             class="flex items-center gap-space-xs bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-space-xs rounded-lg text-xs font-semibold transition-colors cursor-pointer"
             onclick={
               let cb = props.on_export_3mf.clone();
@@ -208,6 +286,12 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
           let unit_num = if idx < 4 { 1 } else { 2 };
           let temp_delta = spool.print_temp - spool.base_print_temp;
           let bed_delta = spool.bed_temp - spool.base_bed_temp;
+          let sp_for_mat_change = spool.clone();
+          let cb_update_mat = on_update_spool.clone();
+          let noz_for_mat = active_noz.clone();
+          let mat_options = material_choices.clone();
+          let all_spools_for_swap = props.filaments.clone();
+          let cb_swap = on_swap_slot.clone();
 
           html! {
             <div
@@ -267,6 +351,62 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                     <span class="text-[10px] font-mono bg-surface-container-highest text-primary px-1.5 py-0.5 rounded shrink-0">
                       {format!("Nozzle: {} (HRC {})", spool.nozzle_type, spool.required_nozzle_hrc)}
                     </span>
+                  </div>
+                </div>
+
+                // Inline Slot Material & Spool Assignment Controls (works immediately after Import!)
+                <div
+                  class="grid grid-cols-2 gap-1.5 mt-space-sm pt-space-xs border-t border-surface-container/80 font-mono text-[11px]"
+                  onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
+                >
+                  <div class="flex flex-col gap-0.5">
+                    <span class="text-[9px] uppercase text-on-surface-variant">{"Slot Material"}</span>
+                    <select
+                      class="bg-surface-container-lowest border border-outline-variant rounded px-1.5 py-1 text-[11px] font-mono text-primary font-bold focus:border-primary outline-none cursor-pointer"
+                      value={spool.material_type.clone()}
+                      onchange={Callback::from(move |e: Event| {
+                        e.stop_propagation();
+                        if let Some(new_mat) = extract_event_value(&e) {
+                          let mut updated = sp_for_mat_change.clone();
+                          updated.apply_material_change(&new_mat, &noz_for_mat);
+                          cb_update_mat.emit(updated);
+                        }
+                      })}
+                    >
+                      {for mat_options.iter().map(|m_opt| {
+                        html! {
+                          <option value={m_opt.clone()} selected={spool.material_type.eq_ignore_ascii_case(m_opt)}>
+                            {m_opt}
+                          </option>
+                        }
+                      })}
+                    </select>
+                  </div>
+
+                  <div class="flex flex-col gap-0.5">
+                    <span class="text-[9px] uppercase text-on-surface-variant">{"Assign Spool"}</span>
+                    <select
+                      class="bg-surface-container-lowest border border-outline-variant rounded px-1.5 py-1 text-[11px] font-mono text-on-surface focus:border-primary outline-none cursor-pointer truncate"
+                      value={idx.to_string()}
+                      onchange={Callback::from(move |e: Event| {
+                        e.stop_propagation();
+                        if let Some(val_str) = extract_event_value(&e) {
+                          if let Ok(target_idx) = val_str.parse::<usize>() {
+                            if target_idx != idx {
+                              cb_swap.emit((idx, target_idx));
+                            }
+                          }
+                        }
+                      })}
+                    >
+                      {for all_spools_for_swap.iter().enumerate().map(|(s_idx, s_item)| {
+                        html! {
+                          <option value={s_idx.to_string()} selected={s_idx == idx}>
+                            {format!("#{} {} ({})", s_idx + 1, s_item.material_type, s_item.format_concise_title())}
+                          </option>
+                        }
+                      })}
+                    </select>
                   </div>
                 </div>
 
@@ -475,6 +615,96 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
               </div>
             </div>
           }
+
+          // Slot Material Type & Spool Name Editor (works after Import or Start From Scratch!)
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-space-md bg-surface-container p-space-md rounded-lg font-mono text-xs">
+            <div class="flex flex-col gap-1.5">
+              <div class="flex items-center justify-between">
+                <span class="text-on-surface-variant text-[10px] uppercase font-bold">
+                  {format!("Slot #{} Material Type (Polymer Family)", (*selected_slot_idx) + 1)}
+                </span>
+                <span class="text-primary font-bold">{&spool.material_type}</span>
+              </div>
+              <div class="flex flex-wrap items-center gap-1">
+                {for ["PLA", "PLA+", "PETG", "PCTG", "PLA-CF", "TPU", "ASA", "ABS"].into_iter().map(|quick_mat| {
+                  let is_sel = spool.material_type.eq_ignore_ascii_case(quick_mat);
+                  let updated = spool.clone();
+                  let noz = active_noz.clone();
+                  let qm = quick_mat.to_string();
+                  let cb = on_update_spool.clone();
+                  html! {
+                    <button
+                      class={format!(
+                        "px-2 py-1 rounded text-[11px] border transition-colors cursor-pointer {}",
+                        if is_sel {
+                          "bg-primary text-on-primary border-primary font-bold"
+                        } else {
+                          "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
+                        }
+                      )}
+                      onclick={Callback::from(move |_| {
+                        let mut u = updated.clone();
+                        u.apply_material_change(&qm, &noz);
+                        cb.emit(u);
+                      })}
+                    >
+                      {quick_mat}
+                    </button>
+                  }
+                })}
+                <select
+                  class="bg-surface-container-lowest border border-outline-variant rounded px-2 py-1 text-[11px] font-mono text-primary font-bold focus:border-primary outline-none cursor-pointer"
+                  value={spool.material_type.clone()}
+                  onchange={{
+                    let u = spool.clone();
+                    let noz = active_noz.clone();
+                    let cb = on_update_spool.clone();
+                    Callback::from(move |e: Event| {
+                      if let Some(new_mat) = extract_event_value(&e) {
+                        let mut updated = u.clone();
+                        updated.apply_material_change(&new_mat, &noz);
+                        cb.emit(updated);
+                      }
+                    })
+                  }}
+                >
+                  {for material_choices.iter().map(|m_opt| {
+                    html! {
+                      <option value={m_opt.clone()} selected={spool.material_type.eq_ignore_ascii_case(m_opt)}>
+                        {format!("Catalog: {}", m_opt)}
+                      </option>
+                    }
+                  })}
+                </select>
+              </div>
+            </div>
+
+            <div class="flex flex-col justify-between gap-1.5">
+              <div class="flex items-center justify-between">
+                <span class="text-on-surface-variant text-[10px] uppercase font-bold">
+                  {"Spool Display Name & Brand"}
+                </span>
+                <span class="text-secondary text-[10px]">{format!("Inherits: {}", spool.inherits)}</span>
+              </div>
+              <input
+                type="text"
+                value={spool.name.clone()}
+                placeholder="e.g. OC: Anycubic PCTG Clear"
+                class="w-full bg-surface-container-lowest border border-outline-variant rounded px-2.5 py-1.5 text-xs font-mono text-on-surface focus:border-primary outline-none"
+                oninput={{
+                  let u = spool.clone();
+                  let cb = on_update_spool.clone();
+                  Callback::from(move |e: InputEvent| {
+                    if let Some(inp) = e.target_dyn_into::<HtmlInputElement>() {
+                      let mut updated = u.clone();
+                      updated.name = inp.value();
+                      cb.emit(updated);
+                    }
+                  })
+                }}
+              />
+            </div>
+          </div>
 
           // Filament Color Picker (Shortlist, HEX, RGB & HSL)
           <div class="flex items-center justify-between flex-wrap gap-2 bg-surface-container p-space-md rounded-lg">
@@ -693,6 +923,271 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                 {"Saved in extended metadata"}
               </span>
             </div>
+          </div>
+
+          // Inline Filament Symptom & Post-Print Calibration Q&A Wizards (Scoped directly to this Slot's Filament!)
+          <div class="flex flex-col gap-space-sm bg-surface-container p-space-md rounded-xl border border-outline-variant/70 font-mono text-xs mt-space-xs">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-secondary text-lg">{"healing"}</span>
+                <div class="flex flex-col">
+                  <span class="text-on-surface font-bold text-xs">
+                    {format!(
+                      "Print Quality Issue & Calibration Wizard Tree for Slot #{} ({})",
+                      (*selected_slot_idx) + 1,
+                      spool.material_type
+                    )}
+                  </span>
+                  <span class="text-[11px] text-on-surface-variant">
+                    {"Browse 26 print quality issues across 7 categories (with visual diagrams & Kobra S1 hardware guides) or 7 post-print calibration tests."}
+                  </span>
+                </div>
+              </div>
+              if active_qa_id.is_some() {
+                <button
+                  class="text-[11px] text-on-surface-variant hover:text-on-surface px-2 py-0.5 rounded bg-surface-container-highest cursor-pointer"
+                  onclick={{
+                    let aqi = active_qa_id.clone();
+                    Callback::from(move |_| aqi.set(None))
+                  }}
+                >
+                  {"Close Wizard ✕"}
+                </button>
+              }
+            </div>
+
+            // Category Tree Selector Bar
+            <div class="flex flex-wrap items-center gap-1 pt-1 border-t border-outline-variant/40">
+              <span class="text-[10px] uppercase text-secondary font-bold mr-1">
+                {"Category Tree:"}
+              </span>
+              {for ParameterizedCalibrationTemplate::symptom_tree_categories()
+                .into_iter()
+                .chain(std::iter::once(("Post-Print Calibration", "🎯 Calibration Prints (7)", "🎯")))
+                .map(|(cat_id, cat_lbl, cat_icon)| {
+                  let is_cat_sel = *qa_tree_cat == cat_id;
+                  let qtc = qa_tree_cat.clone();
+                  let cid = cat_id.to_string();
+                  html! {
+                    <button
+                      class={format!(
+                        "px-2 py-1 rounded text-[10px] border transition-colors cursor-pointer {}",
+                        if is_cat_sel {
+                          "bg-primary text-on-primary border-primary font-bold"
+                        } else {
+                          "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
+                        }
+                      )}
+                      onclick={Callback::from(move |_| qtc.set(cid.clone()))}
+                    >
+                      {format!("{} {}", cat_icon, cat_lbl)}
+                    </button>
+                  }
+                })}
+            </div>
+
+            // Issue / Calibration Buttons in Selected Category
+            <div class="flex flex-wrap items-center gap-1.5 pt-1">
+              {for qa_templates
+                .iter()
+                .filter(|t| {
+                  let cur_cat = (*qa_tree_cat).as_str();
+                  if cur_cat == "all" {
+                    t.is_symptom_wizard()
+                  } else {
+                    t.tree_category() == cur_cat
+                  }
+                })
+                .map(|t_item| {
+                  let tid = t_item.id.as_str();
+                  let is_open = (*active_qa_id).as_deref() == Some(tid);
+                  let aqi = active_qa_id.clone();
+                  let qa_ans = qa_answers.clone();
+                  let qa_list = (*qa_templates).clone();
+                  let tid_str = t_item.id.clone();
+                  let cur_flow_str = format!("{:.2}", spool.flow_ratio);
+
+                  html! {
+                    <button
+                      class={format!(
+                        "px-2.5 py-1.5 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer {}",
+                        if is_open {
+                          "bg-secondary text-on-secondary border-secondary shadow"
+                        } else {
+                          "bg-surface-container-lowest text-on-surface hover:border-secondary/60 border-outline-variant"
+                        }
+                      )}
+                      onclick={Callback::from(move |_| {
+                        if is_open {
+                          aqi.set(None);
+                        } else {
+                          if let Some(tpl) = qa_list.iter().find(|t| t.id == tid_str) {
+                            let mut def = tpl.default_answers();
+                            if tid_str == "cal_yolo_flow" {
+                              def.insert("old_flow".to_string(), cur_flow_str.clone());
+                            }
+                            qa_ans.set(def);
+                          }
+                          aqi.set(Some(tid_str.clone()));
+                        }
+                      })}
+                    >
+                      {format!("{} {}", t_item.icon, t_item.name)}
+                    </button>
+                  }
+                })}
+            </div>
+
+            {if let Some(open_id) = &*active_qa_id {
+              if let Some(tpl) = qa_templates.iter().find(|t| &t.id == open_id).cloned() {
+                let scope_expr = format!("filament:{}", spool.material_type);
+                let ans_map = (*qa_answers).clone();
+                let (rule_title, rule_desc, computed_badge, lua_code) =
+                  tpl.generate_from_answers(&ans_map, &scope_expr);
+                let cb_create = props.on_create_rule.clone();
+                let aqi_close = active_qa_id.clone();
+                let tpl_cat = tpl.category.clone();
+                let tpl_icon = tpl.icon.clone();
+                let tid_clone = tpl.id.clone();
+                let mat_name = spool.material_type.clone();
+                let mat_name_btn = mat_name.clone();
+                let hw_items = tpl.hardware_checklist();
+
+                html! {
+                  <div class="flex flex-col gap-space-sm bg-surface-container-lowest p-space-md rounded-xl border border-secondary/60 mt-space-xs">
+                    <div class="flex items-center justify-between flex-wrap gap-2">
+                      <div class="flex items-center gap-2">
+                        <span class="text-lg">{&tpl.icon}</span>
+                        <div class="flex flex-col">
+                          <span class="text-xs font-bold text-on-surface">{&tpl.name}</span>
+                          <span class="text-[10px] text-secondary">
+                            {format!("{} → {}  •  {}", tpl.tree_category(), tpl.tree_subcategory(), tpl.when_to_run)}
+                          </span>
+                        </div>
+                      </div>
+                      <span class="bg-tertiary/20 text-tertiary border border-tertiary/40 px-2.5 py-1 rounded font-bold text-xs">
+                        {format!("Result: {}", computed_badge)}
+                      </span>
+                    </div>
+
+                    // Visual Defect & Hardware Illustration SVG
+                    {render_issue_illustration(&tpl.id, false)}
+
+                    // Physical / Mechanical Printer Checklist
+                    {if !hw_items.is_empty() {
+                      html! {
+                        <div class="bg-secondary/10 border-l-4 border-secondary p-space-sm rounded-r-lg flex flex-col gap-1">
+                          <span class="text-[10px] uppercase font-bold text-secondary">
+                            {"🔧 Physical & Mechanical Printer Checks (Anycubic Kobra S1 / ACE Pro):"}
+                          </span>
+                          {for hw_items.iter().map(|hw_line| {
+                            html! {
+                              <span class="text-[11px] text-on-surface leading-snug">{*hw_line}</span>
+                            }
+                          })}
+                        </div>
+                      }
+                    } else {
+                      html! {}
+                    }}
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-space-sm">
+                      {for tpl.questions.iter().map(|q| {
+                        let cur_val = ans_map
+                          .get(&q.id)
+                          .cloned()
+                          .unwrap_or_else(|| q.default_value.clone());
+                        let q_id = q.id.clone();
+                        let qa_state = qa_answers.clone();
+
+                        html! {
+                          <div class="bg-surface-container p-space-sm rounded-lg border border-outline-variant/60 flex flex-col justify-between gap-1.5">
+                            <div class="flex flex-col gap-0.5">
+                              <span class="text-xs font-bold text-on-surface">{&q.question}</span>
+                              <span class="text-[10px] text-on-surface-variant">{&q.hint}</span>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-1 mt-1">
+                              {for q.quick_options.iter().map(|(opt_val, opt_lbl)| {
+                                let is_sel = &cur_val == opt_val;
+                                let ov = opt_val.clone();
+                                let qid_b = q_id.clone();
+                                let qa_b = qa_state.clone();
+                                html! {
+                                  <button
+                                    class={format!(
+                                      "px-2 py-1 rounded text-[10px] border transition-colors cursor-pointer {}",
+                                      if is_sel {
+                                        "bg-secondary text-on-secondary border-secondary font-bold"
+                                      } else {
+                                        "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
+                                      }
+                                    )}
+                                    onclick={Callback::from(move |_| {
+                                      let mut next = (*qa_b).clone();
+                                      next.insert(qid_b.clone(), ov.clone());
+                                      qa_b.set(next);
+                                    })}
+                                  >
+                                    {opt_lbl}
+                                  </button>
+                                }
+                              })}
+                              <input
+                                type="text"
+                                value={cur_val}
+                                class="w-20 bg-surface-container-lowest border border-outline-variant rounded px-2 py-1 text-[11px] font-mono text-primary font-bold focus:border-primary outline-none ml-auto"
+                                oninput={{
+                                  let qid_i = q_id.clone();
+                                  let qa_i = qa_state.clone();
+                                  Callback::from(move |e: InputEvent| {
+                                    if let Some(inp) = e.target_dyn_into::<HtmlInputElement>() {
+                                      let mut next = (*qa_i).clone();
+                                      next.insert(qid_i.clone(), inp.value());
+                                      qa_i.set(next);
+                                    }
+                                  })
+                                }}
+                              />
+                            </div>
+                          </div>
+                        }
+                      })}
+                    </div>
+
+                    <div class="flex items-center justify-between flex-wrap gap-2 pt-space-xs border-t border-surface-container">
+                      <span class="text-[11px] text-on-surface-variant">
+                        {format!("Scope: {} (applies automatically whenever {} is active)", scope_expr, mat_name)}
+                      </span>
+                      <button
+                        class="bg-secondary hover:opacity-90 text-on-secondary px-space-lg py-1.5 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer flex items-center gap-1.5"
+                        onclick={Callback::from(move |_| {
+                          let new_rule = TransformationRule {
+                            id: format!("{}_{}", tid_clone, mat_name.to_lowercase().replace('+', "plus").replace('-', "_")),
+                            name: format!("{} ({})", rule_title, mat_name),
+                            description: rule_desc.clone(),
+                            category: tpl_cat.clone(),
+                            icon: tpl_icon.clone(),
+                            enabled: true,
+                            condition_expr: scope_expr.clone(),
+                            lua_code: lua_code.clone(),
+                            priority: 34,
+                          };
+                          cb_create.emit(new_rule);
+                          aqi_close.set(None);
+                        })}
+                      >
+                        <span class="material-symbols-outlined text-[15px]">{"check_circle"}</span>
+                        {format!("Apply Rule to {} Stack", mat_name_btn)}
+                      </button>
+                    </div>
+                  </div>
+                }
+              } else {
+                html! {}
+              }
+            } else {
+              html! {}
+            }}
           </div>
         </div>
       }
@@ -1014,8 +1509,8 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
             </span>
           </div>
 
-          <div class="flex items-center gap-1 bg-surface-container rounded-lg p-0.5 border border-outline-variant">
-            {for vec!["ALL", "PLA", "PETG", "TPU"].into_iter().map(|mat| {
+          <div class="flex items-center gap-1 bg-surface-container rounded-lg p-0.5 border border-outline-variant flex-wrap">
+            {for vec!["ALL", "PLA", "PLA+", "PETG", "PCTG", "PLA-CF", "TPU", "ASA"].into_iter().map(|mat| {
               let is_active = (*filter_material) == mat;
               let m = mat.to_string();
               let fm = filter_material.clone();

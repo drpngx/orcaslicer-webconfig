@@ -135,10 +135,22 @@ pub fn export_standalone_filament_json(spool: &FilamentSpool, rig: &MachineRig) 
     "Diamondback" => -10,
     _ => 0,
   };
+  let brass_temp = if spool.brass_base_temp > 0 {
+    spool.brass_base_temp
+  } else {
+    spool.base_print_temp
+  };
+  let hs_temp = if spool.hs_base_temp > 0 {
+    spool.hs_base_temp
+  } else {
+    brass_temp + 5
+  };
   let effective_temp = spool.base_print_temp + temp_offset;
   let initial_temp = effective_temp + 5;
   let (orca_nozzle_type, _) = rig.orca_machine_nozzle_type_and_hrc();
   let export_name = spool.format_concise_title();
+  let is_pctg_or_petg =
+    spool.material_type.contains("PCTG") || spool.material_type.contains("PETG");
 
   let json_val = serde_json::json!({
     "from": "User",
@@ -150,15 +162,25 @@ pub fn export_standalone_filament_json(spool: &FilamentSpool, rig: &MachineRig) 
     "required_nozzle_HRC": [spool.required_nozzle_hrc.to_string()],
     "filament_colour": [spool.color_hex],
     "nozzle_temperature": [effective_temp.to_string()],
-    "nozzle_temperature_HS": [effective_temp.to_string()],
+    "nozzle_temperature_BRASS": [brass_temp.to_string()],
+    "nozzle_temperature_HS": [hs_temp.to_string()],
     "nozzle_temperature_initial_layer": [initial_temp.to_string()],
+    "nozzle_temperature_initial_layer_BRASS": [(brass_temp + 5).to_string()],
+    "nozzle_temperature_initial_layer_HS": [(hs_temp + 5).to_string()],
     "hot_plate_temp": [spool.bed_temp.to_string()],
     "textured_plate_temp": [spool.bed_temp.to_string()],
-    "hot_plate_temp_initial_layer": [(spool.bed_temp + 5).to_string()],
+    "hot_plate_temp_initial_layer": [spool.bed_temp.to_string()],
+    "textured_plate_temp_initial_layer": [spool.bed_temp.to_string()],
     "filament_flow_ratio": [format!("{:.2}", spool.flow_ratio)],
     "pressure_advance": [format!("{:.3}", spool.pressure_advance)],
     "filament_max_volumetric_speed": [format!("{:.1}", spool.max_volumetric_speed)],
     "fan_max_speed": [spool.fan_speed_percent.to_string()],
+    "fan_max_speed_BRASS": [spool.fan_speed_percent.to_string()],
+    "fan_max_speed_HS": [spool.fan_speed_percent.to_string()],
+    "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
+    "filament_z_hop_types": [if is_pctg_or_petg { "Spiral" } else { "Normal Lift" }],
+    "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
+    "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
     "orcaslicer_webconfig_metadata": {
       "finish_type": spool.finish_type,
       "nozzle_type": spool.nozzle_type,

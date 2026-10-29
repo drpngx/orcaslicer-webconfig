@@ -3,6 +3,107 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
+/// Hard security & resource limits for sandboxed Lua transformation scripts.
+pub const MAX_LUA_SCRIPT_BYTES: usize = 65_536;
+pub const MAX_LUA_TOKENS: usize = 10_000;
+pub const MAX_LUA_GAS: usize = 50_000;
+pub const MAX_LUA_CALL_DEPTH: usize = 24;
+pub const MAX_LUA_EXPR_DEPTH: usize = 48;
+pub const MAX_LUA_STRING_BYTES: usize = 16_384;
+pub const MAX_LUA_TABLE_ENTRIES: usize = 1_024;
+pub const MAX_LUA_STDOUT_LINES: usize = 200;
+
+/// Pre-validates a user or rule Lua script for forbidden host/filesystem/OS/process APIs,
+/// script size limits, and token limits before execution.
+pub fn validate_lua_sandbox_security(script: &str) -> Result<(), String> {
+  if script.len() > MAX_LUA_SCRIPT_BYTES {
+    return Err(format!(
+      "[Lua Sandbox Security Violation] Script size ({} bytes) exceeds maximum allowed {} bytes.",
+      script.len(),
+      MAX_LUA_SCRIPT_BYTES
+    ));
+  }
+
+  let mut lexer = Lexer::new(script);
+  let mut token_count = 0usize;
+  loop {
+    let tok = lexer.next_token()?;
+    token_count += 1;
+    if token_count > MAX_LUA_TOKENS {
+      return Err(format!(
+        "[Lua Sandbox Security Violation] Script token count exceeds maximum allowed {} tokens.",
+        MAX_LUA_TOKENS
+      ));
+    }
+    match &tok {
+      Token::Eof => break,
+      Token::StringLit(s) => {
+        if s.len() > MAX_LUA_STRING_BYTES {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] String literal ({} bytes) exceeds {} byte limit.",
+            s.len(),
+            MAX_LUA_STRING_BYTES
+          ));
+        }
+      }
+      Token::Ident(id) => match id.as_str() {
+        "io" => {
+          return Err(
+            "[Lua Sandbox Security Violation] Filesystem access ('io.*') is strictly forbidden in sandboxed transformations."
+              .to_string(),
+          );
+        }
+        "os" => {
+          return Err(
+            "[Lua Sandbox Security Violation] Operating System / Process calls ('os.*', execute/fork) are strictly forbidden in sandboxed transformations."
+              .to_string(),
+          );
+        }
+        "dofile" | "loadfile" => {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] External file execution ('{}') is strictly forbidden in sandboxed transformations.",
+            id
+          ));
+        }
+        "load" | "loadstring" => {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] Dynamic bytecode/string evaluation ('{}') is strictly forbidden in sandboxed transformations.",
+            id
+          ));
+        }
+        "require" | "package" => {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] External module loading ('{}') is strictly forbidden in sandboxed transformations.",
+            id
+          ));
+        }
+        "debug" => {
+          return Err(
+            "[Lua Sandbox Security Violation] VM memory/stack introspection ('debug.*') is strictly forbidden in sandboxed transformations."
+              .to_string(),
+          );
+        }
+        "coroutine" => {
+          return Err(
+            "[Lua Sandbox Security Violation] Coroutine spawning ('coroutine.*') is strictly forbidden in sandboxed transformations."
+              .to_string(),
+          );
+        }
+        "setfenv" | "getfenv" | "rawget" | "rawset" | "collectgarbage" => {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] Sandbox environment tampering ('{}') is strictly forbidden.",
+            id
+          ));
+        }
+        _ => {}
+      },
+      _ => {}
+    }
+  }
+
+  Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum LuaVal {
   Nil,
@@ -1028,10 +1129,12 @@ impl LuaEnv {
   }
 }
 
-// Interpreter with Gas / Instruction metering
+// Interpreter with Gas / Instruction metering, Recursion / Fork-Bomb Protection & Memory Quotas
 pub struct Interpreter {
   pub stdout: Vec<String>,
   pub gas_remaining: usize,
+  pub call_depth: usize,
+  pub expr_depth: usize,
   pub modified_keys: Vec<(String, String, String)>, // (param, old_val, new_val)
 }
 
@@ -1039,14 +1142,19 @@ impl Interpreter {
   pub fn new() -> Self {
     Self {
       stdout: Vec::new(),
-      gas_remaining: 50_000,
+      gas_remaining: MAX_LUA_GAS,
+      call_depth: 0,
+      expr_depth: 0,
       modified_keys: Vec::new(),
     }
   }
 
   fn check_gas(&mut self) -> Result<(), String> {
     if self.gas_remaining == 0 {
-      Err("Execution step limit exceeded (infinite loop protection)".to_string())
+      Err(format!(
+        "[Lua Sandbox Security Violation] Execution step limit ({} steps) exceeded — infinite loop or runaway compute terminated.",
+        MAX_LUA_GAS
+      ))
     } else {
       self.gas_remaining -= 1;
       Ok(())
@@ -1163,6 +1271,19 @@ impl Interpreter {
           1.0
         };
 
+        if !start_val.is_finite() || !stop_val.is_finite() || !step_val.is_finite() {
+          return Err(
+            "[Lua Sandbox Security Violation] Numeric 'for' loop bounds and step must be finite numbers."
+              .to_string(),
+          );
+        }
+        if step_val == 0.0 {
+          return Err(
+            "[Lua Sandbox Security Violation] Numeric 'for' loop step cannot be 0 (infinite loop protection)."
+              .to_string(),
+          );
+        }
+
         let mut current = start_val;
         let forward = step_val > 0.0;
         while (forward && current <= stop_val) || (!forward && current >= stop_val) {
@@ -1227,6 +1348,13 @@ impl Interpreter {
       Expr::TableField(tbl_expr, field) => {
         let tbl_val = self.eval_expr(tbl_expr, env)?;
         if let LuaVal::Table(t) = tbl_val {
+          let is_new_key = !t.borrow().contains_key(field);
+          if is_new_key && t.borrow().len() >= MAX_LUA_TABLE_ENTRIES {
+            return Err(format!(
+              "[Lua Sandbox Security Violation] Table size limit ({} entries) exceeded — memory exhaustion bomb prevented.",
+              MAX_LUA_TABLE_ENTRIES
+            ));
+          }
           let old_val = t
             .borrow()
             .get(field)
@@ -1256,6 +1384,13 @@ impl Interpreter {
           _ => return Err(format!("Invalid table key: {:?}", idx_val)),
         };
         if let LuaVal::Table(t) = tbl_val {
+          let is_new_key = !t.borrow().contains_key(&key_str);
+          if is_new_key && t.borrow().len() >= MAX_LUA_TABLE_ENTRIES {
+            return Err(format!(
+              "[Lua Sandbox Security Violation] Table size limit ({} entries) exceeded — memory exhaustion bomb prevented.",
+              MAX_LUA_TABLE_ENTRIES
+            ));
+          }
           let old_val = t
             .borrow()
             .get(&key_str)
@@ -1276,6 +1411,19 @@ impl Interpreter {
 
   pub fn eval_expr(&mut self, expr: &Expr, env: Rc<RefCell<LuaEnv>>) -> Result<LuaVal, String> {
     self.check_gas()?;
+    if self.expr_depth >= MAX_LUA_EXPR_DEPTH {
+      return Err(format!(
+        "[Lua Sandbox Security Violation] Maximum expression nesting depth ({}) exceeded.",
+        MAX_LUA_EXPR_DEPTH
+      ));
+    }
+    self.expr_depth += 1;
+    let res = self.eval_expr_inner(expr, env);
+    self.expr_depth = self.expr_depth.saturating_sub(1);
+    res
+  }
+
+  fn eval_expr_inner(&mut self, expr: &Expr, env: Rc<RefCell<LuaEnv>>) -> Result<LuaVal, String> {
     match expr {
       Expr::Literal(v) => Ok(v.clone()),
       Expr::Variable(name) => Ok(env.borrow().get(name)),
@@ -1308,6 +1456,13 @@ impl Interpreter {
         }
       }
       Expr::TableConstructor(fields) => {
+        if fields.len() > MAX_LUA_TABLE_ENTRIES {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] Table constructor size ({}) exceeds {} entry limit.",
+            fields.len(),
+            MAX_LUA_TABLE_ENTRIES
+          ));
+        }
         let mut map = HashMap::new();
         for (key_opt, val_expr) in fields {
           let val = self.eval_expr(val_expr, env.clone())?;
@@ -1416,6 +1571,13 @@ impl Interpreter {
           BinaryOp::Concat => {
             let s1 = left.to_lua_string();
             let s2 = right.to_lua_string();
+            if s1.len().saturating_add(s2.len()) > MAX_LUA_STRING_BYTES {
+              return Err(format!(
+                "[Lua Sandbox Security Violation] String concatenation ({} bytes) exceeds {} byte limit — exponential string memory bomb prevented.",
+                s1.len().saturating_add(s2.len()),
+                MAX_LUA_STRING_BYTES
+              ));
+            }
             Ok(LuaVal::String(format!("{}{}", s1, s2)))
           }
           BinaryOp::Eq => Ok(LuaVal::Boolean(left == right)),
@@ -1465,16 +1627,25 @@ impl Interpreter {
     args: Vec<LuaVal>,
     env: Rc<RefCell<LuaEnv>>,
   ) -> Result<LuaVal, String> {
+    self.check_gas()?;
     match func {
       LuaVal::NativeFn(name) => self.call_native(name, args),
       LuaVal::Function(_name, params, body) => {
+        if self.call_depth >= MAX_LUA_CALL_DEPTH {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] Maximum function call / recursion depth ({}) exceeded — fork-bomb & stack-overflow protection triggered.",
+            MAX_LUA_CALL_DEPTH
+          ));
+        }
+        self.call_depth += 1;
         let child_env = Rc::new(RefCell::new(LuaEnv::new_child(env)));
         for (idx, param) in params.iter().enumerate() {
           let arg_val = args.get(idx).cloned().unwrap_or(LuaVal::Nil);
           child_env.borrow_mut().set_local(param, arg_val);
         }
-        let ret = self.eval_chunk(body, child_env)?;
-        Ok(ret.unwrap_or(LuaVal::Nil))
+        let ret = self.eval_chunk(body, child_env);
+        self.call_depth = self.call_depth.saturating_sub(1);
+        Ok(ret?.unwrap_or(LuaVal::Nil))
       }
       _ => Err(format!("Attempt to call a non-function value: {}", func)),
     }
@@ -1488,28 +1659,44 @@ impl Interpreter {
             LuaVal::Number(n) => Some(*n as u32),
             _ => None,
           });
-          match arg {
-            LuaVal::Number(n) => Ok(LuaVal::Number(*n)),
-            LuaVal::String(s) => {
-              let trimmed = s.trim();
-              if let Some(radix) = base {
-                if (2..=36).contains(&radix) {
-                  let clean = trimmed
-                    .strip_prefix("0x")
-                    .or_else(|| trimmed.strip_prefix("0X"))
-                    .unwrap_or(trimmed);
-                  match i64::from_str_radix(clean, radix) {
-                    Ok(n) => Ok(LuaVal::Number(n as f64)),
-                    Err(_) => Ok(LuaVal::Nil),
-                  }
-                } else {
-                  Ok(LuaVal::Nil)
+          let parse_str_num = |s: &str, base: Option<u32>| -> LuaVal {
+            let trimmed = s.trim();
+            if let Some(radix) = base {
+              if (2..=36).contains(&radix) {
+                let clean = trimmed
+                  .strip_prefix("0x")
+                  .or_else(|| trimmed.strip_prefix("0X"))
+                  .unwrap_or(trimmed);
+                match i64::from_str_radix(clean, radix) {
+                  Ok(n) => LuaVal::Number(n as f64),
+                  Err(_) => LuaVal::Nil,
                 }
               } else {
-                match trimmed.parse::<f64>() {
-                  Ok(n) => Ok(LuaVal::Number(n)),
-                  Err(_) => Ok(LuaVal::Nil),
-                }
+                LuaVal::Nil
+              }
+            } else if let Ok(n) = trimmed.parse::<f64>() {
+              LuaVal::Number(n)
+            } else {
+              let stripped = trimmed
+                .trim_end_matches('%')
+                .trim_end_matches("mm/s")
+                .trim_end_matches("mm")
+                .trim();
+              match stripped.parse::<f64>() {
+                Ok(n) => LuaVal::Number(n),
+                Err(_) => LuaVal::Nil,
+              }
+            }
+          };
+          match arg {
+            LuaVal::Number(n) => Ok(LuaVal::Number(*n)),
+            LuaVal::String(s) => Ok(parse_str_num(s, base)),
+            LuaVal::Table(t) => {
+              let first = t.borrow().get("1").cloned();
+              match first {
+                Some(LuaVal::Number(n)) => Ok(LuaVal::Number(n)),
+                Some(LuaVal::String(s)) => Ok(parse_str_num(&s, base)),
+                _ => Ok(LuaVal::Nil),
               }
             }
             _ => Ok(LuaVal::Nil),
@@ -1526,6 +1713,12 @@ impl Interpreter {
         }
       }
       "print" => {
+        if self.stdout.len() >= MAX_LUA_STDOUT_LINES {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] Maximum print log output ({} lines) exceeded.",
+            MAX_LUA_STDOUT_LINES
+          ));
+        }
         let parts: Vec<String> = args.iter().map(|a| a.to_lua_string()).collect();
         let line = parts.join("\t");
         self.stdout.push(line);
@@ -1591,7 +1784,7 @@ impl Interpreter {
                       }
                     }
                     let spec_end = chars.next().unwrap_or('f');
-                    let p: usize = prec.parse().unwrap_or(2);
+                    let p: usize = prec.parse::<usize>().unwrap_or(2).min(12);
                     if spec_end == 'f' {
                       if let Some(LuaVal::Number(n)) = args.get(arg_idx) {
                         result.push_str(&format!("{:.*}", p, n));
@@ -1619,6 +1812,12 @@ impl Interpreter {
               }
             } else {
               result.push(c);
+            }
+            if result.len() > MAX_LUA_STRING_BYTES {
+              return Err(format!(
+                "[Lua Sandbox Security Violation] string.format output exceeds {} byte limit.",
+                MAX_LUA_STRING_BYTES
+              ));
             }
           }
           Ok(LuaVal::String(result))
@@ -1730,6 +1929,12 @@ impl Interpreter {
       }
       "table.insert" => {
         if let Some(LuaVal::Table(t)) = args.get(0) {
+          if t.borrow().len() >= MAX_LUA_TABLE_ENTRIES {
+            return Err(format!(
+              "[Lua Sandbox Security Violation] table.insert exceeded maximum table size ({} entries) — memory exhaustion bomb prevented.",
+              MAX_LUA_TABLE_ENTRIES
+            ));
+          }
           if let Some(val) = args.get(1) {
             let idx = (t.borrow().len() + 1).to_string();
             t.borrow_mut().insert(idx, val.clone());
@@ -1756,6 +1961,9 @@ pub fn execute_transformation_lua(
   ),
   String,
 > {
+  // 1. Pre-flight sandbox security validation (blocks io.*, os.*, dofile, require, debug, coroutine, etc.)
+  validate_lua_sandbox_security(script)?;
+
   let lexer = Lexer::new(script);
   let mut parser = Parser::new(lexer)?;
   let stmts = parser.parse_chunk()?;
@@ -1930,5 +2138,92 @@ mod tests {
     let (c7, _, _) = execute_transformation_lua(spaghetti_lua, &c6, &ctx).unwrap();
     assert_eq!(c7["sparse_infill_pattern"], "gyroid");
     assert_eq!(c7["reduce_crossing_wall"], "1");
+  }
+
+  #[test]
+  fn test_lua_sandbox_protections_against_fork_bomb_fs_and_infinite_compute() {
+    let cfg = serde_json::json!({"nozzle_temperature": "230"});
+    let ctx = serde_json::json!({"filament_type": "PLA"});
+
+    // 1. Filesystem access (io.open, dofile, loadfile) blocked
+    let fs_script = r#"
+      function apply(config, ctx)
+        local f = io.open("/etc/passwd", "r")
+      end
+    "#;
+    let err_fs = execute_transformation_lua(fs_script, &cfg, &ctx).unwrap_err();
+    assert!(err_fs.contains("Filesystem access"));
+
+    let dofile_script = r#"dofile("/tmp/evil.lua")"#;
+    let err_dofile = execute_transformation_lua(dofile_script, &cfg, &ctx).unwrap_err();
+    assert!(err_dofile.contains("External file execution"));
+
+    // 2. OS / Process / Fork bomb via os.execute or os.fork blocked
+    let os_script = r#"
+      function apply(config, ctx)
+        os.execute(":(){ :|:& };:")
+      end
+    "#;
+    let err_os = execute_transformation_lua(os_script, &cfg, &ctx).unwrap_err();
+    assert!(err_os.contains("Operating System / Process"));
+
+    // 3. Recursive function fork bomb blocked by call_depth limit
+    let fork_bomb_lua = r#"
+      function bomb()
+        bomb()
+        bomb()
+      end
+      function apply(config, ctx)
+        bomb()
+      end
+    "#;
+    let err_bomb = execute_transformation_lua(fork_bomb_lua, &cfg, &ctx).unwrap_err();
+    assert!(err_bomb.contains("recursion depth"));
+
+    // 4. Infinite while loop blocked by gas budget
+    let inf_while = r#"
+      function apply(config, ctx)
+        while true do
+          config["nozzle_temperature"] = "235"
+        end
+      end
+    "#;
+    let err_while = execute_transformation_lua(inf_while, &cfg, &ctx).unwrap_err();
+    assert!(err_while.contains("Execution step limit"));
+
+    // 5. Numeric for loop with step = 0 blocked immediately
+    let zero_step_for = r#"
+      function apply(config, ctx)
+        for i = 1, 10, 0 do
+          config["nozzle_temperature"] = "235"
+        end
+      end
+    "#;
+    let err_for = execute_transformation_lua(zero_step_for, &cfg, &ctx).unwrap_err();
+    assert!(err_for.contains("step cannot be 0"));
+
+    // 6. Exponential string doubling memory bomb (s = s .. s) blocked
+    let str_bomb = r#"
+      function apply(config, ctx)
+        local s = "aaaaaaaaaaaaaaaa"
+        for i = 1, 25 do
+          s = s .. s
+        end
+      end
+    "#;
+    let err_str = execute_transformation_lua(str_bomb, &cfg, &ctx).unwrap_err();
+    assert!(err_str.contains("String concatenation"));
+
+    // 7. Table allocation memory bomb blocked
+    let tbl_bomb = r#"
+      function apply(config, ctx)
+        local t = {}
+        for i = 1, 2000 do
+          table.insert(t, i)
+        end
+      end
+    "#;
+    let err_tbl = execute_transformation_lua(tbl_bomb, &cfg, &ctx).unwrap_err();
+    assert!(err_tbl.contains("maximum table size"));
   }
 }

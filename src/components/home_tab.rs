@@ -159,37 +159,36 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
         </div>
       </div>
 
-      // Safety & Weird Value Validator Panel
+      // Safety & Warning Validator Panel
       if !props.safety_warnings.is_empty() {
         <div class={format!(
           "p-space-lg rounded-xl shadow-lg flex flex-col gap-space-sm border-2 {}",
           if danger_count > 0 {
-            "bg-error-container/15 border-error"
+            "bg-red-950/25 border-red-500"
           } else {
-            "bg-secondary/10 border-secondary/70"
+            "bg-amber-950/15 border-amber-500/70"
           }
         )}>
           <div class="flex items-center justify-between flex-wrap gap-space-sm">
             <div class="flex items-center gap-space-sm">
-              <span class={format!(
-                "material-symbols-outlined {}",
-                if danger_count > 0 { "text-error" } else { "text-secondary" }
-              )}>
-                {"health_and_safety"}
+              <span class="text-lg">
+                {if danger_count > 0 { "🛑" } else { "⚠️" }}
               </span>
               <span class="font-headline-sm text-headline-sm font-bold text-on-surface">
-                {"Safety & Weird Value Audit (Checked Across Imported Files & Active Stack)"}
+                {"Safety & Warning Audit (Checked Across Imported Files & Active Stack)"}
               </span>
             </div>
             <div class="flex items-center gap-space-xs font-mono text-xs">
               if danger_count > 0 {
-                <span class="bg-error text-on-error px-2.5 py-0.5 rounded-full font-bold">
-                  {format!("{} UNSAFE", danger_count)}
+                <span class="bg-red-600 text-white border border-red-400 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-sm">
+                  <span>{"🛑"}</span>
+                  <span>{format!("{} UNSAFE", danger_count)}</span>
                 </span>
               }
               if warning_count > 0 {
-                <span class="bg-secondary/25 text-secondary border border-secondary/50 px-2.5 py-0.5 rounded-full font-bold">
-                  {format!("{} WEIRD / ANOMALY", warning_count)}
+                <span class="bg-amber-500/20 text-amber-300 border border-amber-400/60 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1">
+                  <span>{"⚠️"}</span>
+                  <span>{format!("{} {}", warning_count, if warning_count == 1 { "WARNING" } else { "WARNINGS" })}</span>
                 </span>
               }
               <span class="text-[11px] text-on-surface-variant ml-1">
@@ -199,7 +198,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
           </div>
 
           <p class="text-body-sm text-on-surface-variant">
-            {"Automated safety check across all imported machine/filament/process diffs, AnycubicSlicerNext.conf flushing matrices, and active Lua outputs. Any Export or Save to Disk will prompt a confirmation dialog while unsafe or weird values remain."}
+            {"Automated safety check across all imported machine/filament/process diffs, AnycubicSlicerNext.conf flushing matrices, and active Lua outputs. Any Export or Save to Disk will prompt a confirmation dialog while unsafe values or warnings remain."}
           </p>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-space-sm mt-space-xs">
@@ -207,8 +206,12 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
               let is_danger = w.severity == SafetySeverity::Danger;
               html! {
                 <div class={format!(
-                  "bg-surface-container p-space-md rounded-lg border flex flex-col justify-between gap-space-xs {}",
-                  if is_danger { "border-error/70" } else { "border-secondary/50" }
+                  "p-space-md rounded-lg border flex flex-col justify-between gap-space-xs {}",
+                  if is_danger {
+                    "bg-red-950/30 border-red-500/80"
+                  } else {
+                    "bg-surface-container border-amber-500/50"
+                  }
                 )}>
                   <div class="flex items-start justify-between gap-2">
                     <div class="flex flex-col">
@@ -220,21 +223,22 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                       </span>
                     </div>
                     <span class={format!(
-                      "text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold shrink-0 {}",
+                      "text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold shrink-0 flex items-center gap-1 {}",
                       if is_danger {
-                        "bg-error text-on-error"
+                        "bg-red-600 text-white border border-red-400 shadow-sm"
                       } else {
-                        "bg-secondary/20 text-secondary border border-secondary/40"
+                        "bg-amber-500/20 text-amber-300 border border-amber-400/50"
                       }
                     )}>
-                      {if is_danger { "UNSAFE" } else { "WEIRD / REVIEW" }}
+                      <span>{if is_danger { "🛑" } else { "⚠️" }}</span>
+                      <span>{if is_danger { "UNSAFE" } else { "WARNING" }}</span>
                     </span>
                   </div>
 
                   <div class="grid grid-cols-2 gap-space-xs bg-surface-container-lowest p-2 rounded font-mono text-xs">
                     <div class="flex flex-col">
                       <span class="text-[10px] uppercase text-on-surface-variant">{"Flagged Value:"}</span>
-                      <span class={if is_danger { "text-error font-bold" } else { "text-secondary font-bold" }}>
+                      <span class={if is_danger { "text-red-400 font-bold" } else { "text-amber-300 font-bold" }}>
                         {&w.current_value}
                       </span>
                     </div>

@@ -539,6 +539,94 @@ impl FilamentSpool {
     }
     None
   }
+
+  /// Updates the spool's material type (`PLA`, `PLA+`, `PETG`, `PCTG`, `PLA-CF`, `TPU`, `ASA`, `ABS`, etc.),
+  /// recalculating its Brass/Hardened-Steel base temperatures, bed temperature, max volumetric speed,
+  /// ACE Pro dryer preset, nozzle hardness requirement, and profile title/inheritance.
+  pub fn apply_material_change(&mut self, new_material: &str, active_nozzle_type: &str) {
+    let catalog = crate::catalog::load_merged_catalog();
+    let mat_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code.eq_ignore_ascii_case(new_material));
+
+    let (brass_temp, bed_temp, max_vol, fan_pct, dry_c, dry_hr) = if let Some(m) = mat_entry {
+      (
+        m.base_nozzle_c as i32,
+        m.base_bed_c as i32,
+        m.max_vol_mm3s,
+        m.fan_pct as i32,
+        m.dry_temp_c as i32,
+        m.dry_hr as i32,
+      )
+    } else {
+      match new_material.to_uppercase().as_str() {
+        "PLA+" => (210, 60, 18.0, 100, 45, 4),
+        "PLA-CF" | "PLA-GF" => (220, 60, 14.0, 80, 50, 4),
+        "PETG" | "PETG-CF" => (235, 70, 13.0, 40, 55, 6),
+        "PCTG" => (255, 75, 16.0, 35, 60, 6),
+        "TPU" => (225, 50, 5.0, 80, 55, 6),
+        "ASA" | "ABS" => (255, 100, 16.0, 20, 65, 6),
+        "PA-CF" | "PA" => (280, 90, 12.0, 15, 70, 8),
+        _ => (215, 60, 16.0, 100, 45, 4),
+      }
+    };
+
+    let hs_temp = if new_material.eq_ignore_ascii_case("PLA+") {
+      220
+    } else {
+      (brass_temp + 5).clamp(185, 350)
+    };
+
+    self.material_type = new_material.to_string();
+    self.brass_base_temp = brass_temp;
+    self.hs_base_temp = hs_temp;
+    self.base_bed_temp = bed_temp;
+    self.bed_temp = bed_temp;
+    self.max_volumetric_speed = max_vol;
+    self.fan_speed_percent = fan_pct;
+    self.drying_temp_c = dry_c;
+    self.drying_time_hr = dry_hr;
+
+    let is_abrasive = new_material.contains("-CF") || new_material.contains("-GF");
+    self.required_nozzle_hrc = if is_abrasive { 55 } else { 3 };
+    if new_material.contains("-CF") {
+      self.finish_type = "Carbon Fiber".to_string();
+      if self.pigment_stickiness < 1.3 {
+        self.pigment_stickiness = 1.65;
+      }
+    } else if new_material.contains("-GF") {
+      self.finish_type = "Glass Fiber".to_string();
+    } else if self.finish_type == "Carbon Fiber" || self.finish_type == "Glass Fiber" {
+      self.finish_type = "Basic".to_string();
+    }
+
+    if new_material.contains("PCTG") {
+      self.flow_ratio = 0.95;
+      self.pressure_advance = 0.048;
+    } else if new_material.contains("PETG") {
+      self.flow_ratio = 0.95;
+      self.pressure_advance = 0.045;
+    } else {
+      self.flow_ratio = 0.98;
+      self.pressure_advance = 0.035;
+    }
+
+    let base_mat_tag = match new_material {
+      "PCTG" | "PCTG-CF" | "PCTG-GF" => "PETG",
+      "PLA-CF" | "PLA-GF" | "PLA Glow" => "PLA",
+      other => other,
+    };
+    self.inherits = format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", base_mat_tag);
+    let brand_label = if self.brand.trim().is_empty() {
+      "Anycubic".to_string()
+    } else {
+      self.brand.clone()
+    };
+    self.name = format!("OC: {} {}", brand_label, new_material);
+    self.deltas_from_base.clear();
+    self.recompute_for_nozzle(active_nozzle_type);
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

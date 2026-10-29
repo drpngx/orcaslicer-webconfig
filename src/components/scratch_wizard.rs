@@ -174,6 +174,8 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         notes: String::new(),
         source_disk_profile: None,
       };
+      let (_, computed_hrc) = rig.orca_machine_nozzle_type_and_hrc();
+      rig.nozzle_hrc = computed_hrc;
       rig.refresh_title_and_notes(true);
       rig.notes = format!(
         "{}\n• Bed Surface: {} ({:+}°C bed offset)",
@@ -348,10 +350,31 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
 
           let effective_nozzle = (base_nozzle + cur_nozzle.temp_offset_c).clamp(175, 350);
           let effective_bed = (base_bed + cur_bed.temp_offset_c).clamp(30, 130);
+          let hs_nozzle = (base_nozzle + 5).clamp(180, 350);
+          let is_pctg_or_petg =
+            d.material_type.contains("PCTG") || d.material_type.contains("PETG");
+          let default_pa = if d.material_type.contains("PCTG") {
+            0.048f32
+          } else if d.material_type.contains("PETG") {
+            0.045f32
+          } else {
+            0.035f32
+          };
+          let default_flow = if is_pctg_or_petg { 0.95f32 } else { 0.98f32 };
 
+          let vendor_prefix = if cur_machine.vendor.eq_ignore_ascii_case("Anycubic") {
+            "Anycubic"
+          } else {
+            "Generic"
+          };
+          let base_mat_tag = match d.material_type.as_str() {
+            "PCTG" | "PCTG-CF" | "PCTG-GF" => "PETG",
+            "PLA-CF" | "PLA-GF" | "PLA Glow" => "PLA",
+            other => other,
+          };
           let inherits = format!(
-            "Generic {} @{} {:.1} nozzle",
-            d.material_type, cur_machine.name, diam
+            "{} {} @{} {:.1} nozzle",
+            vendor_prefix, base_mat_tag, cur_machine.name, diam
           );
           let clean_draft_name = d
             .name
@@ -426,13 +449,27 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             "required_nozzle_HRC": [req_hrc.to_string()],
             "filament_colour": [d.color_hex],
             "nozzle_temperature": [effective_nozzle.to_string()],
+            "nozzle_temperature_BRASS": [base_nozzle.to_string()],
+            "nozzle_temperature_HS": [hs_nozzle.to_string()],
             "nozzle_temperature_initial_layer": [(effective_nozzle + 5).min(350).to_string()],
+            "nozzle_temperature_initial_layer_BRASS": [(base_nozzle + 5).min(350).to_string()],
+            "nozzle_temperature_initial_layer_HS": [(hs_nozzle + 5).min(350).to_string()],
+            "nozzle_temperature_range_low": [(base_nozzle - 10).max(175).to_string()],
+            "nozzle_temperature_range_high": [(hs_nozzle + 15).min(350).to_string()],
             "hot_plate_temp": [effective_bed.to_string()],
+            "hot_plate_temp_initial_layer": [effective_bed.to_string()],
             "textured_plate_temp": [effective_bed.to_string()],
-            "filament_flow_ratio": ["0.98"],
-            "pressure_advance": ["0.032"],
+            "textured_plate_temp_initial_layer": [effective_bed.to_string()],
+            "filament_flow_ratio": [format!("{:.2}", default_flow)],
+            "pressure_advance": [format!("{:.3}", default_pa)],
             "filament_max_volumetric_speed": [format!("{:.1}", max_vol)],
             "fan_max_speed": [fan_pct.to_string()],
+            "fan_max_speed_BRASS": [fan_pct.to_string()],
+            "fan_max_speed_HS": [fan_pct.to_string()],
+            "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
+            "filament_z_hop_types": [if is_pctg_or_petg { "Spiral" } else { "Normal Lift" }],
+            "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
+            "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
             "version": "2.0.0.0"
           }))
           .unwrap_or_default();
@@ -449,13 +486,13 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             color_hex: d.color_hex.clone(),
             color_name: d.color_hex.clone(),
             brass_base_temp: base_nozzle,
-            hs_base_temp: base_nozzle + 5,
+            hs_base_temp: hs_nozzle,
             base_print_temp: base_nozzle,
             print_temp: effective_nozzle,
             base_bed_temp: base_bed,
             bed_temp: effective_bed,
-            flow_ratio: 0.98,
-            pressure_advance: 0.032,
+            flow_ratio: default_flow,
+            pressure_advance: default_pa,
             max_volumetric_speed: max_vol,
             fan_speed_percent: fan_pct,
             remaining_grams: 1000,
@@ -494,6 +531,15 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         &cur_nozzle.material,
         cur_ams.units,
       );
+      // When starting from scratch, PCTG spools already have Spiral Z-hop, 70% retract-before-wipe,
+      // 30 mm/s deretract, and 0.048 PA baked into their base profile, so keep the extra post-print
+      // `filament_pctg_antistringing` trim rule disabled unless the user enables it after a retraction test.
+      if let Some(pctg_rule) = rules
+        .iter_mut()
+        .find(|r| r.id == "filament_pctg_antistringing")
+      {
+        pctg_rule.enabled = false;
+      }
       let summary_label = format!("{} ({} Spools)", rig.name, filaments.len());
 
       on_complete.emit(ScratchWizardOutput {

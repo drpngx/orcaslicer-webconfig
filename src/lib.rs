@@ -31,8 +31,8 @@ use crate::models::{FilamentSpool, MachineRig, ProcessProfile, WebConfigStateSna
 use crate::orca_profile::OrcaProfile;
 use crate::threemf::{build_3mf_project_container, export_standalone_filament_json};
 use crate::transformations::{
-  PendingDiskUpdate, SafetySeverity, SafetyWarning, StackEvaluationResult, TransformationEngine,
-  TransformationRule,
+  PendingDiskUpdate, SafetySeverity, SafetyWarning, StackEvaluationResult, StackReorderAction,
+  TransformationEngine, TransformationRule,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1298,15 +1298,67 @@ pub fn App() -> Html {
   let on_change_ace_units = {
     let machines = machines.clone();
     let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |units: usize| {
       let mut mach_list = (*machines).clone();
+      let mut noz_type = "hardened_steel".to_string();
       if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
         m.ace_pro_units = units;
+        noz_type = m.nozzle_type.clone();
         m.refresh_title_and_notes(m.source_disk_profile.is_none());
       }
       machines.set(mach_list);
+
+      let target_slots = units * 4;
+      let mut fil_list = (*filaments).clone();
+      let default_extra = [
+        ("PLA+", "#FF9500", "Orange"),
+        ("PETG", "#00D4FF", "Cyan"),
+        ("PCTG", "#A855F7", "Purple"),
+        ("ASA", "#EF4444", "Red"),
+      ];
+      while fil_list.len() < target_slots {
+        let next_idx = fil_list.len();
+        let (mat, hex, cname) = default_extra[next_idx % default_extra.len()];
+        let mut sp = FilamentSpool {
+          id: format!("spool_slot_{}", next_idx + 1),
+          name: format!("OC: Anycubic {} #{}", mat, next_idx + 1),
+          brand: "Anycubic".to_string(),
+          inherits: format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", mat),
+          material_type: mat.to_string(),
+          nozzle_type: noz_type.clone(),
+          tuned_for_nozzle_type: noz_type.clone(),
+          required_nozzle_hrc: 3,
+          color_hex: hex.to_string(),
+          color_name: cname.to_string(),
+          brass_base_temp: 215,
+          hs_base_temp: 220,
+          base_print_temp: 220,
+          print_temp: 220,
+          base_bed_temp: 60,
+          bed_temp: 60,
+          flow_ratio: 0.98,
+          pressure_advance: 0.035,
+          max_volumetric_speed: 16.0,
+          fan_speed_percent: 100,
+          remaining_grams: 1000,
+          is_loaded: true,
+          finish_type: "Basic".to_string(),
+          opacity: 1.0,
+          pigment_stickiness: 1.0,
+          drying_temp_c: 45,
+          drying_time_hr: 4,
+          is_rfid_synced: false,
+          deltas_from_base: Vec::new(),
+          raw_disk_json: None,
+        };
+        sp.apply_material_change(mat, &noz_type);
+        fil_list.push(sp);
+      }
+      filaments.set(fil_list);
+
       let label = if units == 2 {
         "Double ACE Pro 2 (8 Slots / 8×8 Flushing Matrix)"
       } else {
@@ -1330,12 +1382,93 @@ pub fn App() -> Html {
 
   let on_update_spool = {
     let filaments = filaments.clone();
-    Callback::from(move |updated: FilamentSpool| {
+    let toast = toast_message.clone();
+    Callback::from(move |mut updated: FilamentSpool| {
       let mut list = (*filaments).clone();
-      if let Some(existing) = list.iter_mut().find(|s| s.id == updated.id) {
-        *existing = updated;
+      let mut changed_mat_msg = None;
+      if let Some(pos) = list.iter().position(|s| s.id == updated.id) {
+        let is_mat_change = list[pos].material_type != updated.material_type;
+        if is_mat_change {
+          if list[pos].id.starts_with("disk_") {
+            // If another imported spool in the bank already matches the requested material, swap it into this slot
+            // so we don't overwrite the imported disk profile!
+            if let Some(match_idx) = list.iter().enumerate().position(|(i, s)| {
+              i != pos && s.material_type.eq_ignore_ascii_case(&updated.material_type)
+            }) {
+              list.swap(pos, match_idx);
+              changed_mat_msg = Some(format!(
+                "Loaded imported '{}' ({}) into Slot #{} without modifying base catalog!",
+                list[pos].format_concise_title(),
+                list[pos].material_type,
+                pos + 1
+              ));
+            } else {
+              // Keep the original imported disk profile intact in the bank and place a new slot spool in `pos`
+              let preserved_disk_spool = list[pos].clone();
+              updated.id = format!("spool_slot_custom_{}_{}", pos + 1, list.len() + 1);
+              changed_mat_msg = Some(format!(
+                "Set Slot #{} to {} ({}°C / {}°C) while preserving imported '{}' in the catalog!",
+                pos + 1,
+                updated.material_type,
+                updated.print_temp,
+                updated.bed_temp,
+                preserved_disk_spool.format_concise_title()
+              ));
+              list[pos] = updated;
+              list.push(preserved_disk_spool);
+            }
+          } else {
+            changed_mat_msg = Some(format!(
+              "Updated '{}' material to {} ({}°C nozzle / {}°C bed) & recalculated flushing matrix!",
+              updated.format_concise_title(),
+              updated.material_type,
+              updated.print_temp,
+              updated.bed_temp
+            ));
+            list[pos] = updated;
+          }
+        } else {
+          list[pos] = updated;
+        }
       }
       filaments.set(list);
+      if let Some(msg) = changed_mat_msg {
+        toast.set(Some(msg));
+      }
+    })
+  };
+
+  let on_swap_slot_spool = {
+    let filaments = filaments.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |(slot_idx, target_idx): (usize, usize)| {
+      let mut list = (*filaments).clone();
+      if slot_idx < list.len() && target_idx < list.len() && slot_idx != target_idx {
+        list.swap(slot_idx, target_idx);
+        let assigned_name = list[slot_idx].format_concise_title();
+        filaments.set(list);
+        toast.set(Some(format!(
+          "Assigned '{}' to Slot #{} and recalculated Flushing Volume Matrix!",
+          assigned_name,
+          slot_idx + 1
+        )));
+      }
+    })
+  };
+
+  let on_add_spool = {
+    let filaments = filaments.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |new_spool: FilamentSpool| {
+      let mut list = (*filaments).clone();
+      let title = new_spool.format_concise_title();
+      list.push(new_spool);
+      let new_slot_num = list.len();
+      filaments.set(list);
+      toast.set(Some(format!(
+        "Added new spool '{}' (Slot #{}) to filament bank!",
+        title, new_slot_num
+      )));
     })
   };
 
@@ -1558,7 +1691,9 @@ pub fn App() -> Html {
         if accept_as_transform {
           let new_rule = TransformationEngine::create_oneoff_rule_from_conflict(&conf);
           let mut r_list = (*rules).clone();
+          TransformationEngine::normalize_stack_order(&mut r_list);
           r_list.push(new_rule.clone());
+          TransformationEngine::reindex_priorities(&mut r_list);
           rules.set(r_list);
           toast.set(Some(format!(
             "Created & enabled Lua One-Off Transformation '{}' ({} = {})!",
@@ -1665,13 +1800,16 @@ pub fn App() -> Html {
     let toast = toast_message.clone();
     Callback::from(move |new_rule: TransformationRule| {
       let mut list = (*rules).clone();
+      TransformationEngine::normalize_stack_order(&mut list);
       let rule_name = new_rule.name.clone();
       let rule_scope = new_rule.condition_expr.clone();
       list.push(new_rule);
+      TransformationEngine::reindex_priorities(&mut list);
+      let step_pos = list.len();
       rules.set(list);
       toast.set(Some(format!(
-        "Added & enabled Lua transformation rule '{}' (Scope: {})!",
-        rule_name, rule_scope
+        "Added & enabled Lua transformation rule '{}' at Step #{} (bottom of stack, Scope: {})!",
+        rule_name, step_pos, rule_scope
       )));
     })
   };
@@ -1682,11 +1820,23 @@ pub fn App() -> Html {
     Callback::from(move |rule_id: String| {
       let mut list = (*rules).clone();
       list.retain(|r| r.id != rule_id);
+      TransformationEngine::normalize_stack_order(&mut list);
       rules.set(list);
       toast.set(Some(format!(
-        "Removed transformation rule '{}' from stack.",
+        "Removed transformation rule '{}' from stack and re-indexed pipeline steps.",
         rule_id
       )));
+    })
+  };
+
+  let on_reorder_rule = {
+    let rules = rules.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |(rule_id, action): (String, StackReorderAction)| {
+      let mut list = (*rules).clone();
+      let msg = TransformationEngine::reorder_rule(&mut list, &rule_id, action);
+      rules.set(list);
+      toast.set(Some(msg));
     })
   };
 
@@ -1835,24 +1985,26 @@ pub fn App() -> Html {
         pending_save_count={pending_updates.len()}
       />
 
-      // Safety & Weird Value Confirmation Modal Dialog at Export / Save
+      // Safety & Warning Confirmation Modal Dialog at Export / Save
       if let Some(pending_act) = &*pending_confirmed_action {
         <div class="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4 overflow-y-auto">
-          <div class="bg-surface-container-low border-2 border-error rounded-2xl max-w-3xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
+          <div class="bg-surface-container-low border-2 border-red-500 rounded-2xl max-w-3xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
             <div class="flex items-start justify-between gap-space-md">
               <div class="flex flex-col gap-1">
                 <div class="flex items-center gap-space-xs">
-                  <span class="bg-error text-on-error text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
-                    {"Safety & Weird Value Confirmation"}
+                  <span class="bg-red-600 text-white text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
+                    {"Safety & Warning Confirmation"}
                   </span>
                   if danger_warning_count > 0 {
-                    <span class="bg-error/20 text-error text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
-                      {format!("{} Unsafe Value(s)", danger_warning_count)}
+                    <span class="bg-red-600 text-white border border-red-400 text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded flex items-center gap-1">
+                      <span>{"🛑"}</span>
+                      <span>{format!("{} UNSAFE", danger_warning_count)}</span>
                     </span>
                   }
                   if anomaly_warning_count > 0 {
-                    <span class="bg-secondary/20 text-secondary text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
-                      {format!("{} Weird / Drifted Value(s)", anomaly_warning_count)}
+                    <span class="bg-amber-500/20 text-amber-300 border border-amber-400/60 text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded flex items-center gap-1">
+                      <span>{"⚠️"}</span>
+                      <span>{format!("{} {}", anomaly_warning_count, if anomaly_warning_count == 1 { "WARNING" } else { "WARNINGS" })}</span>
                     </span>
                   }
                 </div>
@@ -1860,7 +2012,7 @@ pub fn App() -> Html {
                   {format!("Confirm Action: {}", pending_act.label())}
                 </h2>
                 <p class="text-xs text-on-surface-variant">
-                  {"Our safety validator flagged unsafe or weird parameter values in the current configuration or imported disk profiles. Review the flagged items below before writing to disk or exporting."}
+                  {"Our safety validator flagged unsafe values or warnings in the current configuration or imported disk profiles. Review the flagged items below before writing to disk or exporting."}
                 </p>
               </div>
               <button
@@ -1879,16 +2031,17 @@ pub fn App() -> Html {
                 let is_danger = w.severity == SafetySeverity::Danger;
                 html! {
                   <div class={format!(
-                    "bg-surface-container p-space-sm rounded-lg border flex flex-col gap-1 {}",
-                    if is_danger { "border-error/80" } else { "border-secondary/50" }
+                    "p-space-sm rounded-lg border flex flex-col gap-1 {}",
+                    if is_danger { "bg-red-950/30 border-red-500/80" } else { "bg-surface-container border-amber-500/50" }
                   )}>
                     <div class="flex items-center justify-between gap-2">
                       <div class="flex items-center gap-2">
                         <span class={format!(
-                          "text-[10px] font-mono uppercase px-1.5 py-0.5 rounded font-bold {}",
-                          if is_danger { "bg-error text-on-error" } else { "bg-secondary/20 text-secondary" }
+                          "text-[10px] font-mono uppercase px-1.5 py-0.5 rounded font-bold flex items-center gap-1 {}",
+                          if is_danger { "bg-red-600 text-white border border-red-400" } else { "bg-amber-500/20 text-amber-300 border border-amber-400/50" }
                         )}>
-                          {if is_danger { "UNSAFE" } else { "WEIRD" }}
+                          <span>{if is_danger { "🛑" } else { "⚠️" }}</span>
+                          <span>{if is_danger { "UNSAFE" } else { "WARNING" }}</span>
                         </span>
                         <span class="font-mono text-xs text-on-surface font-bold">
                           {format!("{} — {}", w.scope_label, w.param_key)}
@@ -1900,7 +2053,7 @@ pub fn App() -> Html {
                     </div>
                     <div class="flex items-center gap-2 font-mono text-xs">
                       <span class="text-on-surface-variant">{"Current:"}</span>
-                      <span class={if is_danger { "text-error font-bold" } else { "text-secondary font-bold" }}>
+                      <span class={if is_danger { "text-red-400 font-bold" } else { "text-amber-300 font-bold" }}>
                         {&w.current_value}
                       </span>
                     </div>
@@ -2359,6 +2512,7 @@ pub fn App() -> Html {
               is_config_loaded={*is_config_loaded}
               filaments={(*filaments).clone()}
               active_filament_type={(*active_filament_type).clone()}
+              active_nozzle_type={active_rig.nozzle_type.clone()}
               ace_pro_units={active_rig.ace_pro_units}
               flush_matrix={eval_result.flush_matrix.clone()}
               disk_flush_matrix={(*disk_flush_matrix).clone()}
@@ -2435,6 +2589,9 @@ pub fn App() -> Html {
               on_select_active_filament={on_select_active_filament}
               on_change_ace_units={on_change_ace_units}
               on_update_spool={on_update_spool}
+              on_swap_slot_spool={on_swap_slot_spool}
+              on_add_spool={on_add_spool}
+              on_create_rule={on_create_rule.clone()}
               on_export_spool_json={on_export_spool_json}
               on_export_3mf={on_export_3mf_guarded}
               on_open_bind_modal={on_open_bind_modal}
@@ -2453,6 +2610,7 @@ pub fn App() -> Html {
               on_update_rule_lua={on_update_rule_lua}
               on_create_rule={on_create_rule}
               on_delete_rule={on_delete_rule}
+              on_reorder_rule={on_reorder_rule}
               on_export_package={on_export_package_guarded}
               on_commit_save={on_commit_save_guarded}
               on_open_bind_modal={on_open_bind_modal}
