@@ -545,6 +545,36 @@ pub fn sanitize_user_relative_path(rel_path: &str) -> String {
 }
 
 impl FilamentSpool {
+  /// Builds the canonical `OC - <Material>[ Translucent] • 0.4 <Nozzle>` preset name.
+  pub fn default_oc_profile_name(
+    base_mat_code: &str,
+    finish_type: &str,
+    active_nozzle_type: &str,
+  ) -> String {
+    let nt_low = active_nozzle_type.to_lowercase();
+    let short_noz = if nt_low.contains("diamondback") {
+      "Diamond"
+    } else if nt_low.contains("ruby") {
+      "Ruby"
+    } else if nt_low.contains("cht") {
+      "CHT"
+    } else if nt_low.contains("cm2") {
+      "CM2"
+    } else if nt_low.contains("hardened") {
+      "Hardened"
+    } else {
+      "Brass"
+    };
+    let mat_with_finish = if finish_type.eq_ignore_ascii_case("Translucent")
+      && !base_mat_code.to_lowercase().contains("translucent")
+    {
+      format!("{} Translucent", base_mat_code)
+    } else {
+      base_mat_code.to_string()
+    };
+    format!("OC - {} • 0.4 {}", mat_with_finish, short_noz)
+  }
+
   /// Concise, scannable `OC -` display name for the filament spool including its nozzle type tag
   /// (never uses `:`, which is forbidden in Windows filenames when OrcaSlicer saves imported presets!)
   pub fn format_concise_title(&self) -> String {
@@ -566,7 +596,16 @@ impl FilamentSpool {
     } else {
       cleaned.as_str()
     };
-    let safe_base = base_name.replace(": ", " - ").replace(':', "-");
+    let mut safe_base = base_name.replace(": ", " - ").replace(':', "-");
+    if self.finish_type.eq_ignore_ascii_case("Translucent")
+      && !safe_base.to_lowercase().contains("translucent")
+    {
+      let prefix = format!("{} •", self.material_type);
+      if safe_base.starts_with(&prefix) {
+        safe_base =
+          safe_base.replacen(&prefix, &format!("{} Translucent •", self.material_type), 1);
+      }
+    }
     format!("OC - {}", safe_base)
   }
 
@@ -723,21 +762,8 @@ impl FilamentSpool {
       other => other,
     };
     self.inherits = format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", base_mat_tag);
-    let nt_low = active_nozzle_type.to_lowercase();
-    let short_noz = if nt_low.contains("diamondback") {
-      "Diamond"
-    } else if nt_low.contains("ruby") {
-      "Ruby"
-    } else if nt_low.contains("cht") {
-      "CHT"
-    } else if nt_low.contains("cm2") {
-      "CM2"
-    } else if nt_low.contains("hardened") {
-      "Hardened"
-    } else {
-      "Brass"
-    };
-    self.name = format!("OC - {} • 0.4 {}", base_mat_code, short_noz);
+    self.name =
+      Self::default_oc_profile_name(&base_mat_code, &self.finish_type, active_nozzle_type);
     self.deltas_from_base.clear();
     self.recompute_for_nozzle(active_nozzle_type);
     let fin = self.finish_type.clone();
@@ -755,6 +781,27 @@ impl FilamentSpool {
         self.opacity = 0.35;
       }
       self.pigment_stickiness = 1.0;
+      if self.material_type == "PETG" {
+        // Un-pigmented translucent PETG has no TiO2 mineral filler: it wets Textured PEI micro-pores
+        // much more aggressively than opaque PETG and has higher melt elasticity (stringing).
+        // Best practices: lower Textured PEI bed to 65°C for clean release, cap volumetric speed at 9.0 mm³/s,
+        // lower cooling fan to 30% for glass-like layer fusion without cobwebbing, and raise PA to 0.050.
+        self.base_bed_temp = 65;
+        self.bed_temp = 65;
+        self.max_volumetric_speed = 9.0;
+        self.fan_speed_percent = 30;
+        self.pressure_advance = 0.050;
+        self.drying_temp_c = 65;
+        self.drying_time_hr = 6;
+      }
+      let prefix = format!("OC - {} •", self.material_type);
+      if self.name.starts_with(&prefix) && !self.name.to_lowercase().contains("translucent") {
+        self.name = self.name.replacen(
+          &prefix,
+          &format!("OC - {} Translucent •", self.material_type),
+          1,
+        );
+      }
     } else {
       if self.opacity < 0.5 {
         self.opacity = 1.0;
@@ -769,6 +816,21 @@ impl FilamentSpool {
         } else {
           1.0
         };
+      if self.material_type == "PETG" {
+        self.base_bed_temp = 70;
+        self.bed_temp = 70;
+        self.max_volumetric_speed = 12.0;
+        self.fan_speed_percent = 40;
+        self.pressure_advance = 0.045;
+        self.drying_temp_c = 60;
+        self.drying_time_hr = 6;
+      }
+      let trans_prefix = format!("OC - {} Translucent •", self.material_type);
+      if self.name.starts_with(&trans_prefix) {
+        self.name = self
+          .name
+          .replacen(&trans_prefix, &format!("OC - {} •", self.material_type), 1);
+      }
     }
 
     let is_abrasive = new_finish.contains("Carbon")
@@ -807,6 +869,9 @@ impl FilamentSpool {
     };
     let is_pctg_or_petg =
       self.material_type.contains("PCTG") || self.material_type.contains("PETG");
+    let is_translucent_petg =
+      is_pctg_or_petg && self.finish_type.eq_ignore_ascii_case("Translucent");
+    let init_boost = if is_pctg_or_petg { 0 } else { 5 };
 
     self.deltas_from_base.clear();
     if self.print_temp != self.brass_base_temp {
@@ -836,9 +901,9 @@ impl FilamentSpool {
         "nozzle_temperature": [self.print_temp.to_string()],
         "nozzle_temperature_BRASS": [self.brass_base_temp.to_string()],
         "nozzle_temperature_HS": [self.hs_base_temp.to_string()],
-        "nozzle_temperature_initial_layer": [(self.print_temp + 5).min(350).to_string()],
-        "nozzle_temperature_initial_layer_BRASS": [(self.brass_base_temp + 5).min(350).to_string()],
-        "nozzle_temperature_initial_layer_HS": [(self.hs_base_temp + 5).min(350).to_string()],
+        "nozzle_temperature_initial_layer": [(self.print_temp + init_boost).min(350).to_string()],
+        "nozzle_temperature_initial_layer_BRASS": [(self.brass_base_temp + init_boost).min(350).to_string()],
+        "nozzle_temperature_initial_layer_HS": [(self.hs_base_temp + init_boost).min(350).to_string()],
         "nozzle_temperature_range_low": [(self.brass_base_temp - 10).max(175).to_string()],
         "nozzle_temperature_range_high": [(self.hs_base_temp + 15).min(350).to_string()],
         "hot_plate_temp": [self.bed_temp.to_string()],
@@ -851,10 +916,14 @@ impl FilamentSpool {
         "fan_max_speed": [self.fan_speed_percent.to_string()],
         "fan_max_speed_BRASS": [self.fan_speed_percent.to_string()],
         "fan_max_speed_HS": [self.fan_speed_percent.to_string()],
-        "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
+        "filament_retraction_length": [if is_pctg_or_petg { "0.8" } else { "0.6" }],
+        "filament_retraction_speed": [if is_pctg_or_petg { "35" } else { "40" }],
+        "filament_z_hop": [if is_translucent_petg { "0.1" } else if is_pctg_or_petg { "0.15" } else { "0.2" }],
         "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
         "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
         "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
+        "filament_wipe": ["1"],
+        "filament_wipe_distance": ["2"],
         "version": "2.0.0.0"
       }))
       .unwrap_or_default(),
@@ -910,7 +979,8 @@ impl FilamentSpool {
     } else {
       "Brass"
     };
-    let profile_name = format!("OC - {} • 0.4 {}", base_mat_code, short_noz);
+    let profile_name =
+      Self::default_oc_profile_name(&base_mat_code, &finish_type, active_nozzle_type);
     let is_abrasive = mat.requires_hardened
       || finish_type.contains("Carbon")
       || finish_type.contains("Glass")
@@ -980,7 +1050,7 @@ impl FilamentSpool {
     }))
     .unwrap_or_default();
 
-    FilamentSpool {
+    let mut spool = FilamentSpool {
       id: format!(
         "spool_catalog_{}_{}",
         idx,
@@ -1027,7 +1097,9 @@ impl FilamentSpool {
       is_rfid_synced: false,
       deltas_from_base,
       raw_disk_json: Some(raw_disk_json),
-    }
+    };
+    spool.apply_finish_change(&finish_type, active_nozzle_type);
+    spool
   }
 }
 
@@ -1100,15 +1172,30 @@ impl WebConfigStateSnapshot {
           sp.opacity = 1.0;
         }
       }
+      if sp.finish_type.eq_ignore_ascii_case("Translucent")
+        && !sp.name.to_lowercase().contains("translucent")
+      {
+        let prefix = format!("OC - {} •", sp.material_type);
+        if sp.name.starts_with(&prefix) {
+          sp.name = sp.name.replacen(
+            &prefix,
+            &format!("OC - {} Translucent •", sp.material_type),
+            1,
+          );
+        }
+      }
 
-      // Heal any scratch/catalog spool in localStorage whose base temperature came from an older catalog snapshot
+      // Heal any scratch/catalog spool in localStorage whose base temperature or translucent PETG tuning came from an older catalog snapshot
       if !sp.id.starts_with("disk_") {
         if let Some(cat_entry) = catalog
           .filaments
           .iter()
           .find(|f| f.code.eq_ignore_ascii_case(&sp.material_type))
         {
-          if sp.brass_base_temp != cat_entry.base_nozzle_c as i32 {
+          let needs_translucent_petg_heal = sp.material_type == "PETG"
+            && sp.finish_type == "Translucent"
+            && (sp.bed_temp > 65 || sp.max_volumetric_speed > 10.0 || sp.fan_speed_percent > 35);
+          if sp.brass_base_temp != cat_entry.base_nozzle_c as i32 || needs_translucent_petg_heal {
             let noz = sp.nozzle_type.clone();
             let fin = sp.finish_type.clone();
             let saved_name = sp.name.clone();

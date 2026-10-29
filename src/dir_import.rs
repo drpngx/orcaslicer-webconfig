@@ -1547,7 +1547,7 @@ pub fn sync_live_state_to_entries(
   for rig in machines {
     let fname = crate::models::sanitize_profile_filename(&rig.name);
     let rel_path = format!("user/{}/machine/{}", user_folder_id, fname);
-    let (orca_noz, orca_hrc) = rig.orca_machine_nozzle_type_and_hrc();
+    let (orca_noz, _) = rig.orca_machine_nozzle_type_and_hrc();
     let noz_diam_str = rig.formatted_nozzle_diameter();
     let machine_json = serde_json::to_string_pretty(&serde_json::json!({
       "type": "machine",
@@ -1559,7 +1559,6 @@ pub fn sync_live_state_to_entries(
       "printer_model": rig.printer_model,
       "printer_variant": noz_diam_str,
       "nozzle_type": orca_noz,
-      "nozzle_hrc": orca_hrc.to_string(),
       "nozzle_diameter": [noz_diam_str],
       "retraction_length": [format!("{:.2}", rig.base_retraction_length)],
       "retraction_speed": ["40"],

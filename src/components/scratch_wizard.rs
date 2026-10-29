@@ -425,7 +425,17 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             .trim_start_matches("OC: ")
             .trim_start_matches("OC:")
             .trim();
-          let profile_name = format!("OC - {} • {:.1} {}", clean_draft_name, diam, short_noz);
+          let draft_name_with_finish = if d.finish_type.eq_ignore_ascii_case("Translucent")
+            && !clean_draft_name.to_lowercase().contains("translucent")
+          {
+            format!("{} Translucent", clean_draft_name)
+          } else {
+            clean_draft_name.to_string()
+          };
+          let profile_name = format!(
+            "OC - {} • {:.1} {}",
+            draft_name_with_finish, diam, short_noz
+          );
           let fil_rel_path = format!(
             "user/default/filament/{}",
             crate::models::sanitize_profile_filename(&profile_name)
@@ -1561,7 +1571,17 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                                     let sel: web_sys::HtmlInputElement = e.target_unchecked_into();
                                     let mut list = (*sd_fin).clone();
                                     if let Some(item) = list.get_mut(idx) {
-                                      item.finish_type = sel.value();
+                                      let new_fin = sel.value();
+                                      if new_fin == "Translucent"
+                                        && item.name == item.material_type
+                                      {
+                                        item.name = format!("{} Translucent", item.material_type);
+                                      } else if new_fin != "Translucent"
+                                        && item.name == format!("{} Translucent", item.material_type)
+                                      {
+                                        item.name = item.material_type.clone();
+                                      }
+                                      item.finish_type = new_fin;
                                     }
                                     sd_fin.set(list);
                                   })}
@@ -1760,8 +1780,13 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                           <button
                             onclick={Callback::from(move |_| {
                               let mut list = (*sd).clone();
+                              let draft_name = if mat_clone.default_finish.eq_ignore_ascii_case("Translucent") {
+                                format!("{} Translucent", mat_clone.base_material_code())
+                              } else {
+                                mat_clone.base_material_code().to_string()
+                              };
                               list.push(WizardSpoolDraft {
-                                name: mat_clone.base_material_code().to_string(),
+                                name: draft_name,
                                 material_type: mat_clone.base_material_code().to_string(),
                                 color_hex: "#8E9299".to_string(),
                                 finish_type: mat_clone.default_finish.clone(),

@@ -1036,10 +1036,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                 {for vec!["Basic", "Matte", "Silk", "Translucent", "Carbon Fiber", "Glass Fiber"].into_iter().map(|fin| {
                   let is_sel = spool.finish_type == fin;
                   let mut updated = spool.clone();
-                  updated.finish_type = fin.to_string();
-                  if fin == "Translucent" && updated.opacity > 0.6 {
-                    updated.opacity = 0.35;
-                  }
+                  updated.apply_finish_change(fin, &active_noz);
                   let cb = on_update_spool.clone();
 
                   html! {

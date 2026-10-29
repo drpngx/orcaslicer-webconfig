@@ -2835,6 +2835,27 @@ pub fn render_issue_illustration(issue_id: &str, compact: bool) -> Html {
         <text x="342" y="88" fill="#50fa7b" font-size="8.5" font-family="monospace" text-anchor="middle">Crisp Color Swap • Stable 40mm Prime Tower</text>
       "##,
     ),
+    "sym_transparent_glass" => (
+      "DEFECT: Cloudy / Frosted Micro-Voids & Grid Haze",
+      r##"
+        <rect x="38" y="20" width="124" height="52" rx="5" fill="#2c354d" opacity="0.85" stroke="#ff5555" stroke-width="1.5"/>
+        <line x1="48" y1="26" x2="152" y2="66" stroke="#f8f8f2" stroke-width="1.5" opacity="0.5"/>
+        <line x1="152" y1="26" x2="48" y2="66" stroke="#f8f8f2" stroke-width="1.5" opacity="0.5"/>
+        <circle cx="76" cy="44" r="3" fill="#ff5555"/>
+        <circle cx="100" cy="36" r="2.5" fill="#ff5555"/>
+        <circle cx="124" cy="50" r="3" fill="#ff5555"/>
+        <text x="100" y="88" fill="#ff8080" font-size="8.5" font-family="monospace" text-anchor="middle">Air Micro-Voids + 90° Crossing Infill Scatter Light</text>
+      "##,
+      "FIX: 20mm/s + 1.01 Flow + 0% Fan + 100% Aligned 0°",
+      r##"
+        <rect x="276" y="20" width="132" height="52" rx="5" fill="#8be9fd" opacity="0.22" stroke="#50fa7b" stroke-width="2"/>
+        <line x1="284" y1="32" x2="400" y2="32" stroke="#8be9fd" stroke-width="2" opacity="0.65"/>
+        <line x1="284" y1="45" x2="400" y2="45" stroke="#8be9fd" stroke-width="2" opacity="0.65"/>
+        <line x1="284" y1="58" x2="400" y2="58" stroke="#8be9fd" stroke-width="2" opacity="0.65"/>
+        <text x="342" y="48" fill="#f1fa8c" font-size="7.5" font-family="monospace" text-anchor="middle">💎 Homogeneous Fused Glass</text>
+        <text x="342" y="88" fill="#50fa7b" font-size="8.5" font-family="monospace" text-anchor="middle">Parallel 0° Aligned • +5% Over-Pack • 0% Fan</text>
+      "##,
+    ),
     _ => (
       "CALIBRATION PRINT: Slicer Built-In Test Model",
       r##"

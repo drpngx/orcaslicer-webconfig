@@ -282,12 +282,34 @@ impl TransformationEngine {
         lua_code: include_str!("../transformations/filament_pctg_antistringing.lua").to_string(),
         priority: 48,
       },
+      TransformationRule {
+        id: "transparent_optical_glass".to_string(),
+        name: "Transparent / Glass-Like Optical Clarity Mode (Rygar1432 / CNC Kitchen)".to_string(),
+        description: "Tunes translucent PETG/PCTG/PLA for maximum optical clarity ('How to Print Glass'): 20 mm/s print speeds (5.0 mm³/s MVS ceiling), +0.05 (+5%) flow ratio boost to flood inter-bead micro-voids, 0% part cooling fan, 0.12mm layer height with 1.25× nozzle line width, 100% Aligned Rectilinear infill at 0°, 1 perimeter wall, 0 top/bottom shells, and 65°C Textured PEI easy-release bed temp.".to_string(),
+        category: "Optical & Specialty Rule".to_string(),
+        icon: "💎".to_string(),
+        enabled: false,
+        condition_expr: "filament:PETG".to_string(),
+        lua_code: include_str!("../transformations/transparent_optical_glass.lua").to_string(),
+        priority: 52,
+      },
     ]
   }
 
   /// Curated rule templates for the interactive "Create / Add New Lua Rule" builder in `WizardTab`.
   pub fn get_rule_templates() -> Vec<TransformationRule> {
     vec![
+      TransformationRule {
+        id: "transparent_optical_glass".to_string(),
+        name: "Transparent / Glass-Like Optical Clarity Mode (Rygar1432 / CNC Kitchen)".to_string(),
+        description: "Tunes translucent PETG/PCTG/PLA for optical clarity: 20 mm/s ultra-slow speeds (5.0 mm³/s MVS), +0.05 (+5%) flow boost to eliminate air micro-voids, 0% cooling fan, 0.12mm layers, 1.25× line width, 100% Aligned Rectilinear 0° infill, 1 wall, 0 top/bottom shells, and 65°C Textured PEI release.".to_string(),
+        category: "Optical & Specialty Rule".to_string(),
+        icon: "💎".to_string(),
+        enabled: true,
+        condition_expr: "filament:PETG".to_string(),
+        lua_code: include_str!("../transformations/transparent_optical_glass.lua").to_string(),
+        priority: 52,
+      },
       TransformationRule {
         id: "scarf_seams_arachne".to_string(),
         name: "Scarf Joint Seams & Arachne Variable Walls".to_string(),
@@ -2935,6 +2957,83 @@ end
           },
         ],
       },
+      ParameterizedCalibrationTemplate {
+        id: "sym_transparent_glass".to_string(),
+        name: "Transparent / Glass-Like Clarity Tuning (Slow Speed, 0% Fan, High Flow & Aligned Infill)".to_string(),
+        icon: "💎".to_string(),
+        category: "5. Top/Bottom Surfaces & Infill (Optical Clarity & Glass Mode)".to_string(),
+        slicer_menu_path: "Speed (15–30 mm/s) + Flow Boost (+5% Void Fill) + 0% Part Cooling Fan + Aligned Rectilinear 0° Infill + 65°C PEI Bed".to_string(),
+        when_to_run: "Apply when printing Translucent / Transparent PETG, PCTG, or PLA to achieve ice-clear or glass-like optical clarity instead of frosty/cloudy internal refraction, while keeping stringing and Textured PEI adhesion under control.".to_string(),
+        how_to_read_print: vec![
+          "1. Why translucent prints look cloudy/white: FDM prints look frosted because of thousands of microscopic air gaps between adjacent extrusion lines, criss-crossing infill angles (90° grid refraction), and rapid fan cooling haze.".to_string(),
+          "2. The Rygar1432 ('How to Print Glass') & CNC Kitchen formula: print ultra-slow (15–20 mm/s, ≤5.0 mm³/s MVS), boost Flow Ratio by +0.05 (+5% → ~1.01–1.02) so molten plastic slightly over-packs and floods every inter-bead void, turn Part Cooling Fan OFF (0%), and lay all lines in one parallel direction (`alignedrectilinear` at 0° with 0 top/bottom shells) or Spiral Vase mode.".to_string(),
+          "3. Textured PEI Release & Stringing: Un-pigmented clear PETG lacks TiO2 mineral filler and bonds aggressively to PEI powder-coat; keep Textured PEI at 65°C with 0°C first-layer nozzle boost and let the plate cool to room temperature (<30°C) before flexing.".to_string(),
+        ],
+        formula_summary: "Speed = 15–30 mm/s (MVS ≤ 5–7 mm³/s)  •  Flow_new = Flow_old + 0.05  •  Fan = 0%  •  100% Aligned Rectilinear (0°)  •  PEI Bed = 65°C".to_string(),
+        default_condition_expr: "filament:PETG".to_string(),
+        questions: vec![
+          CalibrationQuestion {
+            id: "optical_mode".to_string(),
+            question: "1. Which Transparent / Optical Clarity geometry mode are you printing?".to_string(),
+            hint: "'glass_solid' uses 100% Aligned Rectilinear infill at 0° with 1 wall and 0 top/bottom shells (Rygar1432 / CNC Kitchen solid optical glass). 'clear_shell' keeps 2 walls + monotonic top/bottom shells for functional clear parts. 'vase_crystal' configures single-wall Spiral Vase mode with 1.50× line width for lampshades and diffusers.".to_string(),
+            default_value: "glass_solid".to_string(),
+            unit: String::new(),
+            quick_options: vec![
+              ("glass_solid".to_string(), "glass_solid — 100% Aligned Rectilinear Glass Block (1 Wall, 0 Top/Bottom Shells — Rygar1432 Spec)".to_string()),
+              ("clear_shell".to_string(), "clear_shell — Clear Functional Part (2 Walls, Monotonic Shells, Aligned Infill)".to_string()),
+              ("vase_crystal".to_string(), "vase_crystal — Crystal Spiral Vase / Light Diffuser (1 Wall, 0% Fan, 1.50× Width)".to_string()),
+            ],
+          },
+          CalibrationQuestion {
+            id: "print_speed".to_string(),
+            question: "2. What Print Speed (mm/s) should be used for walls and infill?".to_string(),
+            hint: "15–20 mm/s lets molten PETG/PCTG relax and Degas at the nozzle tip without trapping micro-bubbles or shear haze.".to_string(),
+            default_value: "20".to_string(),
+            unit: "mm/s".to_string(),
+            quick_options: vec![
+              ("15".to_string(), "15 mm/s (Ultra-Clear Optical Glass — Rygar1432 Spec)".to_string()),
+              ("20".to_string(), "20 mm/s (Recommended Glass Clarity)".to_string()),
+              ("30".to_string(), "30 mm/s (Balanced Translucent Functional Part)".to_string()),
+            ],
+          },
+          CalibrationQuestion {
+            id: "flow_boost".to_string(),
+            question: "3. How much should we boost Flow Ratio (filament_flow_ratio) relative to current to flood inter-bead air voids?".to_string(),
+            hint: "+0.05 (+5%, e.g. 0.96 → 1.01) forces extruded plastic into the microscopic triangular valleys between parallel lines, eliminating internal light refraction.".to_string(),
+            default_value: "+0.05".to_string(),
+            unit: "ratio".to_string(),
+            quick_options: vec![
+              ("+0.03".to_string(), "+0.03 (+3% Subtle Over-Pack — Functional Clear Shells)".to_string()),
+              ("+0.05".to_string(), "+0.05 (+5% Recommended Void Fill — ~1.01 Flow)".to_string()),
+              ("+0.07".to_string(), "+0.07 (+7% Maximum Optical Void Fill — ~1.03 Flow)".to_string()),
+            ],
+          },
+          CalibrationQuestion {
+            id: "fan_cap".to_string(),
+            question: "4. What Part Cooling Fan Speed (%) should be used?".to_string(),
+            hint: "0% (Fan OFF) allows adjacent lines to thermally fuse into a homogeneous clear mass without cooling stress haze. Use 15–25% only if the model has overhangs.".to_string(),
+            default_value: "0".to_string(),
+            unit: "%".to_string(),
+            quick_options: vec![
+              ("0".to_string(), "0% (Fan Completely OFF — Maximum Clarity & Slow Annealing)".to_string()),
+              ("15".to_string(), "15% (Minimal Cooling for Mild Overhangs)".to_string()),
+              ("25".to_string(), "25% (Functional Translucent Parts with Bridges)".to_string()),
+            ],
+          },
+          CalibrationQuestion {
+            id: "bed_temp_pei".to_string(),
+            question: "5. What Textured PEI Bed Temperature (°C) should we set for easy release without tearing?".to_string(),
+            hint: "Clear un-pigmented PETG bonds much harder to Textured PEI than opaque PETG. 65°C holds securely during slow printing and releases cleanly once cooled below 30°C.".to_string(),
+            default_value: "65".to_string(),
+            unit: "°C".to_string(),
+            quick_options: vec![
+              ("62".to_string(), "62°C (Maximum Release Relief on Textured PEI)".to_string()),
+              ("65".to_string(), "65°C (Recommended Textured PEI Easy-Release for Clear PETG)".to_string()),
+              ("70".to_string(), "70°C (Standard Smooth / Engineering Plate with Glue Stick)".to_string()),
+            ],
+          },
+        ],
+      },
     ]
   }
 }
@@ -2972,7 +3071,7 @@ impl ParameterizedCalibrationTemplate {
   /// `(category_id, display_label, icon)`
   pub fn symptom_tree_categories() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
-      ("all", "All Print Quality Issues (26)", "🗂️"),
+      ("all", "All Print Quality Issues (27)", "🗂️"),
       ("1. Extrusion & Flow", "1. Extrusion & Flow", "🔥"),
       (
         "2. Oozing, Stringing & Blobs",
@@ -3024,9 +3123,11 @@ impl ParameterizedCalibrationTemplate {
       | "sym_layer_shifting"
       | "sym_z_banding_hull_line"
       | "sym_corner_bulge" => "4. Walls, Seams & Dimensional",
-      "sym_pillowing" | "sym_infill_wall_gaps" | "sym_top_surface_scars" | "sym_weak_infill" => {
-        "5. Top/Bottom Surfaces & Infill"
-      }
+      "sym_pillowing"
+      | "sym_infill_wall_gaps"
+      | "sym_top_surface_scars"
+      | "sym_weak_infill"
+      | "sym_transparent_glass" => "5. Top/Bottom Surfaces & Infill",
       "sym_overhang_curl" | "sym_poor_bridging" | "sym_support_scarring" => {
         "6. Overhangs, Bridging & Supports"
       }
@@ -3057,6 +3158,7 @@ impl ParameterizedCalibrationTemplate {
       "sym_infill_wall_gaps" => "Perimeter-to-Infill Overlap",
       "sym_top_surface_scars" => "Monotonic Skin & Travel Lift",
       "sym_weak_infill" => "Non-Crossing Infill & Flow",
+      "sym_transparent_glass" => "Optical Clarity & Glass Mode",
       "sym_overhang_curl" => "Steep Overhang Cooling",
       "sym_poor_bridging" => "Bridge Strand Tension",
       "sym_support_scarring" => "Support Top Z-Gap & Interface",
@@ -3161,6 +3263,11 @@ impl ParameterizedCalibrationTemplate {
       "sym_ams_color_bleed" => vec![
         "💩 Inspect the Rear Purge Chute ('Poop Chute') Flap: Ensure purged filament coils drop freely into the chute and aren't getting dragged back onto the build plate by the nozzle wiper.",
         "🔢 Review the N×N Flushing Matrix in the Filament Tab: Increase the Flushing Multiplier to 1.15×–1.25× when swapping from Black/Red/CF to White/Clear.",
+      ],
+      "sym_transparent_glass" => vec![
+        "🔥 Dry Clear PETG/PCTG in ACE Pro at 55°C for 6+ Hours First: Even 0.1% absorbed moisture flashes into microscopic steam bubbles inside the melt zone, turning crystal-clear PETG permanently milky/cloudy regardless of slicer settings.",
+        "🧼 Clean Nozzle Exterior Before Printing: With +5% over-pack flow (`~1.01–1.02`), any stray plastic film on the nozzle cone can accumulate; brush the hot nozzle tip clean before starting and ensure `avoid_crossing_perimeters = 1` is active.",
+        "❄️ Textured PEI Release Tip: Wait until the Textured PEI build plate cools below 30°C (or place the spring-steel sheet in the freezer for 3 minutes) so clear PETG pops off effortlessly without stressing the PEI coating.",
       ],
       _ => vec![
         "🖨️ Slice and print the built-in test model from the AnycubicSlicerNext / OrcaSlicer top 'Calibration' menu before entering your measurements below.",
@@ -4186,6 +4293,103 @@ impl ParameterizedCalibrationTemplate {
         );
         (title, desc, badge, lua)
       }
+      "sym_transparent_glass" => {
+        let mode = get_ans("optical_mode", "glass_solid");
+        let spd: i32 = get_ans("print_speed", "20")
+          .parse::<i32>()
+          .unwrap_or(20)
+          .clamp(10, 60);
+        let init_spd = (spd - 5).max(12);
+        let flow_boost: f64 = get_ans("flow_boost", "+0.05")
+          .trim_start_matches('+')
+          .parse::<f64>()
+          .unwrap_or(0.05)
+          .clamp(0.0, 0.12);
+        let fan_cap: i32 = get_ans("fan_cap", "0")
+          .trim_end_matches('%')
+          .parse::<i32>()
+          .unwrap_or(0)
+          .clamp(0, 100);
+        let bed_pei: i32 = get_ans("bed_temp_pei", "65")
+          .parse::<i32>()
+          .unwrap_or(65)
+          .clamp(50, 90);
+        let mvs = if spd <= 15 {
+          4.0
+        } else if spd <= 20 {
+          5.0
+        } else {
+          7.0
+        };
+        let mode_label = match mode.as_str() {
+          "vase_crystal" => "Crystal Spiral Vase (1 Wall, 1.50× Width)",
+          "clear_shell" => "Clear Functional Shell (2 Walls, Monotonic)",
+          _ => "100% Aligned Rectilinear Glass (1 Wall, 0 Shells)",
+        };
+        let badge = format!(
+          "{} • {} mm/s (MVS {:.1} mm³/s) • Flow {:+.2} • Fan {}% • PEI Bed {}°C",
+          mode_label, spd, mvs, flow_boost, fan_cap, bed_pei
+        );
+        let title = format!(
+          "Optical Clarity: {} ({}mm/s, {:+.2} Flow, {}% Fan)",
+          mode_label, spd, flow_boost, fan_cap
+        );
+        let desc = format!(
+          "Tunes {} for transparent / glass-like optical clarity ({}): sets print speeds to {} mm/s ({:.1} mm³/s MVS ceiling), boosts filament_flow_ratio by {:+.2} to flood inter-bead voids, caps part cooling fan at {}%, and sets Textured PEI bed to {}°C with anti-stringing retraction.",
+          scope, mode_label, spd, mvs, flow_boost, fan_cap, bed_pei
+        );
+        let geom_lua = match mode.as_str() {
+          "vase_crystal" => r#"  local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.4
+  local lw = string.format("%.2f", nd * 1.50)
+  config["spiral_mode"] = "1"
+  config["wall_loops"] = "1"
+  config["top_shell_layers"] = "0"
+  config["bottom_shell_layers"] = "3"
+  config["sparse_infill_density"] = "0%"
+  config["line_width"] = lw
+  config["outer_wall_line_width"] = lw"#
+            .to_string(),
+          "clear_shell" => r#"  local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.4
+  local lw = string.format("%.2f", nd * 1.25)
+  config["wall_loops"] = "2"
+  config["top_surface_pattern"] = "monotonicline"
+  config["bottom_surface_pattern"] = "monotonicline"
+  config["sparse_infill_pattern"] = "alignedrectilinear"
+  config["infill_direction"] = "0"
+  config["infill_wall_overlap"] = "25%"
+  config["line_width"] = lw
+  config["outer_wall_line_width"] = lw
+  config["inner_wall_line_width"] = lw
+  config["sparse_infill_line_width"] = lw"#
+            .to_string(),
+          _ => r#"  local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.4
+  local lw = string.format("%.2f", nd * 1.25)
+  local lh = string.format("%.2f", math.max(0.10, math.floor(nd * 0.30 * 100 + 0.5) / 100))
+  config["layer_height"] = lh
+  config["initial_layer_print_height"] = string.format("%.2f", math.min(0.20, nd * 0.50))
+  config["wall_loops"] = "1"
+  config["top_shell_layers"] = "0"
+  config["bottom_shell_layers"] = "0"
+  config["sparse_infill_density"] = "100%"
+  config["sparse_infill_pattern"] = "alignedrectilinear"
+  config["internal_solid_infill_pattern"] = "monotonicline"
+  config["top_surface_pattern"] = "monotonicline"
+  config["bottom_surface_pattern"] = "monotonicline"
+  config["infill_direction"] = "0"
+  config["infill_wall_overlap"] = "25%"
+  config["line_width"] = lw
+  config["outer_wall_line_width"] = lw
+  config["inner_wall_line_width"] = lw
+  config["sparse_infill_line_width"] = lw
+  config["internal_solid_infill_line_width"] = lw
+  config["top_surface_line_width"] = lw"#
+            .to_string(),
+        };
+        let lua = format!(
+          "-- {title}\n-- {badge}\nfunction apply(config, ctx)\n  local is_filament = (config[\"type\"] == \"filament\") or (config[\"filament_flow_ratio\"] ~= nil) or (config[\"nozzle_temperature\"] ~= nil)\n  local is_process = (config[\"type\"] == \"process\") or (config[\"sparse_infill_speed\"] ~= nil) or (config[\"wall_loops\"] ~= nil)\n\n  if is_filament then\n    local cur_flow = tonumber(config[\"filament_flow_ratio\"]) or 0.96\n    config[\"filament_flow_ratio\"] = string.format(\"%.3f\", math.min(1.06, cur_flow + ({flow_boost:.2})))\n    config[\"fan_max_speed\"] = \"{fan_cap}\"\n    config[\"fan_min_speed\"] = \"{fan_cap}\"\n    if config[\"fan_max_speed_BRASS\"] ~= nil then config[\"fan_max_speed_BRASS\"] = \"{fan_cap}\" end\n    if config[\"fan_max_speed_HS\"] ~= nil then config[\"fan_max_speed_HS\"] = \"{fan_cap}\" end\n    config[\"slow_down_for_layer_cooling\"] = \"0\"\n    if ({fan_cap}) == 0 then\n      config[\"overhang_fan_speed\"] = \"25\"\n    end\n    config[\"filament_max_volumetric_speed\"] = \"{mvs:.1}\"\n    config[\"textured_plate_temp\"] = \"{bed_pei}\"\n    config[\"textured_plate_temp_initial_layer\"] = \"{bed_pei}\"\n    config[\"hot_plate_temp\"] = \"{bed_pei}\"\n    config[\"hot_plate_temp_initial_layer\"] = \"{bed_pei}\"\n    config[\"filament_retraction_length\"] = \"0.8\"\n    config[\"filament_retraction_speed\"] = \"35\"\n    config[\"filament_deretraction_speed\"] = \"30\"\n    config[\"filament_retract_before_wipe\"] = \"70%\"\n    config[\"filament_wipe\"] = \"1\"\n    config[\"filament_wipe_distance\"] = \"2\"\n    config[\"filament_z_hop\"] = \"0.10\"\n    config[\"filament_z_hop_types\"] = \"Spiral Lift\"\n  end\n\n  if is_process then\n{geom_lua}\n    config[\"outer_wall_speed\"] = \"{spd}\"\n    config[\"inner_wall_speed\"] = \"{spd}\"\n    config[\"sparse_infill_speed\"] = \"{spd}\"\n    config[\"internal_solid_infill_speed\"] = \"{spd}\"\n    config[\"top_surface_speed\"] = \"{spd}\"\n    config[\"gap_infill_speed\"] = \"{spd}\"\n    config[\"initial_layer_speed\"] = \"{init_spd}\"\n    config[\"initial_layer_infill_speed\"] = \"{init_spd}\"\n    config[\"reduce_crossing_wall\"] = \"1\"\n    config[\"avoid_crossing_perimeters\"] = \"1\"\n  end\n\n  print(\"[OpticalClarity] {badge}\")\nend\n"
+        );
+        (title, desc, badge, lua)
+      }
       _ => {
         let scarf_mode = get_ans("scarf_mode", "all");
         let scarf_len = get_ans("scarf_len", "20");
@@ -4239,7 +4443,53 @@ mod tests {
   #[test]
   fn test_parameterized_calibration_templates_build_and_execute() {
     let templates = TransformationEngine::get_parameterized_calibration_templates();
-    assert_eq!(templates.len(), 33);
+    assert_eq!(templates.len(), 34);
+
+    // Verify transparent glass wizard generates and executes cleanly on both filament and process JSON
+    let glass = templates
+      .iter()
+      .find(|t| t.id == "sym_transparent_glass")
+      .expect("sym_transparent_glass template exists");
+    let glass_ans = glass.default_answers();
+    let (g_title, _g_desc, g_badge, g_lua) =
+      glass.generate_from_answers(&glass_ans, "filament:PETG");
+    assert!(g_title.contains("Optical Clarity"), "title: {}", g_title);
+    assert!(g_badge.contains("20 mm/s"), "badge: {}", g_badge);
+    let (mut g_fil, _, _) = execute_transformation_lua(
+      &g_lua,
+      &json!({
+        "type": "filament",
+        "filament_flow_ratio": "0.96",
+        "fan_max_speed": "30",
+        "textured_plate_temp": "70"
+      }),
+      &json!({"nozzle_diameter": 0.4}),
+    )
+    .expect("sym_transparent_glass filament lua runs");
+    assert_eq!(
+      g_fil
+        .as_object_mut()
+        .unwrap()
+        .get("filament_flow_ratio")
+        .and_then(|v| v.as_str()),
+      Some("1.010")
+    );
+    assert_eq!(
+      g_fil
+        .as_object_mut()
+        .unwrap()
+        .get("fan_max_speed")
+        .and_then(|v| v.as_str()),
+      Some("0")
+    );
+    assert_eq!(
+      g_fil
+        .as_object_mut()
+        .unwrap()
+        .get("textured_plate_temp")
+        .and_then(|v| v.as_str()),
+      Some("65")
+    );
 
     // 1. Test YOLO Flow Rate calculation (0.96 + (-0.02) = 0.940)
     let yolo = templates
@@ -4429,6 +4679,8 @@ mod tests {
 
     let petg_direct = FilamentSpool::from_catalog_entry(1, petg_trans_entry, "orca_hardened_steel");
 
+    assert_eq!(petg_flipped.name, "OC - PETG Translucent • 0.4 Hardened");
+    assert_eq!(petg_direct.name, "OC - PETG Translucent • 0.4 Hardened");
     assert_eq!(petg_flipped.name, petg_direct.name);
     assert_eq!(petg_flipped.material_type, "PETG");
     assert_eq!(petg_direct.material_type, "PETG");
@@ -4448,6 +4700,11 @@ mod tests {
       petg_direct.fan_speed_percent
     );
     assert_eq!(petg_flipped.raw_disk_json, petg_direct.raw_disk_json);
+
+    // Flipping back to Basic restores OC - PETG • 0.4 Hardened
+    let mut petg_back_to_basic = petg_flipped.clone();
+    petg_back_to_basic.apply_finish_change("Basic", "orca_hardened_steel");
+    assert_eq!(petg_back_to_basic.name, "OC - PETG • 0.4 Hardened");
 
     // Also verify apply_material_change("PETG") + apply_finish_change("Translucent") matches
     let mut petg_from_dropdown = petg_flipped.clone();

@@ -989,9 +989,17 @@ fn main() {
     }
   }
 
-  // Ensure finish shortcut entries ("PETG Translucent", "PLA Matte", "PLA Silk") have identical
-  // base thermal/flow/fan parameters to their base polymer ("PETG", "PLA") so picking the base
-  // polymer and switching its Finish dropdown is 100% equivalent to clicking the finish shortcut.
+  // Ensure "PETG" uses Anycubic Kobra S1's 230°C Brass base (235°C HS), 70°C bed, 12.0 mm³/s, 40% fan,
+  // and "PETG Translucent" uses tuned low-stringing / easy-PEI-release values (230°C Brass / 235°C HS,
+  // 65°C Textured PEI bed, 9.0 mm³/s volumetric speed, 30% fan, 65°C drying).
+  if let Some((_, petg)) = best_by_code.get_mut("PETG") {
+    petg.base_nozzle_c = 230;
+    petg.base_bed_c = 70;
+    petg.max_vol_mm3s = 12.0;
+    petg.fan_pct = 40;
+    petg.dry_temp_c = 60;
+    petg.dry_hr = 6;
+  }
   for (child_code, parent_code, child_finish) in [
     ("PETG Translucent", "PETG", "Translucent"),
     ("PLA Matte", "PLA", "Matte"),
@@ -1000,10 +1008,26 @@ fn main() {
     if let Some((_, parent)) = best_by_code.get(parent_code).cloned() {
       if let Some((_, child)) = best_by_code.get_mut(child_code) {
         child.base_nozzle_c = parent.base_nozzle_c;
-        child.base_bed_c = parent.base_bed_c;
-        child.max_vol_mm3s = parent.max_vol_mm3s;
-        child.fan_pct = parent.fan_pct;
-        child.dry_temp_c = parent.dry_temp_c;
+        child.base_bed_c = if child_code == "PETG Translucent" {
+          65
+        } else {
+          parent.base_bed_c
+        };
+        child.max_vol_mm3s = if child_code == "PETG Translucent" {
+          9.0
+        } else {
+          parent.max_vol_mm3s
+        };
+        child.fan_pct = if child_code == "PETG Translucent" {
+          30
+        } else {
+          parent.fan_pct
+        };
+        child.dry_temp_c = if child_code == "PETG Translucent" {
+          65
+        } else {
+          parent.dry_temp_c
+        };
         child.dry_hr = parent.dry_hr;
         child.requires_hardened = parent.requires_hardened;
         child.default_finish = child_finish.to_string();
