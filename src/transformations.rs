@@ -1171,17 +1171,20 @@ end
         (255, 315, 308, 120)
       } else if mat.starts_with("PCTG") {
         (240, 280, 272, 95)
+      } else if (mat.starts_with("PETG") || mat == "PET") && spool.finish_type == "Conductive" {
+        (220, 290, 285, 95)
       } else if mat.starts_with("PETG") || mat == "PET" {
         (220, 265, 255, 90)
       } else if mat.starts_with("ABS") || mat.starts_with("ASA") || mat == "SBS" || mat == "HIPS" {
         (230, 290, 282, 115)
       } else if mat.starts_with("PEBA")
         || mat.contains("Foaming")
+        || spool.finish_type == "Foaming"
         || mat == "TPU-CF"
         || mat == "TPU-GF"
         || mat == "TPU-AERO"
       {
-        (210, 260, 255, 75)
+        (195, 260, 255, 75)
       } else if mat.contains("TPU") || mat == "FLEX" || mat == "EVA" {
         (195, 245, 238, 65)
       } else if mat.starts_with("PLA") || mat == "PHA" {
@@ -1318,10 +1321,14 @@ end
     }
 
     if let Some(flow) = get_num("filament_flow_ratio") {
-      if !(0.85..=1.12).contains(&flow) {
+      let has_foaming_spool = filaments.iter().any(|sp| {
+        sp.finish_type.eq_ignore_ascii_case("Foaming") || sp.material_type.contains("Foaming")
+      });
+      let min_safe_flow = if has_foaming_spool { 0.45 } else { 0.85 };
+      if !(min_safe_flow..=1.12).contains(&flow) {
         push_warn(SafetyWarning {
           id: "derived:filament_flow_ratio".to_string(),
-          severity: if !(0.75..=1.20).contains(&flow) {
+          severity: if !(0.40..=1.20).contains(&flow) {
             SafetySeverity::Danger
           } else {
             SafetySeverity::Warning
@@ -1329,8 +1336,12 @@ end
           scope_label: "Derived Output Profile".to_string(),
           param_key: "filament_flow_ratio".to_string(),
           current_value: format!("{:.3}", flow),
-          safe_range: "0.900–1.050".to_string(),
-          explanation: "Derived flow ratio is outside the normal 0.85–1.12 range; extreme values cause severe under-extrusion gaps or over-extrusion nozzle collisions.".to_string(),
+          safe_range: if has_foaming_spool {
+            "0.480–1.050 (Active Foaming / Standard)".to_string()
+          } else {
+            "0.900–1.050".to_string()
+          },
+          explanation: "Derived flow ratio is outside the normal range; extreme values cause severe under-extrusion gaps or over-extrusion nozzle collisions.".to_string(),
         });
       }
     }

@@ -555,12 +555,11 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                             }
                           })}
                         >
-                          <option value="Basic" selected={spool.finish_type == "Basic"}>{"Basic"}</option>
-                          <option value="Matte" selected={spool.finish_type == "Matte"}>{"Matte"}</option>
-                          <option value="Silk" selected={spool.finish_type == "Silk"}>{"Silk"}</option>
-                          <option value="Translucent" selected={spool.finish_type == "Translucent"}>{"Translucent"}</option>
-                          <option value="Carbon Fiber" selected={spool.finish_type == "Carbon Fiber"}>{"Carbon Fiber (-CF)"}</option>
-                          <option value="Glass Fiber" selected={spool.finish_type == "Glass Fiber"}>{"Glass Fiber (-GF)"}</option>
+                          {for crate::catalog::FINISH_OPTIONS.iter().map(|(val, label)| {
+                            html! {
+                              <option value={*val} selected={spool.finish_type == *val}>{*label}</option>
+                            }
+                          })}
                         </select>
 
                         <span class="text-xs text-tertiary bg-tertiary-container/20 px-2 py-0.5 rounded shrink-0">
@@ -1031,10 +1030,10 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
           <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-space-md text-xs font-mono pt-space-xs">
             // Finish Type
             <div class="flex flex-col gap-1 bg-surface-container p-space-md rounded-lg">
-              <span class="text-on-surface-variant text-[10px] uppercase">{"Finish Type"}</span>
-              <div class="grid grid-cols-2 gap-1 mt-1">
-                {for vec!["Basic", "Matte", "Silk", "Translucent", "Carbon Fiber", "Glass Fiber"].into_iter().map(|fin| {
-                  let is_sel = spool.finish_type == fin;
+              <span class="text-on-surface-variant text-[10px] uppercase">{"Finish / Filler Type"}</span>
+              <div class="grid grid-cols-2 gap-1 mt-1 max-h-40 overflow-y-auto pr-0.5">
+                {for crate::catalog::FINISH_OPTIONS.iter().map(|(fin, _)| {
+                  let is_sel = spool.finish_type == *fin;
                   let mut updated = spool.clone();
                   updated.apply_finish_change(fin, &active_noz);
                   let cb = on_update_spool.clone();
@@ -1042,16 +1041,17 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                   html! {
                     <button
                       class={format!(
-                        "px-1.5 py-1 rounded text-[11px] border {}",
+                        "px-1.5 py-1 rounded text-[10px] border truncate {}",
                         if is_sel {
                           "bg-primary text-on-primary border-primary font-bold"
                         } else {
-                          "bg-surface-container-lowest text-on-surface-variant border-outline-variant"
+                          "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
                         }
                       )}
+                      title={*fin}
                       onclick={Callback::from(move |_| cb.emit(updated.clone()))}
                     >
-                      {fin}
+                      {*fin}
                     </button>
                   }
                 })}

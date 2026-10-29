@@ -140,14 +140,35 @@ impl CatalogNozzle {
   }
 }
 
+pub const FINISH_OPTIONS: &[(&str, &str)] = &[
+  ("Basic", "Basic"),
+  ("Matte", "Matte"),
+  ("Silk", "Silk"),
+  ("Translucent", "Translucent"),
+  ("Carbon Fiber", "Carbon Fiber (-CF)"),
+  ("Glass Fiber", "Glass Fiber (-GF)"),
+  ("Wood-Filled", "Wood-Filled"),
+  ("Metal-Filled", "Metal-Filled"),
+  ("Glow-in-the-Dark", "Glow-in-the-Dark"),
+  ("Foaming", "Foaming (LW / Varioshore)"),
+  ("Conductive", "Conductive / ESD"),
+  ("Marble/Stone/Terracotta", "Marble / Stone / Terracotta"),
+  ("Photochromic", "Photochromic (UV Color-Change)"),
+];
+
 impl CatalogFilament {
   /// Returns the base polymer code without finish suffixes (e.g., `"PETG Translucent"` -> `"PETG"`,
-  /// `"PLA Matte"` -> `"PLA"`, `"PLA Silk"` -> `"PLA"`), so finish variants are modeled as
-  /// `base_material_code() + default_finish` (e.g., `PETG` / `Translucent`) rather than a special material.
+  /// `"PLA Matte"` -> `"PLA"`, `"PLA Silk"` -> `"PLA"`, `"PLA Wood"` -> `"PLA"`, etc.), so finish variants
+  /// are modeled as `base_material_code() + default_finish` (e.g., `PLA` / `Wood-Filled`).
   pub fn base_material_code(&self) -> &str {
     match self.code.as_str() {
-      "PETG Translucent" => "PETG",
-      "PLA Matte" | "PLA Silk" => "PLA",
+      "PETG Translucent" | "PETG Glow" | "PETG Conductive" | "PETG Marble"
+      | "PETG Photochromic" | "PETG-ESD" => "PETG",
+      "PLA Matte" | "PLA Silk" | "PLA Wood" | "PLA Metal" | "PLA Glow" | "PLA-LW Foaming"
+      | "PLA-AERO" | "PLA Conductive" | "PLA Marble" | "PLA Photochromic" => "PLA",
+      "ABS Glow" | "ABS Conductive" => "ABS",
+      "ASA-LW Foaming" | "ASA-AERO" => "ASA",
+      "TPU Glow" | "TPU Conductive" | "TPU Photochromic" | "TPU-AERO" => "TPU",
       other => other,
     }
   }
@@ -359,6 +380,49 @@ mod tests {
       assert_eq!(petg_trans.base_material_code(), "PETG");
       assert_eq!(petg_trans.default_finish, "Translucent");
     }
+
+    // Verify all 7 new specialty finishes exist in FINISH_OPTIONS, have catalog entries, and tune FilamentSpool properly
+    for (finish_val, _) in [
+      ("Wood-Filled", "Wood"),
+      ("Metal-Filled", "Metal"),
+      ("Glow-in-the-Dark", "Glow"),
+      ("Foaming", "Foaming"),
+      ("Conductive", "Conductive"),
+      ("Marble/Stone/Terracotta", "Marble"),
+      ("Photochromic", "Photochromic"),
+    ] {
+      assert!(
+        FINISH_OPTIONS.iter().any(|(v, _)| *v == finish_val),
+        "Missing {} in FINISH_OPTIONS",
+        finish_val
+      );
+      assert!(
+        cat.filaments.iter().any(|f| f.default_finish == finish_val),
+        "Expected at least one catalog filament with default_finish = {}",
+        finish_val
+      );
+    }
+
+    let pla_entry = cat.filaments.iter().find(|f| f.code == "PLA").unwrap();
+    let mut spool =
+      crate::models::FilamentSpool::from_catalog_entry(1, pla_entry, "e3d_obxidian_04");
+    spool.apply_finish_change("Wood-Filled", "e3d_obxidian_04");
+    assert_eq!(spool.finish_type, "Wood-Filled");
+    assert_eq!(spool.required_nozzle_hrc, 55);
+    assert!(
+      spool.name.contains("PLA Wood"),
+      "Expected 'PLA Wood' in '{}'",
+      spool.name
+    );
+
+    spool.apply_finish_change("Foaming", "e3d_obxidian_04");
+    assert_eq!(spool.finish_type, "Foaming");
+    assert!((spool.flow_ratio - 0.58).abs() < 0.01);
+    assert!(
+      spool.name.contains("PLA Foaming"),
+      "Expected 'PLA Foaming' in '{}'",
+      spool.name
+    );
 
     for f in &cat.filaments {
       assert_eq!(

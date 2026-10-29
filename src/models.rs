@@ -545,7 +545,39 @@ pub fn sanitize_user_relative_path(rel_path: &str) -> String {
 }
 
 impl FilamentSpool {
-  /// Builds the canonical `OC - <Material>[ Translucent] • 0.4 <Nozzle>` preset name.
+  /// Returns the concise suffix used in profile titles when a specialty finish is active
+  /// (e.g. `"Translucent"`, `"Wood"`, `"Metal"`, `"Glow"`, `"Foaming"`, `"Conductive"`, `"Marble"`, `"Photochromic"`).
+  pub fn finish_title_suffix(finish_type: &str) -> Option<&'static str> {
+    if finish_type.eq_ignore_ascii_case("Translucent") {
+      Some("Translucent")
+    } else if finish_type.eq_ignore_ascii_case("Wood-Filled")
+      || finish_type.eq_ignore_ascii_case("Wood")
+    {
+      Some("Wood")
+    } else if finish_type.eq_ignore_ascii_case("Metal-Filled")
+      || finish_type.eq_ignore_ascii_case("Metal")
+    {
+      Some("Metal")
+    } else if finish_type.eq_ignore_ascii_case("Glow-in-the-Dark")
+      || finish_type.eq_ignore_ascii_case("Glow")
+    {
+      Some("Glow")
+    } else if finish_type.eq_ignore_ascii_case("Foaming") {
+      Some("Foaming")
+    } else if finish_type.eq_ignore_ascii_case("Conductive") {
+      Some("Conductive")
+    } else if finish_type.eq_ignore_ascii_case("Marble/Stone/Terracotta")
+      || finish_type.eq_ignore_ascii_case("Marble")
+    {
+      Some("Marble")
+    } else if finish_type.eq_ignore_ascii_case("Photochromic") {
+      Some("Photochromic")
+    } else {
+      None
+    }
+  }
+
+  /// Builds the canonical `OC - <Material>[ <Finish>] • 0.4 <Nozzle>` preset name.
   pub fn default_oc_profile_name(
     base_mat_code: &str,
     finish_type: &str,
@@ -565,10 +597,12 @@ impl FilamentSpool {
     } else {
       "Brass"
     };
-    let mat_with_finish = if finish_type.eq_ignore_ascii_case("Translucent")
-      && !base_mat_code.to_lowercase().contains("translucent")
-    {
-      format!("{} Translucent", base_mat_code)
+    let mat_with_finish = if let Some(suf) = Self::finish_title_suffix(finish_type) {
+      if !base_mat_code.to_lowercase().contains(&suf.to_lowercase()) {
+        format!("{} {}", base_mat_code, suf)
+      } else {
+        base_mat_code.to_string()
+      }
     } else {
       base_mat_code.to_string()
     };
@@ -597,13 +631,12 @@ impl FilamentSpool {
       cleaned.as_str()
     };
     let mut safe_base = base_name.replace(": ", " - ").replace(':', "-");
-    if self.finish_type.eq_ignore_ascii_case("Translucent")
-      && !safe_base.to_lowercase().contains("translucent")
-    {
-      let prefix = format!("{} •", self.material_type);
-      if safe_base.starts_with(&prefix) {
-        safe_base =
-          safe_base.replacen(&prefix, &format!("{} Translucent •", self.material_type), 1);
+    if let Some(suf) = Self::finish_title_suffix(&self.finish_type) {
+      if !safe_base.to_lowercase().contains(&suf.to_lowercase()) {
+        let prefix = format!("{} •", self.material_type);
+        if safe_base.starts_with(&prefix) {
+          safe_base = safe_base.replacen(&prefix, &format!("{} {} •", self.material_type, suf), 1);
+        }
       }
     }
     format!("OC - {}", safe_base)
@@ -770,22 +803,41 @@ impl FilamentSpool {
     self.apply_finish_change(&fin, active_nozzle_type);
   }
 
-  /// Updates the spool's finish (`Basic`, `Matte`, `Silk`, `Translucent`, `Carbon Fiber`, `Glass Fiber`)
-  /// and synchronizes its optical opacity, pigment stickiness, nozzle hardness requirement, and synthetic JSON
-  /// so picking a base polymer (e.g. `PETG`) and flipping its finish to `Translucent` produces the exact same
-  /// spool as clicking `PETG Translucent` directly in the catalog.
+  /// Updates the spool's finish (`Basic`, `Matte`, `Silk`, `Translucent`, `Carbon Fiber`, `Glass Fiber`,
+  /// `Wood-Filled`, `Metal-Filled`, `Glow-in-the-Dark`, `Foaming`, `Conductive`, `Marble/Stone/Terracotta`, `Photochromic`)
+  /// and synchronizes its optical opacity, pigment stickiness, nozzle hardness requirement, flow ratio, volumetric ceiling,
+  /// and synthetic JSON so picking a base polymer (e.g. `PLA`) and flipping its finish (e.g. to `Wood-Filled` or `Foaming`)
+  /// produces the exact same spool as clicking `PLA Wood` or `PLA-LW Foaming` directly in the catalog.
   pub fn apply_finish_change(&mut self, new_finish: &str, active_nozzle_type: &str) {
     self.finish_type = new_finish.to_string();
+
+    // Look up whether the catalog has a dedicated entry for `(self.material_type, new_finish)`
+    let catalog = crate::catalog::load_merged_catalog();
+    let variant_entry = catalog.filaments.iter().find(|f| {
+      f.base_material_code()
+        .eq_ignore_ascii_case(&self.material_type)
+        && f.default_finish.eq_ignore_ascii_case(new_finish)
+        && f.code != self.material_type
+    });
+
+    if let Some(m) = variant_entry {
+      self.brass_base_temp = m.base_nozzle_c as i32;
+      self.hs_base_temp = (self.brass_base_temp + 5).clamp(185, 350);
+      self.base_bed_temp = m.base_bed_c as i32;
+      self.bed_temp = m.base_bed_c as i32;
+      self.max_volumetric_speed = m.max_vol_mm3s;
+      self.fan_speed_percent = m.fan_pct as i32;
+      self.drying_temp_c = m.dry_temp_c as i32;
+      self.drying_time_hr = m.dry_hr as i32;
+      self.recompute_for_nozzle(active_nozzle_type);
+    }
+
     if new_finish == "Translucent" {
       if self.opacity > 0.6 {
         self.opacity = 0.35;
       }
       self.pigment_stickiness = 1.0;
       if self.material_type == "PETG" {
-        // Un-pigmented translucent PETG has no TiO2 mineral filler: it wets Textured PEI micro-pores
-        // much more aggressively than opaque PETG and has higher melt elasticity (stringing).
-        // Best practices: lower Textured PEI bed to 65°C for clean release, cap volumetric speed at 9.0 mm³/s,
-        // lower cooling fan to 30% for glass-like layer fusion without cobwebbing, and raise PA to 0.050.
         self.base_bed_temp = 65;
         self.bed_temp = 65;
         self.max_volumetric_speed = 9.0;
@@ -794,29 +846,35 @@ impl FilamentSpool {
         self.drying_temp_c = 65;
         self.drying_time_hr = 6;
       }
-      let prefix = format!("OC - {} •", self.material_type);
-      if self.name.starts_with(&prefix) && !self.name.to_lowercase().contains("translucent") {
-        self.name = self.name.replacen(
-          &prefix,
-          &format!("OC - {} Translucent •", self.material_type),
-          1,
-        );
+    } else if new_finish == "Glow-in-the-Dark" || new_finish == "Photochromic" {
+      if self.opacity > 0.75 {
+        self.opacity = 0.65;
       }
+      self.pigment_stickiness = if new_finish == "Glow-in-the-Dark" {
+        1.25
+      } else {
+        1.05
+      };
     } else {
-      if self.opacity < 0.5 {
+      if self.opacity < 0.7 {
         self.opacity = 1.0;
       }
-      self.pigment_stickiness =
-        if new_finish == "Carbon Fiber" || self.material_type.contains("-CF") {
-          1.15
-        } else if new_finish == "Silk" {
-          1.20
-        } else if new_finish == "Glass Fiber" || self.material_type.contains("-GF") {
-          1.10
-        } else {
-          1.0
-        };
-      if self.material_type == "PETG" {
+      self.pigment_stickiness = if new_finish == "Conductive" {
+        1.45
+      } else if new_finish == "Metal-Filled" {
+        1.30
+      } else if new_finish == "Wood-Filled" || new_finish == "Silk" {
+        1.20
+      } else if new_finish == "Carbon Fiber" || self.material_type.contains("-CF") {
+        1.15
+      } else if new_finish == "Marble/Stone/Terracotta" {
+        1.15
+      } else if new_finish == "Glass Fiber" || self.material_type.contains("-GF") {
+        1.10
+      } else {
+        1.0
+      };
+      if self.material_type == "PETG" && variant_entry.is_none() {
         self.base_bed_temp = 70;
         self.bed_temp = 70;
         self.max_volumetric_speed = 12.0;
@@ -825,16 +883,45 @@ impl FilamentSpool {
         self.drying_temp_c = 60;
         self.drying_time_hr = 6;
       }
-      let trans_prefix = format!("OC - {} Translucent •", self.material_type);
-      if self.name.starts_with(&trans_prefix) {
-        self.name = self
-          .name
-          .replacen(&trans_prefix, &format!("OC - {} •", self.material_type), 1);
+    }
+
+    // Flow ratio & MVS adjustments for Foaming, Wood, Metal, and Conductive finishes
+    if new_finish == "Foaming" {
+      // Active foaming filaments (LW-PLA / LW-ASA / Varioshore TPU) expand 1.5x–1.8x in the nozzle
+      self.flow_ratio = 0.58;
+      if self.max_volumetric_speed > 6.5 {
+        self.max_volumetric_speed = 6.0;
+      }
+    } else if self.flow_ratio < 0.80 {
+      // Restore normal non-foaming flow ratio if switching away from Foaming
+      self.flow_ratio =
+        if self.material_type.contains("PCTG") || self.material_type.contains("PETG") {
+          0.95
+        } else {
+          0.98
+        };
+    }
+
+    // Update `OC - <Material>[ <Finish>] • ...` title suffix cleanly
+    if let Some((left, right)) = self.name.split_once(" • ") {
+      let base_prefix = format!("OC - {}", self.material_type);
+      if left.starts_with(&base_prefix) {
+        let new_left = if let Some(suf) = Self::finish_title_suffix(new_finish) {
+          format!("{} {}", base_prefix, suf)
+        } else {
+          base_prefix
+        };
+        self.name = format!("{} • {}", new_left, right);
       }
     }
 
     let is_abrasive = new_finish.contains("Carbon")
       || new_finish.contains("Glass")
+      || new_finish.contains("Wood")
+      || new_finish.contains("Metal")
+      || new_finish.contains("Glow")
+      || new_finish.contains("Conductive")
+      || new_finish.contains("Marble")
       || self.material_type.contains("-CF")
       || self.material_type.contains("-GF")
       || self.material_type.contains("Glow")

@@ -303,57 +303,65 @@ fn parse_diameters(raw: &str) -> Vec<f32> {
   }
 }
 
+fn detect_finish_from_code(u: &str) -> &'static str {
+  if u.contains("-CF") || u.ends_with("CF") {
+    "Carbon Fiber"
+  } else if u.contains("-GF") || u.ends_with("GF") {
+    "Glass Fiber"
+  } else if u.contains("WOOD") {
+    "Wood-Filled"
+  } else if u.contains("METAL")
+    || u.contains("BRONZE")
+    || u.contains("COPPER")
+    || u.contains("STEEL")
+  {
+    "Metal-Filled"
+  } else if u.contains("GLOW") || u.contains("LUMINOUS") {
+    "Glow-in-the-Dark"
+  } else if u.contains("AERO") || u.contains("FOAM") || u.contains("-LW") {
+    "Foaming"
+  } else if u.contains("CONDUCTIVE") || u.contains("ESD") {
+    "Conductive"
+  } else if u.contains("MARBLE") || u.contains("STONE") || u.contains("TERRACOTTA") {
+    "Marble/Stone/Terracotta"
+  } else if u.contains("PHOTOCHROMIC") || u.contains("THERMOCHROMIC") {
+    "Photochromic"
+  } else if u.contains("MATTE") {
+    "Matte"
+  } else if u.contains("SILK") {
+    "Silk"
+  } else if u.contains("TRANSLUCENT") {
+    "Translucent"
+  } else {
+    "Basic"
+  }
+}
+
 fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
   let u = ft.to_uppercase();
+  let finish = detect_finish_from_code(&u);
   if u.contains("PVA")
     || u.contains("BVOH")
     || u.contains("HIPS")
     || u.contains("SUPPORT")
     || u.starts_with("S-")
   {
-    let finish = if u.contains("PVA") || u.contains("BVOH") || u.contains("TRANSLUCENT") {
+    let sup_finish = if u.contains("PVA") || u.contains("BVOH") {
       "Translucent"
     } else {
-      "Basic"
+      finish
     };
-    ("PVA / Support", finish, "#8E9299")
+    ("PVA / Support", sup_finish, "#8E9299")
   } else if u.contains("PEBA")
     || u.contains("TPU")
     || u.contains("TPE")
     || u.contains("FLEX")
     || u.contains("EVA")
   {
-    let finish = if u.contains("-CF") {
-      "Carbon Fiber"
-    } else if u.contains("-GF") {
-      "Glass Fiber"
-    } else if u.contains("TRANSLUCENT") {
-      "Translucent"
-    } else {
-      "Basic"
-    };
     ("TPU / TPE / PEBA Flex", finish, "#8E9299")
   } else if u.contains("PA") || u.contains("PPA") || u.contains("PHTA") {
-    let finish = if u.contains("-CF") || u.contains("CF") {
-      "Carbon Fiber"
-    } else if u.contains("-GF") || u.contains("GF") {
-      "Glass Fiber"
-    } else if u.contains("TRANSLUCENT") {
-      "Translucent"
-    } else {
-      "Basic"
-    };
     ("Nylon (PA / PAHT / PPA)", finish, "#8E9299")
   } else if u.contains("PETG") || u.contains("PCTG") || u.starts_with("PET") || u.contains("COPE") {
-    let finish = if u.contains("-CF") || u.contains("CF") {
-      "Carbon Fiber"
-    } else if u.contains("-GF") || u.contains("GF") {
-      "Glass Fiber"
-    } else if u.contains("TRANSLUCENT") {
-      "Translucent"
-    } else {
-      "Basic"
-    };
     ("PETG / PCTG / PET", finish, "#8E9299")
   } else if u.contains("PC")
     || u.contains("PPS")
@@ -363,42 +371,10 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
     || u.starts_with("PE-")
     || u.contains("PVB")
   {
-    let finish = if u.contains("-CF") {
-      "Carbon Fiber"
-    } else if u.contains("-GF") {
-      "Glass Fiber"
-    } else if u.contains("TRANSLUCENT") {
-      "Translucent"
-    } else {
-      "Basic"
-    };
     ("PC / Engineering", finish, "#8E9299")
   } else if u.contains("ABS") || u.contains("ASA") || u.contains("SBS") {
-    let finish = if u.contains("-CF") {
-      "Carbon Fiber"
-    } else if u.contains("-GF") {
-      "Glass Fiber"
-    } else if u.contains("TRANSLUCENT") {
-      "Translucent"
-    } else {
-      "Basic"
-    };
     ("ABS / ASA", finish, "#8E9299")
   } else {
-    // PLA Family (includes PLA, PLA+, PLA-CF, PLA-GF, PLA Matte, PLA Silk, PLA Glow, PLA-AERO, PHA)
-    let finish = if u.contains("-CF") {
-      "Carbon Fiber"
-    } else if u.contains("-GF") {
-      "Glass Fiber"
-    } else if u.contains("MATTE") || u.contains("AERO") {
-      "Matte"
-    } else if u.contains("SILK") {
-      "Silk"
-    } else if u.contains("TRANSLUCENT") || u.contains("GLOW") {
-      "Translucent"
-    } else {
-      "Basic"
-    };
     ("PLA Family", finish, "#8E9299")
   }
 }

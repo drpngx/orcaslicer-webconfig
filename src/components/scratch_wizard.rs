@@ -402,7 +402,13 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
           } else {
             0.035f32
           };
-          let default_flow = if is_pctg_or_petg { 0.95f32 } else { 0.98f32 };
+          let default_flow = if d.finish_type == "Foaming" {
+            0.58f32
+          } else if is_pctg_or_petg {
+            0.95f32
+          } else {
+            0.98f32
+          };
 
           let vendor_prefix = if cur_machine.vendor.eq_ignore_ascii_case("Anycubic") {
             "Anycubic"
@@ -425,13 +431,19 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             .trim_start_matches("OC: ")
             .trim_start_matches("OC:")
             .trim();
-          let draft_name_with_finish = if d.finish_type.eq_ignore_ascii_case("Translucent")
-            && !clean_draft_name.to_lowercase().contains("translucent")
-          {
-            format!("{} Translucent", clean_draft_name)
-          } else {
-            clean_draft_name.to_string()
-          };
+          let draft_name_with_finish =
+            if let Some(suf) = FilamentSpool::finish_title_suffix(&d.finish_type) {
+              if !clean_draft_name
+                .to_lowercase()
+                .contains(&suf.to_lowercase())
+              {
+                format!("{} {}", clean_draft_name, suf)
+              } else {
+                clean_draft_name.to_string()
+              }
+            } else {
+              clean_draft_name.to_string()
+            };
           let profile_name = format!(
             "OC - {} • {:.1} {}",
             draft_name_with_finish, diam, short_noz
@@ -440,8 +452,14 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             "user/default/filament/{}",
             crate::models::sanitize_profile_filename(&profile_name)
           );
-          let is_abrasive = d.finish_type.contains("Carbon")
+          let is_abrasive = mat_info.map(|m| m.requires_hardened).unwrap_or(false)
+            || d.finish_type.contains("Carbon")
             || d.finish_type.contains("Glass")
+            || d.finish_type.contains("Wood")
+            || d.finish_type.contains("Metal")
+            || d.finish_type.contains("Glow")
+            || d.finish_type.contains("Conductive")
+            || d.finish_type.contains("Marble")
             || d.material_type.contains("-CF")
             || d.material_type.contains("-GF");
           let req_hrc: u32 = if is_abrasive { 55 } else { 3 };
@@ -555,21 +573,26 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             remaining_grams: 1000,
             is_loaded: true,
             finish_type: d.finish_type.clone(),
-            opacity: if d.finish_type == "Translucent" {
-              0.35
-            } else {
-              1.0
+            opacity: match d.finish_type.as_str() {
+              "Translucent" => 0.35,
+              "Glow-in-the-Dark" => 0.65,
+              "Photochromic" => 0.70,
+              _ => 1.0,
             },
-            pigment_stickiness: if d.finish_type == "Carbon Fiber"
-              || d.material_type.contains("-CF")
-            {
-              1.15
-            } else if d.finish_type == "Silk" {
-              1.20
-            } else if d.finish_type == "Glass Fiber" {
-              1.10
-            } else {
-              1.0
+            pigment_stickiness: match d.finish_type.as_str() {
+              "Carbon Fiber" => 1.15,
+              "Glass Fiber" => 1.10,
+              "Silk" => 1.20,
+              "Matte" => 1.05,
+              "Wood-Filled" => 1.25,
+              "Metal-Filled" => 1.35,
+              "Glow-in-the-Dark" => 1.30,
+              "Foaming" => 1.20,
+              "Conductive" => 1.45,
+              "Marble/Stone/Terracotta" => 1.15,
+              "Photochromic" => 1.10,
+              _ if d.material_type.contains("-CF") => 1.15,
+              _ => 1.0,
             },
             drying_temp_c: dry_c,
             drying_time_hr: dry_hr,
@@ -1572,26 +1595,27 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                                     let mut list = (*sd_fin).clone();
                                     if let Some(item) = list.get_mut(idx) {
                                       let new_fin = sel.value();
-                                      if new_fin == "Translucent"
-                                        && item.name == item.material_type
+                                      if item.name == item.material_type
+                                        || item.name.starts_with(&format!("{} ", item.material_type))
                                       {
-                                        item.name = format!("{} Translucent", item.material_type);
-                                      } else if new_fin != "Translucent"
-                                        && item.name == format!("{} Translucent", item.material_type)
-                                      {
-                                        item.name = item.material_type.clone();
+                                        item.name = if let Some(suf) =
+                                          FilamentSpool::finish_title_suffix(&new_fin)
+                                        {
+                                          format!("{} {}", item.material_type, suf)
+                                        } else {
+                                          item.material_type.clone()
+                                        };
                                       }
                                       item.finish_type = new_fin;
                                     }
                                     sd_fin.set(list);
                                   })}
                                 >
-                                  <option value="Basic" selected={draft.finish_type == "Basic"}>{"Basic"}</option>
-                                  <option value="Matte" selected={draft.finish_type == "Matte"}>{"Matte"}</option>
-                                  <option value="Silk" selected={draft.finish_type == "Silk"}>{"Silk"}</option>
-                                  <option value="Translucent" selected={draft.finish_type == "Translucent"}>{"Translucent"}</option>
-                                  <option value="Carbon Fiber" selected={draft.finish_type == "Carbon Fiber"}>{"Carbon Fiber (-CF)"}</option>
-                                  <option value="Glass Fiber" selected={draft.finish_type == "Glass Fiber"}>{"Glass Fiber (-GF)"}</option>
+                                  {for crate::catalog::FINISH_OPTIONS.iter().map(|(val, label)| {
+                                    html! {
+                                      <option value={*val} selected={draft.finish_type == *val}>{*label}</option>
+                                    }
+                                  })}
                                 </select>
 
                                 <span class="text-xs text-tertiary bg-tertiary-container/20 px-2 py-0.5 rounded shrink-0">
@@ -1780,8 +1804,10 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                           <button
                             onclick={Callback::from(move |_| {
                               let mut list = (*sd).clone();
-                              let draft_name = if mat_clone.default_finish.eq_ignore_ascii_case("Translucent") {
-                                format!("{} Translucent", mat_clone.base_material_code())
+                              let draft_name = if let Some(suf) =
+                                FilamentSpool::finish_title_suffix(&mat_clone.default_finish)
+                              {
+                                format!("{} {}", mat_clone.base_material_code(), suf)
                               } else {
                                 mat_clone.base_material_code().to_string()
                               };
