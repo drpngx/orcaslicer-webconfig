@@ -17,16 +17,16 @@ concurrency:
 
 jobs:
   build-static:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Setup Bazelisk Cache & Binary
-        uses: bazel-contrib/setup-bazel@0.9.0
+      - name: Setup Bazelisk & Repository Cache
+        uses: bazel-contrib/setup-bazel@0.19.1
         with:
           bazelisk-cache: true
-          disk-cache: static-pages-bazel
+          repository-cache: true
 
       - name: Build Optimized WASM & Brotli Bundle via Bazel
         shell: bash
@@ -36,23 +36,44 @@ jobs:
           ./scripts/stage_tauri_dist.sh
 
       - name: Upload Portable Static Site Artifact (for Cloudflare Pages / Static Hosts)
-        uses: actions/upload-artifact@v4
+        id: upload-static
+        uses: actions/upload-artifact@v7
         with:
           name: orcaslicer-webconfig-static-site
           path: dist/
 
       - name: Upload GitHub Pages Artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: dist/
 
+      - name: Write Artifact Download Links to Job Summary
+        shell: bash
+        run: |
+          {
+            echo "## 📦 Static Web App Artifact Ready"
+            echo ""
+            echo "- **Download Artifact ZIP:** [\`orcaslicer-webconfig-static-site\`](${{ steps.upload-static.outputs.artifact-url }})"
+            echo "- **Workflow Run Summary Page (all artifacts at bottom):** [Run #${{ github.run_id }} Summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo ""
+            echo "### Bundle Sizes"
+            echo "| File | Size |"
+            echo "| :--- | :--- |"
+            for f in dist/index.html dist/app_wasm.js dist/app_wasm_bg.wasm dist/app_wasm_bg.wasm.br; do
+              if [ -f "$f" ]; then
+                echo "| \`$f\` | $(du -h "$f" | cut -f1) |"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy-github-pages:
     needs: build-static
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    continue-on-error: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

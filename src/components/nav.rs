@@ -59,7 +59,7 @@ pub fn NavigationBar(props: &NavProps) -> Html {
                 {"OrcaSlicer WebConfig"}
               </span>
               <span class="font-code-sm text-code-sm text-primary bg-surface-container px-space-sm py-space-xs rounded">
-                {"for v2.2"}
+                {format!("v{} • for Orca 2.2", crate::models::WEBCONFIG_APP_VERSION)}
               </span>
             </div>
             <div class="h-5 w-px bg-surface-bright"></div>

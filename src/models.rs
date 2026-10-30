@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+/// Canonical version of the OrcaSlicer WebConfig web/desktop application (`0.1.0` from `Cargo.toml`).
+pub const WEBCONFIG_APP_VERSION: &str = "0.1.0";
+
+/// 4-part Semver representation of `WEBCONFIG_APP_VERSION` (`"0.1.0.0"`) required by OrcaSlicer's
+/// `Semver::parse(key_values["version"])` when importing `.json` preset files from `.zip` bundles.
+pub const WEBCONFIG_ORCA_PRESET_VERSION: &str = "0.1.0.0";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RigAddOn {
   pub id: String,
@@ -407,7 +414,8 @@ impl MachineRig {
     };
     let climate_note = self.climate_summary_badge();
     format!(
-      "[OrcaSlicer WebConfig Machine] {} ({}, {}). Nozzle: {}mm {} [Orca nozzle_type={}, nozzle_hrc={}] ({}; Max Flow: {}, Retract: {:.2}mm, Melt-Zone Mult: {:.2}x). Add-Ons: {}. Weather: {}.",
+      "[OrcaSlicer WebConfig v{} — Machine] {} ({}, {}). Nozzle: {}mm {} [Orca nozzle_type={}, nozzle_hrc={}] ({}; Max Flow: {}, Retract: {:.2}mm, Melt-Zone Mult: {:.2}x). Add-Ons: {}. Weather: {}.",
+      WEBCONFIG_APP_VERSION,
       self.printer_model,
       self.kinematics,
       self.bed_size,
@@ -1500,8 +1508,8 @@ impl FilamentSpool {
     } else {
       "brass"
     };
-    let is_pctg_or_petg =
-      self.material_type.contains("PCTG") || self.material_type.contains("PETG");
+    let is_pctg = self.material_type.contains("PCTG");
+    let is_pctg_or_petg = is_pctg || self.material_type.contains("PETG");
     let is_translucent_petg =
       is_pctg_or_petg && self.finish_type.eq_ignore_ascii_case("Translucent");
     let is_foaming_tpu = self.is_foaming_tpu();
@@ -1540,11 +1548,27 @@ impl FilamentSpool {
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| if is_pctg_or_petg { "0.8" } else { "0.6" }.to_string())
+        .unwrap_or_else(|| {
+          if is_pctg {
+            "1.0"
+          } else if is_pctg_or_petg {
+            "0.8"
+          } else {
+            "0.6"
+          }
+          .to_string()
+        })
+    } else if is_pctg {
+      "1.0".to_string()
     } else if is_pctg_or_petg {
       "0.8".to_string()
     } else {
       "0.6".to_string()
+    };
+    let fan_max_str = if is_pctg_or_petg && self.fan_speed_percent >= 30 {
+      "90".to_string()
+    } else {
+      self.fan_speed_percent.to_string()
     };
 
     let mut json_map = serde_json::Map::new();
@@ -1578,18 +1602,21 @@ impl FilamentSpool {
       "filament_flow_ratio": [format!("{:.2}", self.flow_ratio)],
       "pressure_advance": [format!("{:.3}", self.pressure_advance)],
       "filament_max_volumetric_speed": [format!("{:.1}", self.max_volumetric_speed)],
-      "fan_max_speed": [self.fan_speed_percent.to_string()],
-      "fan_max_speed_BRASS": [self.fan_speed_percent.to_string()],
-      "fan_max_speed_HS": [self.fan_speed_percent.to_string()],
+      "fan_min_speed": [self.fan_speed_percent.to_string()],
+      "fan_min_speed_BRASS": [self.fan_speed_percent.to_string()],
+      "fan_min_speed_HS": [self.fan_speed_percent.to_string()],
+      "fan_max_speed": [fan_max_str],
+      "fan_max_speed_BRASS": [fan_max_str],
+      "fan_max_speed_HS": [fan_max_str],
       "filament_retraction_length": [ret_len_str],
-      "filament_retraction_speed": [if is_foaming_tpu { "25" } else if is_pctg_or_petg { "35" } else { "40" }],
+      "filament_retraction_speed": [if is_foaming_tpu { "25" } else if is_pctg { "45" } else if is_pctg_or_petg { "40" } else { "40" }],
       "filament_z_hop": [if is_foaming_tpu { "0" } else if is_translucent_petg { "0.1" } else if is_pctg_or_petg { "0.15" } else { "0.2" }],
       "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
-      "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
-      "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
+      "filament_retract_before_wipe": ["0%"],
+      "filament_deretraction_speed": ["0"],
       "filament_wipe": ["1"],
       "filament_wipe_distance": ["2"],
-      "version": "2.0.0.0"
+      "version": WEBCONFIG_ORCA_PRESET_VERSION
     });
     if let serde_json::Value::Object(ov_obj) = overrides {
       for (k, v) in ov_obj {
@@ -1622,8 +1649,9 @@ impl FilamentSpool {
       } else {
         base_nozzle
       };
-    let is_pctg_or_petg = base_mat_code.contains("PCTG") || base_mat_code.contains("PETG");
-    let default_pa = if base_mat_code.contains("PCTG") {
+    let is_pctg = base_mat_code.contains("PCTG");
+    let is_pctg_or_petg = is_pctg || base_mat_code.contains("PETG");
+    let default_pa = if is_pctg {
       0.048f32
     } else if base_mat_code.contains("PETG") {
       0.045f32
@@ -1680,6 +1708,20 @@ impl FilamentSpool {
       "brass"
     };
     let fan_pct = mat.fan_pct as i32;
+    let fan_max_pct = if is_pctg_or_petg && fan_pct >= 30 {
+      90
+    } else {
+      fan_pct
+    };
+    let init_boost = if is_pctg_or_petg { 0 } else { 5 };
+    let ret_len_str = if is_pctg {
+      "1.0"
+    } else if is_pctg_or_petg {
+      "0.8"
+    } else {
+      "0.6"
+    };
+    let ret_spd_str = if is_pctg { "45" } else { "40" };
     let max_vol = mat.max_vol_mm3s;
     let color_hex = "#8E9299".to_string();
 
@@ -1710,9 +1752,9 @@ impl FilamentSpool {
       "nozzle_temperature": [effective_nozzle.to_string()],
       "nozzle_temperature_BRASS": [base_nozzle.to_string()],
       "nozzle_temperature_HS": [hs_nozzle.to_string()],
-      "nozzle_temperature_initial_layer": [(effective_nozzle + 5).min(350).to_string()],
-      "nozzle_temperature_initial_layer_BRASS": [(base_nozzle + 5).min(350).to_string()],
-      "nozzle_temperature_initial_layer_HS": [(hs_nozzle + 5).min(350).to_string()],
+      "nozzle_temperature_initial_layer": [(effective_nozzle + init_boost).min(350).to_string()],
+      "nozzle_temperature_initial_layer_BRASS": [(base_nozzle + init_boost).min(350).to_string()],
+      "nozzle_temperature_initial_layer_HS": [(hs_nozzle + init_boost).min(350).to_string()],
       "nozzle_temperature_range_low": [(base_nozzle - 10).max(175).to_string()],
       "nozzle_temperature_range_high": [(hs_nozzle + 15).min(350).to_string()],
       "hot_plate_temp": [base_bed.to_string()],
@@ -1722,14 +1764,21 @@ impl FilamentSpool {
       "filament_flow_ratio": [format!("{:.2}", default_flow)],
       "pressure_advance": [format!("{:.3}", default_pa)],
       "filament_max_volumetric_speed": [format!("{:.1}", max_vol)],
-      "fan_max_speed": [fan_pct.to_string()],
-      "fan_max_speed_BRASS": [fan_pct.to_string()],
-      "fan_max_speed_HS": [fan_pct.to_string()],
+      "fan_min_speed": [fan_pct.to_string()],
+      "fan_min_speed_BRASS": [fan_pct.to_string()],
+      "fan_min_speed_HS": [fan_pct.to_string()],
+      "fan_max_speed": [fan_max_pct.to_string()],
+      "fan_max_speed_BRASS": [fan_max_pct.to_string()],
+      "fan_max_speed_HS": [fan_max_pct.to_string()],
+      "filament_retraction_length": [ret_len_str],
+      "filament_retraction_speed": [ret_spd_str],
       "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
       "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
-      "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
-      "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
-      "version": "2.0.0.0"
+      "filament_retract_before_wipe": ["0%"],
+      "filament_deretraction_speed": ["0"],
+      "filament_wipe": ["1"],
+      "filament_wipe_distance": ["2"],
+      "version": WEBCONFIG_ORCA_PRESET_VERSION
     }))
     .unwrap_or_default();
 
@@ -1785,6 +1834,28 @@ impl FilamentSpool {
     spool.apply_finish_change(&finish_type, active_nozzle_type);
     spool
   }
+
+  /// Generate a full descriptive note (`filament_notes`) including the WebConfig app version and tuned parameters
+  pub fn generate_descriptive_notes(&self) -> String {
+    format!(
+      "[OrcaSlicer WebConfig v{} — Filament] {} {} ({}). Nozzle: {}°C (Brass Base: {}°C, HS Base: {}°C), Bed: {}°C, Flow: {:.2}, PA: {:.3}, Max Vol: {:.1} mm³/s, Fan: {}%, Required HRC: {}, Dry: {}°C / {}h.",
+      WEBCONFIG_APP_VERSION,
+      Self::normalized_brand(&self.brand),
+      self.material_type,
+      self.finish_type,
+      self.print_temp,
+      self.brass_base_temp,
+      self.hs_base_temp,
+      self.bed_temp,
+      self.flow_ratio,
+      self.pressure_advance,
+      self.max_volumetric_speed,
+      self.fan_speed_percent,
+      self.required_nozzle_hrc,
+      self.drying_temp_c,
+      self.drying_time_hr
+    )
+  }
 }
 
 fn default_config_version() -> u32 {
@@ -1796,7 +1867,7 @@ fn default_orca_slicer_version() -> String {
 }
 
 fn default_webconfig_app_version() -> String {
-  "2.2.0".to_string()
+  WEBCONFIG_APP_VERSION.to_string()
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1842,11 +1913,14 @@ impl WebConfigStateSnapshot {
     if self.orca_slicer_version.trim().is_empty() {
       self.orca_slicer_version = default_orca_slicer_version();
     }
-    if self.webconfig_app_version.trim().is_empty() {
+    if self.webconfig_app_version.trim().is_empty() || self.webconfig_app_version == "2.2.0" {
       self.webconfig_app_version = default_webconfig_app_version();
     }
-    if self.schema_version.trim().is_empty() || self.schema_version == "1.0" {
-      self.schema_version = "2.2.0".to_string();
+    if self.schema_version.trim().is_empty()
+      || self.schema_version == "1.0"
+      || self.schema_version == "2.2.0"
+    {
+      self.schema_version = WEBCONFIG_APP_VERSION.to_string();
     }
     if self.bound_filename.contains("From Scratch")
       || self.bound_path_hint.contains("Start-From-Scratch")
@@ -1987,10 +2061,22 @@ impl WebConfigStateSnapshot {
       });
     }
 
+    if self.machines.is_empty() {
+      self
+        .machines
+        .push(MachineRig::kobra_s1_hardened_steel_png());
+    }
     for mach in &mut self.machines {
       mach.nozzle_diameter = mach.formatted_nozzle_diameter();
+      let (_, hrc) = mach.orca_machine_nozzle_type_and_hrc();
+      mach.nozzle_hrc = hrc;
       if mach.name.contains(':') {
         mach.name = mach.name.replace(": ", " - ").replace(':', "-");
+      }
+      if mach.notes.trim().is_empty()
+        || (mach.name.starts_with("OC -") && !mach.notes.contains(WEBCONFIG_APP_VERSION))
+      {
+        mach.notes = mach.generate_descriptive_notes();
       }
     }
     let short_mach = self
@@ -2153,7 +2239,8 @@ impl ProcessProfile {
       _ => "Standard (Balanced Structural Strength & Throughput)",
     };
     format!(
-      "[OrcaSlicer WebConfig Process — {}] Layer Height: {:.2}mm, Line Width: {:.2}mm. Speeds: {:.0} mm/s Outer Wall, {:.0} mm/s Inner Wall, {:.0} mm/s Sparse Infill, {:.0} mm/s Initial Layer. Default Accel: {:.0} mm/s². Wall Generator: '{}', Print Sequence: '{}'. Protected by Lua Volumetric Speed Ceiling & Non-Crossing Gyroid/Z-Hop rules.",
+      "[OrcaSlicer WebConfig v{} — Process: {}] Layer Height: {:.2}mm, Line Width: {:.2}mm. Speeds: {:.0} mm/s Outer Wall, {:.0} mm/s Inner Wall, {:.0} mm/s Sparse Infill, {:.0} mm/s Initial Layer. Default Accel: {:.0} mm/s². Wall Generator: '{}', Print Sequence: '{}'. Protected by Lua Volumetric Speed Ceiling & Non-Crossing Gyroid/Z-Hop rules.",
+      WEBCONFIG_APP_VERSION,
       tier_label,
       self.layer_height,
       self.line_width,

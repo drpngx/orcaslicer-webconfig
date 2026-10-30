@@ -41,6 +41,7 @@ rust_binary(
     srcs = ["src/bin/app.rs"],
     aliases = aliases(),
     edition = "2021",
+    version = "0.1.0",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -67,6 +68,7 @@ rust_binary(
     srcs = ["src/bin/generate_orca_catalog.rs"],
     aliases = aliases(),
     edition = "2021",
+    version = "0.1.0",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -80,6 +82,7 @@ rust_binary(
     srcs = ["src/bin/compile_docs.rs"],
     aliases = aliases(),
     edition = "2021",
+    version = "0.1.0",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -148,6 +151,7 @@ rust_library(
         ":orcaslicer_generated_catalog.json",
     ],
     edition = "2021",
+    version = "0.1.0",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),

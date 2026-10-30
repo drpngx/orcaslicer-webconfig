@@ -29,7 +29,7 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
             artifact_name: orcaslicer-webconfig-portable-windows-x64
           - platform: linux-x64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
             artifact_name: orcaslicer-webconfig-portable-linux-x64
           - platform: macos
@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Linux WebKitGTK & Tauri system dependencies
         if: matrix.platform == 'linux-x64'
@@ -49,7 +49,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
             libssl-dev \
@@ -64,11 +64,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown,${{ matrix.rust_target }}
 
-      - name: Setup Bazelisk Cache & Binary
-        uses: bazel-contrib/setup-bazel@0.9.0
+      - name: Setup Bazelisk & Repository Cache
+        uses: bazel-contrib/setup-bazel@0.19.1
         with:
           bazelisk-cache: true
-          disk-cache: ${{ matrix.platform }}-bazel
+          repository-cache: true
 
       - name: Build Yew WASM Frontend via Bazel & Stage Dist
         shell: bash
@@ -139,7 +139,8 @@ jobs:
           tar -czvf "${{ matrix.artifact_name }}.tar.gz" -C portable-out .
 
       - name: Upload On-Demand Workflow Artifact
-        uses: actions/upload-artifact@v4
+        id: upload-portable
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -148,9 +149,18 @@ jobs:
             portable-out/*
           if-no-files-found: error
 
+      - name: Write Artifact Download Link to Job Summary
+        shell: bash
+        run: |
+          {
+            echo "## 🖥️ Portable Tauri Build Ready (${{ matrix.platform }})"
+            echo "- **Download Artifact:** [\`${{ matrix.artifact_name }}\`](${{ steps.upload-portable.outputs.artifact-url }})"
+            echo "- **Workflow Run Summary Page:** [Run #${{ github.run_id }} Summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Attach Portable Builds to GitHub Release (on release / tag / manual tag)
         if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_release_tag != '')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.upload_to_release_tag != '' && inputs.upload_to_release_tag || github.ref_name }}
           files: |

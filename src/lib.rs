@@ -223,10 +223,10 @@ pub fn App() -> Html {
   {
     let is_loaded = *is_config_loaded;
     let snap = WebConfigStateSnapshot {
-      schema_version: "2.2.0".to_string(),
+      schema_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
       config_version: *config_version,
       orca_slicer_version: "2.2".to_string(),
-      webconfig_app_version: "2.2.0".to_string(),
+      webconfig_app_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
       bound_filename: (*bound_filename).clone(),
       bound_path_hint: (*bound_path_hint).clone(),
       detected_hardware_summary: (*detected_hardware_summary).clone(),
@@ -269,8 +269,7 @@ pub fn App() -> Html {
     .or_else(|| processes.first().cloned())
     .unwrap_or_else(|| ProcessProfile::get_default_processes().remove(1));
 
-  let slot_count = (active_rig.ace_pro_units * 4).min(filaments.len());
-  let active_slots: Vec<FilamentSpool> = filaments.iter().take(slot_count).cloned().collect();
+  let active_slots: Vec<FilamentSpool> = filaments.iter().cloned().collect();
 
   // Minimum filament max volumetric speed across active slots
   let active_filament_max_flow = filaments
@@ -372,10 +371,10 @@ pub fn App() -> Html {
   // Build Our Internal Config Data Structure JSON vs User Disk Config JSON
   let our_internal_config_json = serde_json::to_string_pretty(&serde_json::json!({
     "architecture": "Transformation-Based Config State (Not Absolute Values)",
-    "schema_version": "2.2.0",
+    "schema_version": crate::models::WEBCONFIG_APP_VERSION,
     "config_version": *config_version,
     "orca_slicer_version": "2.2",
-    "webconfig_app_version": "2.2.0",
+    "webconfig_app_version": crate::models::WEBCONFIG_APP_VERSION,
     "active_rig": {
       "id": active_rig.id,
       "name": active_rig.name,
@@ -838,10 +837,10 @@ pub fn App() -> Html {
       let next_ver = *config_version + 1;
       config_version.set(next_ver);
       let snapshot = WebConfigStateSnapshot {
-        schema_version: "2.2.0".to_string(),
+        schema_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
         config_version: next_ver,
         orca_slicer_version: "2.2".to_string(),
-        webconfig_app_version: "2.2.0".to_string(),
+        webconfig_app_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
         bound_filename: (*bound_filename).clone(),
         bound_path_hint: (*bound_path_hint).clone(),
         detected_hardware_summary: (*detected_hardware_summary).clone(),
@@ -1203,7 +1202,7 @@ pub fn App() -> Html {
             m.firmware = "Kobra OS 2.4 (Klipper)".to_string();
           }
         }
-        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        m.refresh_title_and_notes(m.source_disk_profile.is_none() || m.name.starts_with("OC -"));
       }
       machines.set(list);
       toast.set(Some(format!("Updated rig machine type to {}!", new_model)));
@@ -1231,7 +1230,7 @@ pub fn App() -> Html {
             addon_id
           )));
         }
-        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        m.refresh_title_and_notes(m.source_disk_profile.is_none() || m.name.starts_with("OC -"));
       }
       machines.set(list);
     })
@@ -1330,7 +1329,7 @@ pub fn App() -> Html {
         TransformationEngine::sync_weather_rule_for_rig(&mut r_list, m);
         let (_, mach_hrc) = m.orca_machine_nozzle_type_and_hrc();
         m.nozzle_hrc = mach_hrc;
-        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        m.refresh_title_and_notes(m.source_disk_profile.is_none() || m.name.starts_with("OC -"));
         let short_noz = m.short_nozzle_tag();
         let diam_str = m.nozzle_diameter.clone();
         for sp in fil_list.iter_mut() {
@@ -1364,7 +1363,7 @@ pub fn App() -> Html {
       let mut short_mach = "KS1".to_string();
       if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
         m.nozzle_diameter = new_diam.clone();
-        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        m.refresh_title_and_notes(m.source_disk_profile.is_none() || m.name.starts_with("OC -"));
         short_mach = m.short_model_tag();
       }
       machines.set(mach_list);
@@ -1402,7 +1401,7 @@ pub fn App() -> Html {
       let mut mach_list = (*machines).clone();
       if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
         m.ace_pro_units = units;
-        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        m.refresh_title_and_notes(m.source_disk_profile.is_none() || m.name.starts_with("OC -"));
       }
       machines.set(mach_list);
 
@@ -1430,7 +1429,7 @@ pub fn App() -> Html {
         } else {
           m.apply_weather_preset(&preset);
         }
-        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        m.refresh_title_and_notes(m.source_disk_profile.is_none() || m.name.starts_with("OC -"));
         TransformationEngine::sync_weather_rule_for_rig(&mut r_list, m);
         let badge = m.climate_summary_badge();
         toast.set(Some(format!(
@@ -2130,7 +2129,7 @@ pub fn App() -> Html {
                       {"Export Orca WebConfig (.json)"}
                     </span>
                     <span class="bg-primary/20 text-primary text-[10px] font-mono font-bold px-2 py-0.5 rounded">
-                      {format!("Config v{} • OrcaSlicer v2.2", *config_version)}
+                      {format!("WebConfig v{} (rev #{}) • for OrcaSlicer 2.2", crate::models::WEBCONFIG_APP_VERSION, *config_version)}
                     </span>
                   </div>
                   <span class="text-xs text-on-surface">

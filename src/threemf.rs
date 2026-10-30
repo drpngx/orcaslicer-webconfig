@@ -1,4 +1,4 @@
-use crate::models::{FilamentSpool, MachineRig, ProcessProfile};
+use crate::models::{FilamentSpool, MachineRig, ProcessProfile, WEBCONFIG_ORCA_PRESET_VERSION};
 use serde::{Deserialize, Serialize};
 
 /// Compute standard IEEE 802.3 CRC32 for ZIP archive entries
@@ -185,7 +185,7 @@ pub fn resolve_orca_filament_type(material_type: &str) -> String {
   }
 }
 
-const FILAMENT_DIFF_KEYS: &str = "default_filament_colour;fan_max_speed;fan_max_speed_BRASS;fan_max_speed_HS;filament_deretraction_speed;filament_diameter;filament_flow_ratio;filament_max_volumetric_speed;filament_retract_before_wipe;filament_retraction_length;filament_retraction_speed;filament_type;filament_wipe;filament_wipe_distance;filament_z_hop;filament_z_hop_types;hot_plate_temp;hot_plate_temp_initial_layer;nozzle_temperature;nozzle_temperature_BRASS;nozzle_temperature_HS;nozzle_temperature_initial_layer;nozzle_temperature_initial_layer_BRASS;nozzle_temperature_initial_layer_HS;pressure_advance;required_nozzle_HRC;textured_plate_temp;textured_plate_temp_initial_layer";
+const FILAMENT_DIFF_KEYS: &str = "default_filament_colour;fan_max_speed;fan_max_speed_BRASS;fan_max_speed_HS;fan_min_speed;fan_min_speed_BRASS;fan_min_speed_HS;filament_deretraction_speed;filament_diameter;filament_flow_ratio;filament_max_volumetric_speed;filament_notes;filament_retract_before_wipe;filament_retraction_length;filament_retraction_speed;filament_type;filament_wipe;filament_wipe_distance;filament_z_hop;filament_z_hop_types;hot_plate_temp;hot_plate_temp_initial_layer;nozzle_temperature;nozzle_temperature_BRASS;nozzle_temperature_HS;nozzle_temperature_initial_layer;nozzle_temperature_initial_layer_BRASS;nozzle_temperature_initial_layer_HS;pressure_advance;required_nozzle_HRC;textured_plate_temp;textured_plate_temp_initial_layer";
 
 fn first_str_from_map(
   map: &serde_json::Map<String, serde_json::Value>,
@@ -201,12 +201,23 @@ fn first_str_from_map(
 
 /// Resolves a filament spool's OrcaSlicer JSON parameter map by importing the resolved OrcaSlicer
 /// base filament profile (`default_filament_bases` from `@orcaslicer_repo`), merging any imported
-/// `spool.raw_disk_json` values, and applying the spool's active parameters.
+/// `spool.raw_disk_json` values, and applying the spool's active parameters (plus any active
+/// weather/climate and anti-stringing offsets when `rig` is provided).
 pub fn resolve_spool_orca_filament_map(
   spool: &FilamentSpool,
 ) -> serde_json::Map<String, serde_json::Value> {
+  resolve_spool_orca_filament_map_with_rig(spool, None)
+}
+
+pub fn resolve_spool_orca_filament_map_with_rig(
+  spool: &FilamentSpool,
+  rig_opt: Option<&MachineRig>,
+) -> serde_json::Map<String, serde_json::Value> {
   let cat = crate::catalog::load_merged_catalog();
   let orca_fil_type = resolve_orca_filament_type(&spool.material_type);
+  let is_pctg = spool.material_type.contains("PCTG") || spool.name.to_uppercase().contains("PCTG");
+  let is_pctg_or_petg = is_pctg || orca_fil_type.contains("PETG") || orca_fil_type.contains("PET");
+  let is_tpu = orca_fil_type.contains("TPU") || orca_fil_type.contains("PEBA");
   let mut base_map = serde_json::Map::new();
   if let Some(fil_base) = cat
     .default_filament_bases
@@ -235,17 +246,108 @@ pub fn resolve_spool_orca_filament_map(
     }
   }
 
+  // Compute relative weather/climate deltas when a non-temperate rig climate is active
+  let mut climate_noz_delta: i32 = 0;
+  let mut climate_bed_delta: i32 = 0;
+  let mut climate_init_bed_extra: i32 = 0;
+  let mut climate_retract_delta: f64 = 0.0;
+  if let Some(rig) = rig_opt {
+    let temp_c = rig.ambient_temp_c;
+    let rh_pct = rig.humidity_pct;
+    let is_hot =
+      temp_c >= 26 || rig.climate_preset == "tropical" || rig.climate_preset == "hot_dry";
+    let is_cold =
+      temp_c <= 18 || rig.climate_preset == "cold_dry" || rig.climate_preset == "cold_humid";
+    let is_humid =
+      rh_pct >= 60 || rig.climate_preset == "tropical" || rig.climate_preset == "cold_humid";
+    let is_ms = rig.is_heat_creep_resistant_nozzle();
+
+    if is_humid {
+      climate_retract_delta = if is_pctg_or_petg || is_tpu {
+        0.20
+      } else {
+        0.15
+      };
+    }
+    if is_hot {
+      climate_noz_delta = if is_ms {
+        -5
+      } else if is_pctg_or_petg || orca_fil_type == "PLA" {
+        -10
+      } else if is_tpu {
+        -6
+      } else {
+        -4
+      };
+      climate_bed_delta = if is_pctg_or_petg {
+        -3
+      } else if orca_fil_type == "PLA" || is_tpu {
+        -5
+      } else {
+        0
+      };
+    } else if is_cold {
+      climate_noz_delta = if is_ms { 4 } else { 6 } - if is_humid { 3 } else { 0 };
+      climate_bed_delta = 5;
+      climate_init_bed_extra = 5;
+    } else if is_humid {
+      climate_noz_delta = -3;
+    }
+  }
+
   let base_noz = first_str_from_map(&base_map, "nozzle_temperature")
     .and_then(|s| s.parse::<i32>().ok())
     .unwrap_or(spool.print_temp);
   let base_init = first_str_from_map(&base_map, "nozzle_temperature_initial_layer")
     .and_then(|s| s.parse::<i32>().ok())
     .unwrap_or(base_noz);
-  let init_delta = (base_init - base_noz).clamp(0, 15);
-  let effective_temp = spool.print_temp;
-  let initial_temp = (effective_temp + init_delta).min(350);
+  let init_delta = if is_pctg_or_petg || is_tpu {
+    0
+  } else {
+    (base_init - base_noz).clamp(0, 10)
+  };
+  let effective_temp = (spool.print_temp + climate_noz_delta).clamp(175, 350);
+  let initial_temp = (effective_temp + init_delta).clamp(175, 350);
+  let effective_bed = (spool.bed_temp + climate_bed_delta).clamp(35, 120);
+  let initial_bed = (effective_bed + climate_init_bed_extra).clamp(35, 120);
   let export_name = spool.format_concise_title();
   let inherits = resolve_kobra_s1_filament_inherits(spool);
+
+  // Ensure retraction, wipe, z-hop, and fan_min_speed / fan_max_speed are always populated cleanly
+  let base_ret_len = first_str_from_map(&base_map, "filament_retraction_length")
+    .and_then(|s| s.parse::<f64>().ok())
+    .unwrap_or(if is_pctg {
+      1.00
+    } else if is_pctg_or_petg {
+      0.80
+    } else {
+      0.60
+    });
+  let effective_ret_len = if is_pctg && base_ret_len < 1.00 {
+    (1.00 + climate_retract_delta).clamp(0.30, 1.45)
+  } else {
+    (base_ret_len + climate_retract_delta).clamp(0.30, 1.45)
+  };
+  let ret_len_str = if (effective_ret_len - effective_ret_len.round()).abs() < 1e-6 {
+    format!("{:.1}", effective_ret_len)
+  } else {
+    format!("{:.2}", effective_ret_len)
+      .trim_end_matches('0')
+      .trim_end_matches('.')
+      .to_string()
+  };
+  let ret_spd_str = if is_pctg {
+    "45".to_string()
+  } else {
+    first_str_from_map(&base_map, "filament_retraction_speed")
+      .unwrap_or_else(|| if is_pctg_or_petg { "40" } else { "40" }.to_string())
+  };
+  let fan_min_pct = spool.fan_speed_percent.clamp(0, 100);
+  let fan_max_pct = if is_pctg_or_petg && fan_min_pct >= 30 {
+    90
+  } else {
+    fan_min_pct
+  };
 
   base_map.insert("inherits".to_string(), serde_json::json!(inherits));
   base_map.insert("name".to_string(), serde_json::json!(export_name));
@@ -291,19 +393,19 @@ pub fn resolve_spool_orca_filament_map(
   );
   base_map.insert(
     "hot_plate_temp".to_string(),
-    serde_json::json!([spool.bed_temp.to_string()]),
+    serde_json::json!([effective_bed.to_string()]),
   );
   base_map.insert(
     "hot_plate_temp_initial_layer".to_string(),
-    serde_json::json!([spool.bed_temp.to_string()]),
+    serde_json::json!([initial_bed.to_string()]),
   );
   base_map.insert(
     "textured_plate_temp".to_string(),
-    serde_json::json!([spool.bed_temp.to_string()]),
+    serde_json::json!([effective_bed.to_string()]),
   );
   base_map.insert(
     "textured_plate_temp_initial_layer".to_string(),
-    serde_json::json!([spool.bed_temp.to_string()]),
+    serde_json::json!([initial_bed.to_string()]),
   );
   base_map.insert(
     "filament_flow_ratio".to_string(),
@@ -318,26 +420,78 @@ pub fn resolve_spool_orca_filament_map(
     serde_json::json!([format!("{:.1}", spool.max_volumetric_speed)]),
   );
   base_map.insert(
+    "fan_min_speed".to_string(),
+    serde_json::json!([fan_min_pct.to_string()]),
+  );
+  base_map.insert(
+    "fan_min_speed_BRASS".to_string(),
+    serde_json::json!([fan_min_pct.to_string()]),
+  );
+  base_map.insert(
+    "fan_min_speed_HS".to_string(),
+    serde_json::json!([fan_min_pct.to_string()]),
+  );
+  base_map.insert(
     "fan_max_speed".to_string(),
-    serde_json::json!([spool.fan_speed_percent.to_string()]),
+    serde_json::json!([fan_max_pct.to_string()]),
   );
   base_map.insert(
     "fan_max_speed_BRASS".to_string(),
-    serde_json::json!([spool.fan_speed_percent.to_string()]),
+    serde_json::json!([fan_max_pct.to_string()]),
   );
   base_map.insert(
     "fan_max_speed_HS".to_string(),
-    serde_json::json!([spool.fan_speed_percent.to_string()]),
+    serde_json::json!([fan_max_pct.to_string()]),
+  );
+  base_map.insert(
+    "filament_retraction_length".to_string(),
+    serde_json::json!([ret_len_str]),
+  );
+  base_map.insert(
+    "filament_retraction_speed".to_string(),
+    serde_json::json!([ret_spd_str]),
+  );
+  if is_pctg_or_petg {
+    base_map.insert(
+      "filament_retract_before_wipe".to_string(),
+      serde_json::json!(["0%"]),
+    );
+    base_map.insert(
+      "filament_deretraction_speed".to_string(),
+      serde_json::json!(["0"]),
+    );
+    base_map.insert("filament_wipe".to_string(), serde_json::json!(["1"]));
+    base_map.insert(
+      "filament_wipe_distance".to_string(),
+      serde_json::json!(["2"]),
+    );
+    if !base_map.contains_key("filament_z_hop") {
+      base_map.insert("filament_z_hop".to_string(), serde_json::json!(["0.15"]));
+    }
+    if !base_map.contains_key("filament_z_hop_types") {
+      base_map.insert(
+        "filament_z_hop_types".to_string(),
+        serde_json::json!(["Spiral Lift"]),
+      );
+    }
+  }
+  base_map.insert(
+    "filament_notes".to_string(),
+    serde_json::json!([spool.generate_descriptive_notes()]),
+  );
+  base_map.insert(
+    "version".to_string(),
+    serde_json::json!(WEBCONFIG_ORCA_PRESET_VERSION),
   );
   base_map
 }
 
 fn build_filament_preset_json_with_source(
   spool: &FilamentSpool,
-  _rig: &MachineRig,
+  rig: &MachineRig,
   from_src: &str,
 ) -> String {
-  let resolved = resolve_spool_orca_filament_map(spool);
+  let resolved = resolve_spool_orca_filament_map_with_rig(spool, Some(rig));
   let mut out = serde_json::Map::new();
   out.insert("type".to_string(), serde_json::json!("filament"));
   out.insert("from".to_string(), serde_json::json!(from_src));
@@ -365,6 +519,9 @@ fn build_filament_preset_json_with_source(
     "filament_flow_ratio",
     "pressure_advance",
     "filament_max_volumetric_speed",
+    "fan_min_speed",
+    "fan_min_speed_BRASS",
+    "fan_min_speed_HS",
     "fan_max_speed",
     "fan_max_speed_BRASS",
     "fan_max_speed_HS",
@@ -376,6 +533,7 @@ fn build_filament_preset_json_with_source(
     "filament_deretraction_speed",
     "filament_wipe",
     "filament_wipe_distance",
+    "filament_notes",
     "version",
   ] {
     if let Some(v) = resolved.get(key) {
@@ -458,7 +616,44 @@ pub fn resolve_effective_orca_profile_values(
   };
 
   for (k, v) in derived_overrides {
+    // Do not let single-process/single-filament speed caps from `derived_overrides` overwrite
+    // each distinct ProcessProfile's own speeds (`outer_wall_speed`, `inner_wall_speed`, `sparse_infill_speed`),
+    // and prevent low travel_acceleration (< 8000 mm/s²) from causing stringing during travel departures.
+    if matches!(
+      k.as_str(),
+      "layer_height"
+        | "line_width"
+        | "outer_wall_line_width"
+        | "outer_wall_speed"
+        | "inner_wall_speed"
+        | "sparse_infill_speed"
+        | "initial_layer_speed"
+        | "default_acceleration"
+    ) {
+      continue;
+    }
+    if k == "travel_acceleration" {
+      if let Some(ta) = v.as_str().and_then(|s| s.parse::<f64>().ok()) {
+        if ta < 8000.0 {
+          effective.insert(k.clone(), serde_json::json!("10000"));
+          continue;
+        }
+      }
+    }
     effective.insert(k.clone(), v.clone());
+  }
+  // Cap this process's speeds by the rig's hotend volumetric speed ceiling for its own layer_height * line_width
+  let cross_section = (process.layer_height * process.line_width).max(0.02) as f64;
+  let hotend_ceiling = (rig.max_volumetric_flow_limit / cross_section)
+    .round()
+    .max(40.0);
+  for (key, raw_spd) in [
+    ("outer_wall_speed", process.outer_wall_speed as f64),
+    ("inner_wall_speed", process.inner_wall_speed as f64),
+    ("sparse_infill_speed", process.sparse_infill_speed as f64),
+  ] {
+    let capped = raw_spd.min(hotend_ceiling);
+    effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", capped)));
   }
   if effective.get("seam_slope_type").and_then(|v| v.as_str()) == Some("contour") {
     effective.insert(
@@ -556,14 +751,16 @@ pub fn build_process_preset_json(
       }
     }
   }
-  out.insert("notes".to_string(), serde_json::json!(process.notes));
-  if let Some(ver) = cat
-    .default_process_base
-    .get("version")
-    .or_else(|| effective.get("version"))
-  {
-    out.insert("version".to_string(), ver.clone());
-  }
+  let proc_notes = if process.notes.trim().is_empty() {
+    process.generate_descriptive_notes()
+  } else {
+    process.notes.clone()
+  };
+  out.insert("notes".to_string(), serde_json::json!(proc_notes));
+  out.insert(
+    "version".to_string(),
+    serde_json::json!(WEBCONFIG_ORCA_PRESET_VERSION),
+  );
 
   serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_else(|_| "{}".to_string())
 }
@@ -571,8 +768,13 @@ pub fn build_process_preset_json(
 /// Builds a user Machine `.json` preset from the imported OrcaSlicer machine base + rig settings
 pub fn build_machine_preset_json(rig: &MachineRig) -> String {
   let cat = crate::catalog::load_merged_catalog();
-  let (orca_noz, _) = rig.orca_machine_nozzle_type_and_hrc();
+  let (orca_noz, hrc) = rig.orca_machine_nozzle_type_and_hrc();
   let noz_diam_str = rig.formatted_nozzle_diameter();
+  let notes_str = if rig.notes.trim().is_empty() {
+    rig.generate_descriptive_notes()
+  } else {
+    rig.notes.clone()
+  };
   let mut out = serde_json::Map::new();
   out.insert("type".to_string(), serde_json::json!("machine"));
   out.insert("from".to_string(), serde_json::json!("User"));
@@ -595,6 +797,7 @@ pub fn build_machine_preset_json(rig: &MachineRig) -> String {
     serde_json::json!(noz_diam_str),
   );
   out.insert("nozzle_type".to_string(), serde_json::json!(orca_noz));
+  out.insert("nozzle_hrc".to_string(), serde_json::json!(hrc.to_string()));
   out.insert(
     "nozzle_diameter".to_string(),
     serde_json::json!([noz_diam_str]),
@@ -606,10 +809,11 @@ pub fn build_machine_preset_json(rig: &MachineRig) -> String {
   if let Some(ret_spd) = cat.default_machine_base.get("retraction_speed") {
     out.insert("retraction_speed".to_string(), ret_spd.clone());
   }
-  out.insert("printer_notes".to_string(), serde_json::json!(rig.notes));
-  if let Some(ver) = cat.default_machine_base.get("version") {
-    out.insert("version".to_string(), ver.clone());
-  }
+  out.insert("printer_notes".to_string(), serde_json::json!(notes_str));
+  out.insert(
+    "version".to_string(),
+    serde_json::json!(WEBCONFIG_ORCA_PRESET_VERSION),
+  );
   serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_else(|_| "{}".to_string())
 }
 
@@ -623,12 +827,22 @@ pub fn build_project_settings_config_json(
 ) -> String {
   let cat = crate::catalog::load_merged_catalog();
   let effective = resolve_effective_orca_profile_values(rig, process, derived_overrides);
-  let (orca_nozzle_type, _) = rig.orca_machine_nozzle_type_and_hrc();
+  let (orca_nozzle_type, nozzle_hrc) = rig.orca_machine_nozzle_type_and_hrc();
   let noz_diam_str = rig.formatted_nozzle_diameter();
+  let rig_notes = if rig.notes.trim().is_empty() {
+    rig.generate_descriptive_notes()
+  } else {
+    rig.notes.clone()
+  };
+  let proc_notes = if process.notes.trim().is_empty() {
+    process.generate_descriptive_notes()
+  } else {
+    process.notes.clone()
+  };
 
   let slot_maps: Vec<serde_json::Map<String, serde_json::Value>> = active_slots
     .iter()
-    .map(resolve_spool_orca_filament_map)
+    .map(|sp| resolve_spool_orca_filament_map_with_rig(sp, Some(rig)))
     .collect();
 
   let collect_slot_vec = |key: &str| -> Vec<String> {
@@ -670,15 +884,19 @@ pub fn build_project_settings_config_json(
     "printer_settings_id".to_string(),
     serde_json::json!(rig.format_concise_title()),
   );
-  out.insert("printer_notes".to_string(), serde_json::json!(rig.notes));
+  out.insert("printer_notes".to_string(), serde_json::json!(rig_notes));
   out.insert(
     "print_settings_id".to_string(),
     serde_json::json!(process.format_concise_title(&rig.short_model_tag())),
   );
-  out.insert("notes".to_string(), serde_json::json!(process.notes));
+  out.insert("notes".to_string(), serde_json::json!(proc_notes));
   out.insert(
     "nozzle_diameter".to_string(),
     serde_json::json!([noz_diam_str]),
+  );
+  out.insert(
+    "nozzle_hrc".to_string(),
+    serde_json::json!(nozzle_hrc.to_string()),
   );
   out.insert(
     "nozzle_type".to_string(),
@@ -721,6 +939,9 @@ pub fn build_project_settings_config_json(
     "filament_flow_ratio",
     "pressure_advance",
     "filament_max_volumetric_speed",
+    "fan_min_speed",
+    "fan_min_speed_BRASS",
+    "fan_min_speed_HS",
     "fan_max_speed",
     "fan_max_speed_BRASS",
     "fan_max_speed_HS",
@@ -732,6 +953,7 @@ pub fn build_project_settings_config_json(
     "filament_deretraction_speed",
     "filament_wipe",
     "filament_wipe_distance",
+    "filament_notes",
   ];
   for fk in fil_array_keys {
     let vals = collect_slot_vec(fk);
@@ -814,7 +1036,8 @@ pub fn build_project_settings_config_json(
     different_settings_to_system.push(FILAMENT_DIFF_KEYS.to_string());
   }
   different_settings_to_system.push(
-    "nozzle_diameter;nozzle_type;printer_notes;retraction_length;retraction_speed".to_string(),
+    "nozzle_diameter;nozzle_hrc;nozzle_type;printer_notes;retraction_length;retraction_speed"
+      .to_string(),
   );
 
   out.insert(
@@ -1250,5 +1473,14 @@ mod tests {
         v
       );
     }
+
+    let mach_json = build_machine_preset_json(&rig);
+    let mach_val: serde_json::Value = serde_json::from_str(&mach_json).unwrap();
+    assert_eq!(mach_val["version"], serde_json::json!("0.1.0.0"));
+    assert_eq!(mach_val["nozzle_hrc"], serde_json::json!("55"));
+    assert!(mach_val["printer_notes"]
+      .as_str()
+      .unwrap()
+      .contains("[OrcaSlicer WebConfig v0.1.0 — Machine]"));
   }
 }
