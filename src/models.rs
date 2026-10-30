@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// Canonical version of the OrcaSlicer WebConfig web/desktop application (`0.1.0` from `Cargo.toml`).
-pub const WEBCONFIG_APP_VERSION: &str = "0.1.0";
+/// Canonical version of the OrcaSlicer WebConfig web/desktop application,
+/// sourced at compile time from `CARGO_PKG_VERSION` (`version.bzl` in Bazel / `Cargo.toml` in Cargo).
+pub const WEBCONFIG_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// 4-part Semver representation of `WEBCONFIG_APP_VERSION` (`"0.1.0.0"`) required by OrcaSlicer's
+/// 4-part Semver representation of `WEBCONFIG_APP_VERSION` (`"<major>.<minor>.<patch>.0"`) required by OrcaSlicer's
 /// `Semver::parse(key_values["version"])` when importing `.json` preset files from `.zip` bundles.
-pub const WEBCONFIG_ORCA_PRESET_VERSION: &str = "0.1.0.0";
+pub const WEBCONFIG_ORCA_PRESET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".0");
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RigAddOn {
@@ -2371,5 +2372,51 @@ impl ProcessProfile {
     hs_028.notes = hs_028.generate_descriptive_notes();
 
     vec![std_020, hq_020, hs_020, hq_012, hs_028]
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_version_single_source_of_truth() {
+    assert!(!WEBCONFIG_APP_VERSION.is_empty());
+    assert_ne!(WEBCONFIG_APP_VERSION, "0.0.0");
+    assert_eq!(
+      WEBCONFIG_ORCA_PRESET_VERSION,
+      format!("{}.0", WEBCONFIG_APP_VERSION)
+    );
+
+    let expected_toml_line = format!("version = \"{}\"", WEBCONFIG_APP_VERSION);
+    let root_cargo = include_str!("../Cargo.toml");
+    assert!(
+      root_cargo.lines().any(|l| l.trim() == expected_toml_line),
+      "Cargo.toml version must match version.bzl ({})",
+      WEBCONFIG_APP_VERSION
+    );
+
+    let server_cargo = include_str!("../server/Cargo.toml");
+    assert!(
+      server_cargo.lines().any(|l| l.trim() == expected_toml_line),
+      "server/Cargo.toml version must match version.bzl ({})",
+      WEBCONFIG_APP_VERSION
+    );
+
+    let tauri_cargo = include_str!("../src-tauri/Cargo.toml");
+    assert!(
+      tauri_cargo.lines().any(|l| l.trim() == expected_toml_line),
+      "src-tauri/Cargo.toml version must match version.bzl ({})",
+      WEBCONFIG_APP_VERSION
+    );
+
+    let tauri_conf: serde_json::Value =
+      serde_json::from_str(include_str!("../src-tauri/tauri.conf.json")).unwrap();
+    assert_eq!(
+      tauri_conf["version"].as_str(),
+      Some(WEBCONFIG_APP_VERSION),
+      "src-tauri/tauri.conf.json version must match version.bzl ({})",
+      WEBCONFIG_APP_VERSION
+    );
   }
 }

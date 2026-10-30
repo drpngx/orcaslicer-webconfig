@@ -1,5 +1,8 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//:version.bzl", "WEBCONFIG_VERSION")
+
+exports_files(["Cargo.toml"])
 
 rust_library(
     name = "server_lib",
@@ -11,6 +14,7 @@ rust_library(
     ],
     crate_name = "server",
     edition = "2021",
+    version = WEBCONFIG_VERSION,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -43,6 +47,7 @@ rust_binary(
         ],
     }),
     edition = "2021",
+    version = WEBCONFIG_VERSION,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),

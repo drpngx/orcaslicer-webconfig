@@ -3,6 +3,7 @@ load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen")
+load("//:version.bzl", "WEBCONFIG_VERSION")
 load("//emsdk:emsdk.bzl", "wasmopt")
 
 package(
@@ -41,7 +42,7 @@ rust_binary(
     srcs = ["src/bin/app.rs"],
     aliases = aliases(),
     edition = "2021",
-    version = "0.1.0",
+    version = WEBCONFIG_VERSION,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -68,7 +69,7 @@ rust_binary(
     srcs = ["src/bin/generate_orca_catalog.rs"],
     aliases = aliases(),
     edition = "2021",
-    version = "0.1.0",
+    version = WEBCONFIG_VERSION,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -82,7 +83,7 @@ rust_binary(
     srcs = ["src/bin/compile_docs.rs"],
     aliases = aliases(),
     edition = "2021",
-    version = "0.1.0",
+    version = WEBCONFIG_VERSION,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -151,7 +152,7 @@ rust_library(
         ":orcaslicer_generated_catalog.json",
     ],
     edition = "2021",
-    version = "0.1.0",
+    version = WEBCONFIG_VERSION,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
@@ -168,10 +169,14 @@ rust_library(
 rust_test(
     name = "orcaslicer_webconfig_test",
     compile_data = glob(["transformations/**/*.lua"]) + [
+        "Cargo.toml",
         "additional_catalog.json",
+        "src-tauri/Cargo.toml",
+        "src-tauri/tauri.conf.json",
         ":compiled_docs.json",
         ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
+        "//server:Cargo.toml",
     ],
     crate = ":orcaslicer_webconfig",
     data = [
