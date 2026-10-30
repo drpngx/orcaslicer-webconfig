@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       upload_to_release_tag:
-        description: "Optional GitHub Release tag (e.g. v2.2.0) to attach portable builds to"
+        description: "Optional GitHub Release tag (e.g. v0.1.0) to create/update and attach portable builds to"
         required: false
         default: ""
   # 2. Automatic trigger at release points (published releases & version tags)
@@ -25,7 +25,7 @@ jobs:
       matrix:
         include:
           - platform: windows-x64
-            os: windows-latest
+            os: windows-2025
             rust_target: x86_64-pc-windows-msvc
             artifact_name: orcaslicer-webconfig-portable-windows-x64
           - platform: linux-x64
@@ -33,7 +33,7 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
             artifact_name: orcaslicer-webconfig-portable-linux-x64
           - platform: macos
-            os: macos-latest
+            os: macos-15
             rust_target: aarch64-apple-darwin
             artifact_name: orcaslicer-webconfig-portable-macos
 

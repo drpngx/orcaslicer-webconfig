@@ -2086,6 +2086,7 @@ impl WebConfigStateSnapshot {
       .or_else(|| self.machines.first())
       .map(|m| m.short_model_tag())
       .unwrap_or_else(|| "Kobra S1".to_string());
+    let canonical_procs = ProcessProfile::get_default_processes();
     for proc in &mut self.processes {
       if proc.name.contains(':') {
         proc.name = proc.name.replace(": ", " - ").replace(':', "-");
@@ -2096,6 +2097,32 @@ impl WebConfigStateSnapshot {
       {
         if proc.print_sequence.eq_ignore_ascii_case("by layer") {
           proc.print_sequence = "by object".to_string();
+        }
+        if let Some(canon) = canonical_procs.iter().find(|dp| {
+          dp.id == proc.id
+            || dp.name.split(" @").next() == proc.name.split(" @").next()
+        }) {
+          let was_corrupted = matches!(
+            proc.outer_wall_speed.round() as i32,
+            51 | 151 | 162 | 238
+          ) || matches!(
+            proc.inner_wall_speed.round() as i32,
+            128 | 151 | 162 | 238
+          ) || matches!(
+            proc.sparse_infill_speed.round() as i32,
+            151 | 162 | 238
+          ) || (proc.initial_layer_speed - 18.0).abs() < 1.0
+            || (proc.layer_height - canon.layer_height).abs() > 0.01;
+          if was_corrupted {
+            proc.layer_height = canon.layer_height;
+            proc.line_width = canon.line_width;
+            proc.outer_wall_speed = canon.outer_wall_speed;
+            proc.inner_wall_speed = canon.inner_wall_speed;
+            proc.sparse_infill_speed = canon.sparse_infill_speed;
+            proc.initial_layer_speed = canon.initial_layer_speed;
+            proc.default_acceleration = canon.default_acceleration;
+            proc.inherits = canon.inherits.clone();
+          }
         }
         if proc.inherits == "fdm_process_common" || proc.inherits.trim().is_empty() {
           proc.inherits = if (proc.layer_height - 0.12).abs() < 0.015 {
@@ -2112,7 +2139,7 @@ impl WebConfigStateSnapshot {
         proc.notes = proc.generate_descriptive_notes();
       }
     }
-    for mut def_proc in ProcessProfile::get_default_processes() {
+    for mut def_proc in canonical_procs {
       def_proc.name = def_proc.format_concise_title(&short_mach);
       def_proc.notes = def_proc.generate_descriptive_notes();
       if !self.processes.iter().any(|p| p.name == def_proc.name) {
@@ -2125,11 +2152,6 @@ impl WebConfigStateSnapshot {
       .processes
       .retain(|p| seen_proc_names.insert(p.name.clone()));
 
-    let valid_proc_fnames: std::collections::HashSet<String> = self
-      .processes
-      .iter()
-      .map(|p| sanitize_profile_filename(&p.name))
-      .collect();
     self.pending_updates.retain_mut(|upd| {
       if upd.json_field_key == "nozzle_diameter" && upd.new_clean_value == "0" {
         upd.new_clean_value = "0.4".to_string();
@@ -2138,13 +2160,11 @@ impl WebConfigStateSnapshot {
         && upd.source_relative_path.ends_with(".json")
       {
         upd.source_relative_path = sanitize_user_relative_path(&upd.source_relative_path);
-        if upd.source_relative_path.contains("/process/OC") {
-          let fname = upd
-            .source_relative_path
-            .rsplit('/')
-            .next()
-            .unwrap_or_default();
-          return valid_proc_fnames.contains(fname);
+        if upd.source_relative_path.contains("/machine/OC -")
+          || upd.source_relative_path.contains("/process/OC -")
+          || upd.source_relative_path.contains("/filament/OC -")
+        {
+          return false;
         }
       }
       true

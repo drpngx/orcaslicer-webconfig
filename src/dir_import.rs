@@ -1147,8 +1147,10 @@ pub fn import_scanned_directory(
 
   // 3. Reconstruct Process Profiles & Ensure High Quality, Standard, and High Speed Tiers Exist
   let mut processes = Vec::new();
+  let default_oc_procs = ProcessProfile::get_default_processes();
   for (idx, (rel_path, p_val)) in user_process_files.iter().enumerate() {
-    let name = extract_str(p_val, "name").unwrap_or_else(|| format!("Process #{}", idx + 1));
+    let raw_name = extract_str(p_val, "name").unwrap_or_else(|| format!("Process #{}", idx + 1));
+    let name = raw_name.replace(": ", " - ").replace(':', "-");
     let inherits = extract_str(p_val, "inherits").unwrap_or_default();
     let print_seq = extract_str(p_val, "print_sequence").unwrap_or_else(|| "by layer".to_string());
     let wall_gen = extract_str(p_val, "wall_generator").unwrap_or_else(|| "classic".to_string());
@@ -1168,11 +1170,39 @@ pub fn import_scanned_directory(
       });
     }
 
-    let is_hq = name.to_lowercase().contains("high quality")
-      || inherits.to_lowercase().contains("high quality");
-    let is_hs = name.to_lowercase().contains("high speed")
-      || name.to_lowercase().contains("draft")
-      || name.to_lowercase().contains("fast");
+    // If this is one of our generated `OC -` process profiles, restore its canonical baseline speeds/layer_height
+    // so re-importing from disk never compounds speed reductions or loses `layer_height` stripped by AnycubicSlicerNext.
+    if name.starts_with("OC -") {
+      if let Some(canon) = default_oc_procs.iter().find(|dp| {
+        dp.name == name
+          || dp.name.split(" @").next() == name.split(" @").next()
+      }) {
+        let mut proc_prof = canon.clone();
+        proc_prof.name = name;
+        proc_prof.notes = proc_prof.generate_descriptive_notes();
+        processes.push(proc_prof);
+        continue;
+      }
+    }
+
+    let combined_lower = format!("{} {}", name.to_lowercase(), inherits.to_lowercase());
+    let inferred_lh = if combined_lower.contains("0.08mm") {
+      0.08
+    } else if combined_lower.contains("0.12mm") {
+      0.12
+    } else if combined_lower.contains("0.16mm") {
+      0.16
+    } else if combined_lower.contains("0.24mm") {
+      0.24
+    } else if combined_lower.contains("0.28mm") {
+      0.28
+    } else {
+      0.20
+    };
+    let is_hq = combined_lower.contains("quality") || combined_lower.contains("fine");
+    let is_hs = combined_lower.contains("speed")
+      || combined_lower.contains("draft")
+      || combined_lower.contains("fast");
 
     let mut proc_prof = ProcessProfile {
       id: format!("disk_proc_{}", idx + 1),
@@ -1180,16 +1210,24 @@ pub fn import_scanned_directory(
       inherits,
       layer_height: extract_str(p_val, "layer_height")
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0.20),
+        .unwrap_or(inferred_lh),
       line_width: extract_str(p_val, "line_width")
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0.42),
+        .unwrap_or(if (inferred_lh - 0.28).abs() < 0.01 {
+          0.44
+        } else {
+          0.42
+        }),
       outer_wall_speed: extract_str(p_val, "outer_wall_speed")
         .and_then(|s| s.parse().ok())
         .unwrap_or(if is_hq {
           60.0
         } else if is_hs {
-          300.0
+          if (inferred_lh - 0.28).abs() < 0.01 {
+            250.0
+          } else {
+            300.0
+          }
         } else {
           200.0
         }),
@@ -1198,16 +1236,28 @@ pub fn import_scanned_directory(
         .unwrap_or(if is_hq {
           150.0
         } else if is_hs {
-          350.0
+          if (inferred_lh - 0.28).abs() < 0.01 {
+            320.0
+          } else {
+            350.0
+          }
         } else {
           300.0
         }),
       sparse_infill_speed: extract_str(p_val, "sparse_infill_speed")
         .and_then(|s| s.parse().ok())
         .unwrap_or(if is_hq {
-          250.0
+          if (inferred_lh - 0.12).abs() < 0.01 {
+            200.0
+          } else {
+            250.0
+          }
         } else if is_hs {
-          350.0
+          if (inferred_lh - 0.28).abs() < 0.01 {
+            320.0
+          } else {
+            350.0
+          }
         } else {
           270.0
         }),
@@ -1225,7 +1275,11 @@ pub fn import_scanned_directory(
         .unwrap_or(if is_hq {
           5000.0
         } else if is_hs {
-          15000.0
+          if (inferred_lh - 0.28).abs() < 0.01 {
+            12000.0
+          } else {
+            15000.0
+          }
         } else {
           10000.0
         }),
@@ -1796,8 +1850,8 @@ pub fn sync_live_state_to_entries(
     modified_map.insert(conf_path, conf_json);
   }
 
-  // 6. Apply any staged `PendingDiskUpdate` items on top (ignoring stale OC process filenames
-  // and skipping `notes` / `printer_notes` since Steps 2-4 already write the exact scalar string `notes` / `printer_notes`!)
+  // 6. Apply any staged `PendingDiskUpdate` items on top for non-OC user profiles
+  // (Steps 2-4 already write the complete, authoritative JSON for all `OC -` machine, process, and filament presets!)
   let filtered_updates: Vec<PendingDiskUpdate> = pending_updates
     .iter()
     .filter(|upd| {
@@ -1805,9 +1859,11 @@ pub fn sync_live_state_to_entries(
         return false;
       }
       let clean_rel = crate::models::sanitize_user_relative_path(&upd.source_relative_path);
-      if clean_rel.contains("/process/OC") {
-        let fname = clean_rel.rsplit('/').next().unwrap_or_default();
-        return valid_proc_fnames.contains(fname);
+      if clean_rel.contains("/machine/OC -")
+        || clean_rel.contains("/process/OC -")
+        || clean_rel.contains("/filament/OC -")
+      {
+        return false;
       }
       true
     })

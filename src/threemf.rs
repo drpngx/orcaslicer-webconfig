@@ -615,21 +615,40 @@ pub fn resolve_effective_orca_profile_values(
       .values
   };
 
+  let is_optical_glass_mode = derived_overrides
+    .get("sparse_infill_pattern")
+    .and_then(|v| v.as_str())
+    == Some("alignedrectilinear")
+    && derived_overrides
+      .get("sparse_infill_density")
+      .and_then(|v| v.as_str())
+      == Some("100%");
+
   for (k, v) in derived_overrides {
     // Do not let single-process/single-filament speed caps from `derived_overrides` overwrite
-    // each distinct ProcessProfile's own speeds (`outer_wall_speed`, `inner_wall_speed`, `sparse_infill_speed`),
-    // and prevent low travel_acceleration (< 8000 mm/s²) from causing stringing during travel departures.
-    if matches!(
-      k.as_str(),
-      "layer_height"
-        | "line_width"
-        | "outer_wall_line_width"
-        | "outer_wall_speed"
-        | "inner_wall_speed"
-        | "sparse_infill_speed"
-        | "initial_layer_speed"
-        | "default_acceleration"
-    ) {
+    // each distinct ProcessProfile's own speeds (`outer_wall_speed`, `inner_wall_speed`, `sparse_infill_speed`,
+    // `internal_solid_infill_speed`, `initial_layer_speed`, `default_acceleration`), unless Optical Glass mode is active.
+    // Also prevent low travel_acceleration (< 8000 mm/s²) from causing stringing during travel departures.
+    if !is_optical_glass_mode
+      && matches!(
+        k.as_str(),
+        "layer_height"
+          | "line_width"
+          | "outer_wall_line_width"
+          | "inner_wall_line_width"
+          | "sparse_infill_line_width"
+          | "outer_wall_speed"
+          | "inner_wall_speed"
+          | "sparse_infill_speed"
+          | "internal_solid_infill_speed"
+          | "top_surface_speed"
+          | "gap_infill_speed"
+          | "support_speed"
+          | "initial_layer_speed"
+          | "initial_layer_infill_speed"
+          | "default_acceleration"
+      )
+    {
       continue;
     }
     if k == "travel_acceleration" {
@@ -642,18 +661,18 @@ pub fn resolve_effective_orca_profile_values(
     }
     effective.insert(k.clone(), v.clone());
   }
-  // Cap this process's speeds by the rig's hotend volumetric speed ceiling for its own layer_height * line_width
-  let cross_section = (process.layer_height * process.line_width).max(0.02) as f64;
-  let hotend_ceiling = (rig.max_volumetric_flow_limit / cross_section)
-    .round()
-    .max(40.0);
-  for (key, raw_spd) in [
-    ("outer_wall_speed", process.outer_wall_speed as f64),
-    ("inner_wall_speed", process.inner_wall_speed as f64),
-    ("sparse_infill_speed", process.sparse_infill_speed as f64),
-  ] {
-    let capped = raw_spd.min(hotend_ceiling);
-    effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", capped)));
+  if !is_optical_glass_mode {
+    // Preserve each ProcessProfile's exact configured speeds and acceleration without artificial hotend clamping
+    // (OrcaSlicer enforces each filament's `filament_max_volumetric_speed` dynamically at slice time).
+    for (key, raw_spd) in [
+      ("outer_wall_speed", process.outer_wall_speed),
+      ("inner_wall_speed", process.inner_wall_speed),
+      ("sparse_infill_speed", process.sparse_infill_speed),
+      ("initial_layer_speed", process.initial_layer_speed),
+      ("default_acceleration", process.default_acceleration),
+    ] {
+      effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", raw_spd)));
+    }
   }
   if effective.get("seam_slope_type").and_then(|v| v.as_str()) == Some("contour") {
     effective.insert(
@@ -1482,5 +1501,84 @@ mod tests {
       .as_str()
       .unwrap()
       .contains("[OrcaSlicer WebConfig v0.1.0 — Machine]"));
+
+    // Verify all 5 default OC process presets export their exact configured speeds without spurious clamping or leaked internal_solid_infill_speed
+    let mut tropical_overrides = serde_json::Map::new();
+    tropical_overrides.insert("seam_slope_type".to_string(), serde_json::json!("all"));
+    tropical_overrides.insert("outer_wall_speed".to_string(), serde_json::json!("151"));
+    tropical_overrides.insert("inner_wall_speed".to_string(), serde_json::json!("151"));
+    tropical_overrides.insert("sparse_infill_speed".to_string(), serde_json::json!("151"));
+    tropical_overrides.insert(
+      "internal_solid_infill_speed".to_string(),
+      serde_json::json!("213"),
+    );
+    tropical_overrides.insert("initial_layer_speed".to_string(), serde_json::json!("18"));
+    let expected_procs = [
+      (
+        "OC - 0.20mm Standard @Kobra S1",
+        "0.20",
+        "200",
+        "300",
+        "270",
+        "50",
+        "10000",
+      ),
+      (
+        "OC - 0.20mm Quality @Kobra S1",
+        "0.20",
+        "60",
+        "150",
+        "250",
+        "50",
+        "5000",
+      ),
+      (
+        "OC - 0.20mm Speed @Kobra S1",
+        "0.20",
+        "300",
+        "350",
+        "350",
+        "60",
+        "15000",
+      ),
+      (
+        "OC - 0.12mm Quality @Kobra S1",
+        "0.12",
+        "60",
+        "150",
+        "200",
+        "50",
+        "5000",
+      ),
+      (
+        "OC - 0.28mm Speed @Kobra S1",
+        "0.28",
+        "250",
+        "320",
+        "320",
+        "60",
+        "12000",
+      ),
+    ];
+    for (p, (exp_name, exp_lh, exp_ow, exp_iw, exp_si, exp_il, exp_acc)) in
+      ProcessProfile::get_default_processes()
+        .iter()
+        .zip(expected_procs.iter())
+    {
+      assert_eq!(&p.name, exp_name);
+      let pj = build_process_preset_json(&p, &rig, &tropical_overrides);
+      let pv: serde_json::Value = serde_json::from_str(&pj).unwrap();
+      assert_eq!(pv["layer_height"], serde_json::json!(*exp_lh));
+      assert_eq!(pv["outer_wall_speed"], serde_json::json!(*exp_ow));
+      assert_eq!(pv["inner_wall_speed"], serde_json::json!(*exp_iw));
+      assert_eq!(pv["sparse_infill_speed"], serde_json::json!(*exp_si));
+      assert_eq!(pv["initial_layer_speed"], serde_json::json!(*exp_il));
+      assert_eq!(pv["default_acceleration"], serde_json::json!(*exp_acc));
+      assert!(
+        pv.get("internal_solid_infill_speed").is_none(),
+        "Process {} must not leak internal_solid_infill_speed from derived_overrides",
+        exp_name
+      );
+    }
   }
 }
