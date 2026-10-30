@@ -70,40 +70,15 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
 
-      - name: Build Yew WASM Frontend via Bazel & Stage Dist
-        shell: bash
-        run: |
-          bazel build -c opt //:app_wasm //:app_wasm_opt //:app_wasm_opt_br
-          chmod +x ./scripts/stage_tauri_dist.sh
-          ./scripts/stage_tauri_dist.sh
-
       - name: Install Tauri CLI v2
         uses: taiki-e/install-action@v2
         with:
           tool: tauri-cli@2
 
-      - name: Generate Default Icons if Missing
+      - name: Build Yew WASM Frontend & Portable Tauri Desktop App via Bazel
         shell: bash
         run: |
-          if [ ! -f "src-tauri/icons/icon.ico" ]; then
-            mkdir -p src-tauri/icons
-            python3 -c '
-          import struct, zlib
-          def make_png(w, h):
-              raw = b"".join(b"\x00" + b"\xf9\x73\x16\xff" * w for _ in range(h))
-              def chunk(t, d):
-                  return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
-              return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
-          open("src-tauri/icons/icon-base.png", "wb").write(make_png(512, 512))
-          '
-            cargo tauri icon src-tauri/icons/icon-base.png
-          fi
-
-      - name: Build Tauri Release Executable & Bundles
-        shell: bash
-        run: |
-          # Skip duplicate beforeBuildCommand since WASM dist is already staged
-          cargo tauri build --target ${{ matrix.rust_target }} --config '{"build":{"beforeBuildCommand":""}}'
+          bazel run -c opt //:tauri_build -- --target ${{ matrix.rust_target }}
 
       - name: Package Portable Artifact (Windows x64)
         if: matrix.platform == 'windows-x64'

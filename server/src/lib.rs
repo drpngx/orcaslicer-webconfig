@@ -9,11 +9,49 @@ use axum::routing::{get, post};
 use axum::Router;
 use cap_std::{ambient_authority, fs::Dir};
 use log::info;
-use orcaslicer_webconfig::fs_access::{
-  LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload, LocalFsScanProgress,
-  ScannedFileEntry,
-};
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScannedFileEntry {
+  pub relative_path: String,
+  pub filename: String,
+  pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalFsScanPayload {
+  pub configured_path: String,
+  pub windows_equivalent_path: String,
+  pub entries: Vec<ScannedFileEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalFsScanProgress {
+  pub running: bool,
+  pub done: bool,
+  pub phase: String,
+  pub files_read: usize,
+  pub total_files: usize,
+  pub current_file: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalFsSaveFileEntry {
+  pub relative_path: String,
+  pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalFsSaveRequest {
+  pub files: Vec<LocalFsSaveFileEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalFsSaveResponse {
+  pub ok: bool,
+  pub files_saved: usize,
+  pub message: String,
+}
 
 struct ServerScanState {
   progress: LocalFsScanProgress,

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.orcaslicer.webconfig",
   "build": {
-    "beforeDevCommand": "bazel build //:app_wasm && ./scripts/stage_tauri_dist.sh",
+    "beforeDevCommand": "",
     "devUrl": "http://127.0.0.1:8003",
-    "beforeBuildCommand": "bazel build -c opt //:app_wasm && ./scripts/stage_tauri_dist.sh",
+    "beforeBuildCommand": "",
     "frontendDist": "../dist"
   },
   "app": {

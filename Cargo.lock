@@ -1422,7 +1422,6 @@ dependencies = [
  "log",
  "num_cpus",
  "once_cell",
- "orcaslicer-webconfig",
  "regex",
  "runfiles",
  "serde",
@@ -1431,8 +1430,6 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-http",
- "yew",
- "yew-router",
 ]
 
 [[package]]

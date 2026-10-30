@@ -21,7 +21,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = all_crate_deps(
         normal = True,
-    ) + ["//:orcaslicer_webconfig"],
+    ),
 )
 
 rust_binary(
@@ -55,6 +55,5 @@ rust_binary(
         normal = True,
     ) + [
         ":server_lib",
-        "//:orcaslicer_webconfig",
     ],
 )

@@ -230,3 +230,8 @@ exports_files([
     "local_slicer_config.json",
     "static/index.html",
 ])
+
+alias(
+    name = "tauri_build",
+    actual = "//scripts:build_tauri_portable",
+)
