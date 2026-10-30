@@ -280,6 +280,48 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                 let cm = creator_mode.clone();
                 let sci = selected_cal_idx.clone();
                 let ca = cal_answers.clone();
+                let itc = issue_tree_category.clone();
+                let d_name = draft_name.clone();
+                let d_desc = draft_desc.clone();
+                let d_cat = draft_category.clone();
+                let d_icon = draft_icon.clone();
+                let d_cond = draft_condition.clone();
+                let d_lua = draft_lua.clone();
+                let cal_list_c = (*cal_templates).clone();
+                Callback::from(move |_| {
+                  if let Some((w_idx, w_tpl)) = cal_list_c
+                    .iter()
+                    .enumerate()
+                    .find(|(_, t)| t.id == "sym_weather_climate")
+                  {
+                    let def_ans = w_tpl.default_answers();
+                    let def_scope = w_tpl.default_condition_expr.clone();
+                    let (t, d, _, l) = w_tpl.generate_from_answers(&def_ans, &def_scope);
+                    sci.set(w_idx);
+                    ca.set(def_ans);
+                    itc.set(w_tpl.tree_category().to_string());
+                    d_name.set(t);
+                    d_desc.set(d);
+                    d_cat.set(w_tpl.category.clone());
+                    d_icon.set(w_tpl.icon.clone());
+                    d_cond.set(def_scope);
+                    d_lua.set(l);
+                  }
+                  cm.set("symptom_qa".to_string());
+                  src.set(true);
+                })
+              }}
+            >
+              <span class="material-symbols-outlined text-[16px]">{"thermostat"}</span>
+              {"🌦️ Weather & Climate Dials (Tropical / Cold / Humid)"}
+            </button>
+            <button
+              class="flex items-center gap-1.5 bg-secondary text-on-secondary hover:opacity-90 px-space-md py-1.5 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer"
+              onclick={{
+                let src = show_rule_creator.clone();
+                let cm = creator_mode.clone();
+                let sci = selected_cal_idx.clone();
+                let ca = cal_answers.clone();
                 let d_name = draft_name.clone();
                 let d_desc = draft_desc.clone();
                 let d_cat = draft_category.clone();
@@ -553,7 +595,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                   <button
                     class={format!(
                       "px-space-md py-1.5 rounded-lg transition-colors cursor-pointer {}",
-                      if !is_cal_mode && !is_visual_mode {
+                      if cur_mode == "preset_templates" {
                         "bg-primary text-on-primary font-bold shadow"
                       } else {
                         "text-on-surface-variant hover:text-on-surface"
@@ -565,6 +607,45 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                     }
                   >
                     {"📚 4. Curated Presets"}
+                  </button>
+                  <button
+                    class={format!(
+                      "px-space-md py-1.5 rounded-lg transition-colors cursor-pointer {}",
+                      if cur_mode == "custom_lua" {
+                        "bg-primary text-on-primary font-bold shadow"
+                      } else {
+                        "text-on-surface-variant hover:text-on-surface"
+                      }
+                    )}
+                    onclick={{
+                      let cm = creator_mode.clone();
+                      let idx_state = selected_template_idx.clone();
+                      let d_name = draft_name.clone();
+                      let d_desc = draft_desc.clone();
+                      let d_cat = draft_category.clone();
+                      let d_icon = draft_icon.clone();
+                      let d_cond = draft_condition.clone();
+                      let d_lua = draft_lua.clone();
+                      let tpls_c = templates_list.clone();
+                      Callback::from(move |_| {
+                        if let Some((c_idx, c_tpl)) = tpls_c
+                          .iter()
+                          .enumerate()
+                          .find(|(_, t)| t.id == "custom_blank_rule")
+                        {
+                          idx_state.set(c_idx);
+                          d_name.set(c_tpl.name.clone());
+                          d_desc.set(c_tpl.description.clone());
+                          d_cat.set(c_tpl.category.clone());
+                          d_icon.set(c_tpl.icon.clone());
+                          d_cond.set(c_tpl.condition_expr.clone());
+                          d_lua.set(c_tpl.lua_code.clone());
+                        }
+                        cm.set("custom_lua".to_string());
+                      })
+                    }}
+                  >
+                    {"⚙️ 5. Custom Parametric Lua"}
                   </button>
                 </div>
               </div>
@@ -1009,7 +1090,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
 
                           move |new_v: String| {
                             let mut next_map = (*ca_state).clone();
-                            next_map.insert(q_id_inner.clone(), new_v);
+                            cal_clone.apply_answer_change(&mut next_map, &q_id_inner, new_v);
                             let (t, d, _, l) = cal_clone.generate_from_answers(&next_map, &scope_str);
                             d_name.set(t);
                             d_desc.set(d);
@@ -1021,17 +1102,75 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                         };
 
                         let ua_input = update_answer.clone();
+                        let ua_slider = update_answer.clone();
+
+                        let kind_badge = match &q.kind {
+                          crate::lua_engine::LuaParamKind::Range { min, max, step } => {
+                            let step_s = step.map(|s| format!(", step {}", s)).unwrap_or_default();
+                            let unit_s = if q.unit.is_empty() { String::new() } else { format!(" {}", q.unit) };
+                            format!("Range Dial: {} .. {}{}{}", min, max, unit_s, step_s)
+                          }
+                          crate::lua_engine::LuaParamKind::Enum => {
+                            format!("Enum ({} options)", q.quick_options.len())
+                          }
+                          crate::lua_engine::LuaParamKind::Boolean => "Boolean".to_string(),
+                          crate::lua_engine::LuaParamKind::Text => "Text".to_string(),
+                        };
 
                         html! {
                           <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col justify-between gap-2">
                             <div class="flex flex-col gap-0.5">
-                              <span class="text-xs font-bold text-on-surface">
-                                {&q.question}
-                              </span>
+                              <div class="flex items-center justify-between gap-2 flex-wrap">
+                                <span class="text-xs font-bold text-on-surface">
+                                  {&q.question}
+                                </span>
+                                <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-container-highest text-secondary font-bold shrink-0">
+                                  {kind_badge}
+                                </span>
+                              </div>
                               <span class="text-[11px] text-on-surface-variant">
                                 {&q.hint}
                               </span>
                             </div>
+
+                            {if let crate::lua_engine::LuaParamKind::Range { min, max, step } = &q.kind {
+                              let step_val = step.unwrap_or(1.0);
+                              let cur_num = cur_val.trim().parse::<f64>().unwrap_or(*min);
+                              let dial_readout = if q.unit == "°C" {
+                                let f_val = (cur_num * 1.8 + 32.0).round() as i64;
+                                format!("{} °C ({}°F)", cur_val, f_val)
+                              } else if q.unit.is_empty() {
+                                cur_val.clone()
+                              } else {
+                                format!("{} {}", cur_val, q.unit)
+                              };
+                              html! {
+                                <div class="flex flex-col gap-1 bg-surface-container-lowest p-2.5 rounded-lg border border-tertiary/40">
+                                  <div class="flex items-center justify-between text-[11px] font-mono">
+                                    <span class="text-on-surface-variant">{format!("{}{}", min, if q.unit.is_empty() { "" } else { &q.unit })}</span>
+                                    <span class="bg-tertiary/20 text-tertiary border border-tertiary/40 px-2 py-0.5 rounded font-bold">
+                                      {format!("🎛️ Dial: {}", dial_readout)}
+                                    </span>
+                                    <span class="text-on-surface-variant">{format!("{}{}", max, if q.unit.is_empty() { "" } else { &q.unit })}</span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min={min.to_string()}
+                                    max={max.to_string()}
+                                    step={step_val.to_string()}
+                                    value={cur_val.clone()}
+                                    class="w-full accent-tertiary cursor-pointer"
+                                    oninput={Callback::from(move |e: InputEvent| {
+                                      if let Some(el) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                                        ua_slider(el.value());
+                                      }
+                                    })}
+                                  />
+                                </div>
+                              }
+                            } else {
+                              html! {}
+                            }}
 
                             <div class="flex flex-wrap gap-1.5 pt-1">
                               {for q.quick_options.iter().map(|(opt_val, opt_label)| {
@@ -1665,6 +1804,47 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                     </div>
                   </div>
                 }
+              } else if cur_mode == "custom_lua" {
+                // Custom Parametric Lua Rule Bootstrap Mode
+                html! {
+                  <div class="flex flex-col gap-space-sm bg-surface-container-lowest p-space-md rounded-xl border border-primary/50">
+                    <div class="flex items-center justify-between flex-wrap gap-2">
+                      <div class="flex items-center gap-2">
+                        <span class="text-lg">{"⚙️"}</span>
+                        <span class="text-xs font-mono uppercase text-primary font-bold">
+                          {"Pre-Populated Parametric Lua Rule Bootstrap (params = { ... }, validate(p, ctx), describe(p, ctx), apply(config, ctx, p))"}
+                        </span>
+                      </div>
+                      <button
+                        class="text-[11px] font-mono bg-surface-container hover:bg-surface-container-high text-secondary border border-secondary/40 px-2.5 py-1 rounded-lg cursor-pointer"
+                        onclick={{
+                          let d_name = draft_name.clone();
+                          let d_desc = draft_desc.clone();
+                          let d_cat = draft_category.clone();
+                          let d_icon = draft_icon.clone();
+                          let d_cond = draft_condition.clone();
+                          let d_lua = draft_lua.clone();
+                          let tpls_c = templates_list.clone();
+                          Callback::from(move |_| {
+                            if let Some(c_tpl) = tpls_c.iter().find(|t| t.id == "custom_blank_rule") {
+                              d_name.set(c_tpl.name.clone());
+                              d_desc.set(c_tpl.description.clone());
+                              d_cat.set(c_tpl.category.clone());
+                              d_icon.set(c_tpl.icon.clone());
+                              d_cond.set(c_tpl.condition_expr.clone());
+                              d_lua.set(c_tpl.lua_code.clone());
+                            }
+                          })
+                        }}
+                      >
+                        {"↺ Reset to Pre-Populated Bootstrap Template"}
+                      </button>
+                    </div>
+                    <p class="text-xs text-on-surface-variant font-mono">
+                      {"The script below is pre-populated with 4 example parameters (enum, temperature range, speed multiplier range, and boolean flag), a Lua cross-parameter validate(p, ctx) guard, a dynamic describe(p, ctx) helper, and apply(config, ctx, p). Edit or add entries in params = { ... } below and the parameter cards + validation checks will update live!"}
+                    </p>
+                  </div>
+                }
               } else {
                 // Curated Preset Templates Mode
                 html! {
@@ -1814,82 +1994,316 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                 </div>
               </div>
 
-              // Step 3: Lua Code Editor
-              <div class="flex flex-col gap-1">
-                <label class="text-[11px] font-mono uppercase text-on-surface-variant font-bold">
-                  {"5. Lua Transformation Script (function apply(config, ctx) ... end):"}
-                </label>
-                <div class="bg-surface-container-lowest p-space-md rounded-lg border border-outline-variant">
-                  <textarea
-                    class="w-full h-44 bg-transparent text-on-surface font-mono text-xs focus:outline-none resize-y leading-relaxed"
-                    value={(*draft_lua).clone()}
-                    oninput={
-                      let d_lua = draft_lua.clone();
-                      Callback::from(move |e: InputEvent| {
-                        if let Some(el) = e.target_dyn_into::<web_sys::HtmlTextAreaElement>() {
-                          d_lua.set(el.value());
+              // Step 3: Lua Code Editor & Generalized Lua Parameter Validation
+              {{
+                let draft_ctx = serde_json::json!({ "scope": (*draft_condition).clone() });
+                let draft_spec_res = crate::lua_engine::extract_lua_rule_spec(&draft_lua);
+                let draft_validation_res = crate::lua_engine::validate_lua_rule_params(
+                  &draft_lua,
+                  &std::collections::HashMap::new(),
+                  &draft_ctx,
+                );
+                let is_valid = draft_validation_res.is_ok();
+                let validation_err_msg = draft_validation_res.err();
+
+                html! {
+                  <>
+                    // If user is in Custom / Preset / Visual mode and the Lua script defines `params = { ... }`,
+                    // render dynamic parameter controls directly from the Lua spec!
+                    {if !is_cal_mode {
+                      if let Ok(spec) = &draft_spec_res {
+                        if !spec.params.is_empty() {
+                          let resolved_map = crate::lua_engine::resolve_lua_rule_params(
+                            spec,
+                            &std::collections::HashMap::new(),
+                          );
+                          html! {
+                            <div class="flex flex-col gap-space-sm bg-surface-container-lowest p-space-md rounded-xl border border-secondary/50">
+                              <div class="flex items-center justify-between flex-wrap gap-2">
+                                <span class="text-xs font-mono uppercase text-secondary font-bold">
+                                  {format!("🎛️ Custom Lua Parameter Specifier ({} parameter(s) declared in params = {{ ... }}):", spec.params.len())}
+                                </span>
+                                <span class="text-[10px] font-mono text-on-surface-variant">
+                                  {if spec.has_validate_fn {
+                                    "Protected by schema bounds + Lua validate(params, ctx)"
+                                  } else {
+                                    "Protected by Lua parameter range / enum schema bounds"
+                                  }}
+                                </span>
+                              </div>
+                              <div class="grid grid-cols-1 md:grid-cols-2 gap-space-sm">
+                                {for spec.params.iter().map(|p_spec| {
+                                  let p_id = p_spec.id.clone();
+                                  let cur_v = resolved_map
+                                    .get(&p_spec.id)
+                                    .cloned()
+                                    .unwrap_or_else(|| p_spec.default_value.clone());
+                                  let kind_str = match &p_spec.kind {
+                                    crate::lua_engine::LuaParamKind::Range { min, max, .. } => {
+                                      format!("Range [{} .. {} {}]", min, max, p_spec.unit)
+                                    }
+                                    crate::lua_engine::LuaParamKind::Enum => "Enum".to_string(),
+                                    crate::lua_engine::LuaParamKind::Boolean => "Boolean".to_string(),
+                                    crate::lua_engine::LuaParamKind::Text => "Text".to_string(),
+                                  };
+                                  let d_lua_param = draft_lua.clone();
+                                  let d_name_param = draft_name.clone();
+                                  let d_desc_param = draft_desc.clone();
+                                  let cur_scope_param = (*draft_condition).clone();
+                                  let has_desc_fn = spec.has_describe_fn;
+                                  let spec_params_clone = spec.params.clone();
+                                  let cur_map_base = resolved_map.clone();
+                                  let update_custom_param = move |new_val: String| {
+                                    let mut next_m = cur_map_base.clone();
+                                    crate::lua_engine::apply_lua_param_change_with_sets(
+                                      &spec_params_clone,
+                                      &mut next_m,
+                                      &p_id,
+                                      new_val,
+                                    );
+                                    let updated_src = crate::lua_engine::embed_param_defaults_in_lua(&d_lua_param, &next_m);
+                                    if has_desc_fn {
+                                      let desc_ctx = serde_json::json!({ "scope": cur_scope_param.clone() });
+                                      if let Ok(desc_out) = crate::lua_engine::describe_lua_rule(
+                                        &updated_src,
+                                        &next_m,
+                                        &cur_scope_param,
+                                        &desc_ctx,
+                                      ) {
+                                        if let Some(t) = desc_out.title {
+                                          d_name_param.set(t);
+                                        }
+                                        if let Some(d) = desc_out.description {
+                                          d_desc_param.set(d);
+                                        }
+                                      }
+                                    }
+                                    d_lua_param.set(updated_src);
+                                  };
+                                  let ucp_in = update_custom_param.clone();
+                                  let ucp_slider = update_custom_param.clone();
+                                  html! {
+                                    <div class="bg-surface-container p-space-sm rounded-lg border border-outline-variant flex flex-col gap-1.5">
+                                      <div class="flex items-center justify-between gap-2">
+                                        <span class="text-xs font-bold text-on-surface">{&p_spec.label}</span>
+                                        <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-container-highest text-secondary">{kind_str}</span>
+                                      </div>
+                                      <span class="text-[11px] text-on-surface-variant">{&p_spec.description}</span>
+                                      {if let crate::lua_engine::LuaParamKind::Range { min, max, step } = &p_spec.kind {
+                                        let step_val = step.unwrap_or(1.0);
+                                        let cur_num = cur_v.trim().parse::<f64>().unwrap_or(*min);
+                                        let dial_readout = if p_spec.unit == "°C" {
+                                          let f_val = (cur_num * 1.8 + 32.0).round() as i64;
+                                          format!("{} °C ({}°F)", cur_v, f_val)
+                                        } else if p_spec.unit.is_empty() {
+                                          cur_v.clone()
+                                        } else {
+                                          format!("{} {}", cur_v, p_spec.unit)
+                                        };
+                                        html! {
+                                          <div class="flex flex-col gap-1 bg-surface-container-lowest p-2 rounded-lg border border-secondary/40">
+                                            <div class="flex items-center justify-between text-[10px] font-mono">
+                                              <span class="text-on-surface-variant">{format!("{}{}", min, &p_spec.unit)}</span>
+                                              <span class="text-secondary font-bold">{format!("🎛️ {}", dial_readout)}</span>
+                                              <span class="text-on-surface-variant">{format!("{}{}", max, &p_spec.unit)}</span>
+                                            </div>
+                                            <input
+                                              type="range"
+                                              min={min.to_string()}
+                                              max={max.to_string()}
+                                              step={step_val.to_string()}
+                                              value={cur_v.clone()}
+                                              class="w-full accent-secondary cursor-pointer"
+                                              oninput={Callback::from(move |e: InputEvent| {
+                                                if let Some(el) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                                                  ucp_slider(el.value());
+                                                }
+                                              })}
+                                            />
+                                          </div>
+                                        }
+                                      } else {
+                                        html! {}
+                                      }}
+                                      <div class="flex flex-wrap gap-1">
+                                        {for p_spec.options.iter().map(|(ov, ol)| {
+                                          let picked = cur_v == *ov;
+                                          let ov_c = ov.clone();
+                                          let ucp_btn = update_custom_param.clone();
+                                          html! {
+                                            <button
+                                              class={format!(
+                                                "text-[10px] font-mono px-2 py-0.5 rounded border cursor-pointer {}",
+                                                if picked {
+                                                  "bg-secondary text-on-secondary border-secondary font-bold"
+                                                } else {
+                                                  "bg-surface-container-lowest text-on-surface border-outline-variant"
+                                                }
+                                              )}
+                                              onclick={Callback::from(move |_| ucp_btn(ov_c.clone()))}
+                                            >
+                                              {ol}
+                                            </button>
+                                          }
+                                        })}
+                                      </div>
+                                      <div class="flex items-center gap-2 pt-1 border-t border-outline-variant/40">
+                                        <span class="text-[10px] font-mono text-on-surface-variant">{"Value:"}</span>
+                                        <input
+                                          type="text"
+                                          class="w-28 bg-surface-container-lowest border border-outline-variant rounded px-2 py-0.5 text-xs font-mono text-on-surface"
+                                          value={cur_v}
+                                          oninput={Callback::from(move |e: InputEvent| {
+                                            if let Some(el) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                                              ucp_in(el.value());
+                                            }
+                                          })}
+                                        />
+                                        <span class="text-[10px] font-mono text-tertiary">{&p_spec.unit}</span>
+                                      </div>
+                                    </div>
+                                  }
+                                })}
+                              </div>
+                            </div>
+                          }
+                        } else {
+                          html! {}
                         }
-                      })
-                    }
-                  />
-                </div>
-              </div>
+                      } else {
+                        html! {}
+                      }
+                    } else {
+                      html! {}
+                    }}
 
-              <div class="flex items-center justify-end gap-space-sm">
-                <button
-                  class="px-space-md py-2 rounded-lg text-xs font-mono text-on-surface-variant hover:text-on-surface border border-outline-variant cursor-pointer"
-                  onclick={
-                    let src = show_rule_creator.clone();
-                    Callback::from(move |_| src.set(false))
-                  }
-                >
-                  {"Cancel"}
-                </button>
-                <button
-                  class="flex items-center gap-1.5 bg-primary text-on-primary hover:bg-primary/90 px-space-lg py-2 rounded-lg text-xs font-mono font-bold shadow-md cursor-pointer"
-                  onclick={
-                    let cb_create = props.on_create_rule.clone();
-                    let src = show_rule_creator.clone();
-                    let sel_state = selected_rule_id.clone();
-                    let name_val = (*draft_name).clone();
-                    let desc_val = (*draft_desc).clone();
-                    let cat_val = (*draft_category).clone();
-                    let icon_val = (*draft_icon).clone();
-                    let cond_val = (*draft_condition).clone();
-                    let lua_val = (*draft_lua).clone();
-                    let cur_rules = ordered_rules.clone();
-                    let next_num = cur_rules.len() + 1;
+                    // Live Lua Validation Status Banner
+                    {if let Some(err_text) = validation_err_msg {
+                      html! {
+                        <div class="bg-error-container/25 border-2 border-error text-error p-space-md rounded-xl font-mono text-xs flex items-center justify-between gap-2">
+                          <div class="flex items-center gap-2">
+                            <span class="material-symbols-outlined text-lg">{"error"}</span>
+                            <div class="flex flex-col">
+                              <span class="font-bold uppercase text-[11px]">
+                                {"Lua Parameter Validation Failed — Saving Blocked Until Fixed"}
+                              </span>
+                              <span>{err_text}</span>
+                            </div>
+                          </div>
+                          <span class="bg-error text-on-error px-2 py-0.5 rounded text-[10px] font-bold shrink-0">
+                            {"INVALID PARAMETERS"}
+                          </span>
+                        </div>
+                      }
+                    } else {
+                      html! {
+                        <div class="bg-tertiary/10 border border-tertiary/40 text-tertiary px-space-md py-2 rounded-lg font-mono text-xs flex items-center justify-between">
+                          <span>{"✅ Lua Parameter Specifier & validate(params, ctx) Passed"}</span>
+                          <span class="text-[10px] text-on-surface-variant">{"Ready to save to transformation stack"}</span>
+                        </div>
+                      }
+                    }}
 
-                    Callback::from(move |_| {
-                      let slug: String = name_val
-                        .chars()
-                        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
-                        .collect::<String>()
-                        .trim_matches('_')
-                        .to_string();
-                      let rule_id = format!("user_{}_{}", if slug.is_empty() { "rule" } else { &slug }, next_num);
-                      let append_prio = cur_rules.last().map(|r| r.priority + 10).unwrap_or(10);
-                      let new_rule = TransformationRule {
-                        id: rule_id.clone(),
-                        name: name_val.clone(),
-                        description: desc_val.clone(),
-                        category: cat_val.clone(),
-                        icon: icon_val.clone(),
-                        enabled: true,
-                        condition_expr: cond_val.clone(),
-                        lua_code: lua_val.clone(),
-                        priority: append_prio,
-                      };
-                      cb_create.emit(new_rule);
-                      sel_state.set(rule_id);
-                      src.set(false);
-                    })
-                  }
-                >
-                  <span class="material-symbols-outlined text-[16px]">{"check_circle"}</span>
-                  {"Add Rule to Transformation Stack"}
-                </button>
-              </div>
+                    <div class="flex flex-col gap-1">
+                      <label class="text-[11px] font-mono uppercase text-on-surface-variant font-bold">
+                        {"5. Lua Transformation Script (params = { ... }, validate(params, ctx), apply(config, ctx, params)):"}
+                      </label>
+                      <div class="bg-surface-container-lowest p-space-md rounded-lg border border-outline-variant">
+                        <textarea
+                          class="w-full h-44 bg-transparent text-on-surface font-mono text-xs focus:outline-none resize-y leading-relaxed"
+                          value={(*draft_lua).clone()}
+                          oninput={
+                            let d_lua = draft_lua.clone();
+                            Callback::from(move |e: InputEvent| {
+                              if let Some(el) = e.target_dyn_into::<web_sys::HtmlTextAreaElement>() {
+                                d_lua.set(el.value());
+                              }
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-end gap-space-sm">
+                      <button
+                        class="px-space-md py-2 rounded-lg text-xs font-mono text-on-surface-variant hover:text-on-surface border border-outline-variant cursor-pointer"
+                        onclick={
+                          let src = show_rule_creator.clone();
+                          Callback::from(move |_| src.set(false))
+                        }
+                      >
+                        {"Cancel"}
+                      </button>
+                      <button
+                        disabled={!is_valid}
+                        class={format!(
+                          "flex items-center gap-1.5 px-space-lg py-2 rounded-lg text-xs font-mono font-bold shadow-md {}",
+                          if is_valid {
+                            "bg-primary text-on-primary hover:bg-primary/90 cursor-pointer"
+                          } else {
+                            "bg-surface-container-highest text-on-surface-variant opacity-50 cursor-not-allowed"
+                          }
+                        )}
+                        onclick={
+                          let cb_create = props.on_create_rule.clone();
+                          let src = show_rule_creator.clone();
+                          let sel_state = selected_rule_id.clone();
+                          let name_val = (*draft_name).clone();
+                          let desc_val = (*draft_desc).clone();
+                          let cat_val = (*draft_category).clone();
+                          let icon_val = (*draft_icon).clone();
+                          let cond_val = (*draft_condition).clone();
+                          let lua_val = (*draft_lua).clone();
+                          let cur_rules = ordered_rules.clone();
+                          let next_num = cur_rules.len() + 1;
+
+                          Callback::from(move |_| {
+                            let check_ctx = serde_json::json!({ "scope": cond_val.clone() });
+                            if crate::lua_engine::validate_lua_rule_params(
+                              &lua_val,
+                              &std::collections::HashMap::new(),
+                              &check_ctx,
+                            )
+                            .is_err()
+                            {
+                              return;
+                            }
+                            let slug: String = name_val
+                              .chars()
+                              .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                              .collect::<String>()
+                              .trim_matches('_')
+                              .to_string();
+                            let rule_id = format!("user_{}_{}", if slug.is_empty() { "rule" } else { &slug }, next_num);
+                            let append_prio = cur_rules.last().map(|r| r.priority + 10).unwrap_or(10);
+                            let new_rule = TransformationRule {
+                              id: rule_id.clone(),
+                              name: name_val.clone(),
+                              description: desc_val.clone(),
+                              category: cat_val.clone(),
+                              icon: icon_val.clone(),
+                              enabled: true,
+                              condition_expr: cond_val.clone(),
+                              lua_code: lua_val.clone(),
+                              priority: append_prio,
+                            };
+                            cb_create.emit(new_rule);
+                            sel_state.set(rule_id);
+                            src.set(false);
+                          })
+                        }
+                      >
+                        <span class="material-symbols-outlined text-[16px]">{"check_circle"}</span>
+                        {if is_valid {
+                          "Add Rule to Transformation Stack"
+                        } else {
+                          "Fix Invalid Parameters to Save Rule"
+                        }}
+                      </button>
+                    </div>
+                  </>
+                }
+              }}
             </div>
           }
         } else {
@@ -2220,6 +2634,13 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
         let rule_id = rule.id.clone();
         let cb_update = props.on_update_rule_lua.clone();
         let sandbox_check = crate::lua_engine::validate_lua_sandbox_security(&rule.lua_code);
+        let rule_ctx = serde_json::json!({ "scope": rule.condition_expr.clone() });
+        let rule_spec_res = crate::lua_engine::extract_lua_rule_spec(&rule.lua_code);
+        let param_validation_res = crate::lua_engine::validate_lua_rule_params(
+          &rule.lua_code,
+          &std::collections::HashMap::new(),
+          &rule_ctx,
+        );
         let runtime_sec_err = props
           .execution_logs
           .iter()
@@ -2255,6 +2676,169 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                   <span class="material-symbols-outlined text-lg">{"gpp_bad"}</span>
                   <span>{rt_err}</span>
                 </div>
+              }
+            } else if let Err(param_err) = &param_validation_res {
+              html! {
+                <div class="bg-error-container/25 border-2 border-error text-error p-space-md rounded-xl font-mono text-xs flex items-center gap-2">
+                  <span class="material-symbols-outlined text-lg">{"error"}</span>
+                  <span>{format!("Lua Parameter Validation Error: {}", param_err)}</span>
+                </div>
+              }
+            } else {
+              html! {}
+            }}
+
+            // Interactive Parameter Controls for any Rule with a `params = { ... }` Specifier
+            {if let Ok(spec) = &rule_spec_res {
+              if !spec.params.is_empty() {
+                let resolved_map = crate::lua_engine::resolve_lua_rule_params(
+                  spec,
+                  &std::collections::HashMap::new(),
+                );
+                html! {
+                  <div class="bg-surface-container-lowest p-space-md rounded-xl border border-secondary/50 flex flex-col gap-space-sm">
+                    <div class="flex items-center justify-between flex-wrap gap-2">
+                      <span class="text-xs font-mono uppercase text-secondary font-bold">
+                        {format!("🎛️ Rule Parameters ({} declared in params = {{ ... }}):", spec.params.len())}
+                      </span>
+                      <span class="text-[10px] font-mono text-tertiary">
+                        {if spec.has_validate_fn {
+                          "✅ Validated by Lua params schema + validate(params, ctx)"
+                        } else {
+                          "✅ Validated by Lua params range / enum schema"
+                        }}
+                      </span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-space-sm">
+                      {for spec.params.iter().map(|p_spec| {
+                        let p_id = p_spec.id.clone();
+                        let cur_v = resolved_map
+                          .get(&p_spec.id)
+                          .cloned()
+                          .unwrap_or_else(|| p_spec.default_value.clone());
+                        let kind_lbl = match &p_spec.kind {
+                          crate::lua_engine::LuaParamKind::Range { min, max, .. } => {
+                            format!("Range [{} .. {} {}]", min, max, p_spec.unit)
+                          }
+                          crate::lua_engine::LuaParamKind::Enum => "Enum".to_string(),
+                          crate::lua_engine::LuaParamKind::Boolean => "Boolean".to_string(),
+                          crate::lua_engine::LuaParamKind::Text => "Text".to_string(),
+                        };
+                        let rid_p = rule_id.clone();
+                        let cb_p = cb_update.clone();
+                        let base_src = rule.lua_code.clone();
+                        let base_map = resolved_map.clone();
+                        let spec_params_live = spec.params.clone();
+                        let r_ctx = rule_ctx.clone();
+                        let apply_param_edit = move |new_val: String| {
+                          let mut next_m = base_map.clone();
+                          crate::lua_engine::apply_lua_param_change_with_sets(
+                            &spec_params_live,
+                            &mut next_m,
+                            &p_id,
+                            new_val,
+                          );
+                          let candidate_lua = crate::lua_engine::embed_param_defaults_in_lua(&base_src, &next_m);
+                          // Only save if Lua parameter validation passes!
+                          if crate::lua_engine::validate_lua_rule_params(
+                            &candidate_lua,
+                            &std::collections::HashMap::new(),
+                            &r_ctx,
+                          )
+                          .is_ok()
+                          {
+                            cb_p.emit((rid_p.clone(), candidate_lua));
+                          }
+                        };
+                        let ape_in = apply_param_edit.clone();
+                        let ape_slider = apply_param_edit.clone();
+                        html! {
+                          <div class="bg-surface-container p-space-sm rounded-lg border border-outline-variant flex flex-col gap-1.5">
+                            <div class="flex items-center justify-between gap-2">
+                              <span class="text-xs font-bold text-on-surface">{&p_spec.label}</span>
+                              <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-container-highest text-secondary">{kind_lbl}</span>
+                            </div>
+                            <span class="text-[11px] text-on-surface-variant">{&p_spec.description}</span>
+                            {if let crate::lua_engine::LuaParamKind::Range { min, max, step } = &p_spec.kind {
+                              let step_val = step.unwrap_or(1.0);
+                              let cur_num = cur_v.trim().parse::<f64>().unwrap_or(*min);
+                              let dial_readout = if p_spec.unit == "°C" {
+                                let f_val = (cur_num * 1.8 + 32.0).round() as i64;
+                                format!("{} °C ({}°F)", cur_v, f_val)
+                              } else if p_spec.unit.is_empty() {
+                                cur_v.clone()
+                              } else {
+                                format!("{} {}", cur_v, p_spec.unit)
+                              };
+                              html! {
+                                <div class="flex flex-col gap-1 bg-surface-container-lowest p-2 rounded-lg border border-secondary/40">
+                                  <div class="flex items-center justify-between text-[10px] font-mono">
+                                    <span class="text-on-surface-variant">{format!("{}{}", min, &p_spec.unit)}</span>
+                                    <span class="text-secondary font-bold">{format!("🎛️ {}", dial_readout)}</span>
+                                    <span class="text-on-surface-variant">{format!("{}{}", max, &p_spec.unit)}</span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min={min.to_string()}
+                                    max={max.to_string()}
+                                    step={step_val.to_string()}
+                                    value={cur_v.clone()}
+                                    class="w-full accent-secondary cursor-pointer"
+                                    oninput={Callback::from(move |e: InputEvent| {
+                                      if let Some(el) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                                        ape_slider(el.value());
+                                      }
+                                    })}
+                                  />
+                                </div>
+                              }
+                            } else {
+                              html! {}
+                            }}
+                            <div class="flex flex-wrap gap-1">
+                              {for p_spec.options.iter().map(|(ov, ol)| {
+                                let picked = cur_v == *ov;
+                                let ov_c = ov.clone();
+                                let ape_btn = apply_param_edit.clone();
+                                html! {
+                                  <button
+                                    class={format!(
+                                      "text-[10px] font-mono px-2 py-0.5 rounded border cursor-pointer {}",
+                                      if picked {
+                                        "bg-secondary text-on-secondary border-secondary font-bold"
+                                      } else {
+                                        "bg-surface-container-lowest text-on-surface border-outline-variant"
+                                      }
+                                    )}
+                                    onclick={Callback::from(move |_| ape_btn(ov_c.clone()))}
+                                  >
+                                    {ol}
+                                  </button>
+                                }
+                              })}
+                            </div>
+                            <div class="flex items-center gap-2 pt-1 border-t border-outline-variant/40">
+                              <span class="text-[10px] font-mono text-on-surface-variant">{"Value:"}</span>
+                              <input
+                                type="text"
+                                class="w-28 bg-surface-container-lowest border border-outline-variant rounded px-2 py-0.5 text-xs font-mono text-on-surface"
+                                value={cur_v}
+                                onchange={Callback::from(move |e: Event| {
+                                  if let Some(el) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                                    ape_in(el.value());
+                                  }
+                                })}
+                              />
+                              <span class="text-[10px] font-mono text-tertiary">{&p_spec.unit}</span>
+                            </div>
+                          </div>
+                        }
+                      })}
+                    </div>
+                  </div>
+                }
+              } else {
+                html! {}
               }
             } else {
               html! {}
@@ -2854,6 +3438,25 @@ pub fn render_issue_illustration(issue_id: &str, compact: bool) -> Html {
         <line x1="284" y1="58" x2="400" y2="58" stroke="#8be9fd" stroke-width="2" opacity="0.65"/>
         <text x="342" y="48" fill="#f1fa8c" font-size="7.5" font-family="monospace" text-anchor="middle">💎 Homogeneous Fused Glass</text>
         <text x="342" y="88" fill="#50fa7b" font-size="8.5" font-family="monospace" text-anchor="middle">Parallel 0° Aligned • +5% Over-Pack • 0% Fan</text>
+      "##,
+    ),
+    "sym_weather_climate" => (
+      "DEFECT: Tropical Humidity Stringing & Cold-Room Warping",
+      r##"
+        <rect x="34" y="20" width="132" height="52" rx="4" fill="#2c354d" stroke="#ff5555" stroke-width="1.5"/>
+        <line x1="52" y1="30" x2="148" y2="36" stroke="#ff6b6b" stroke-width="1.2" stroke-dasharray="3,2"/>
+        <line x1="52" y1="42" x2="148" y2="38" stroke="#ff6b6b" stroke-width="1.2" stroke-dasharray="2,2"/>
+        <path d="M 38 70 Q 65 56 100 68 Q 135 56 162 70" stroke="#ffb86c" stroke-width="2.5" fill="none"/>
+        <text x="100" y="54" fill="#ff8080" font-size="7.5" font-family="monospace" text-anchor="middle">🌴 80% RH Steam Ooze • ❄️ &lt;18°C Corner Lift</text>
+        <text x="100" y="88" fill="#ff8080" font-size="8.5" font-family="monospace" text-anchor="middle">Tropical Heat Creep/Strings vs Cold Draft Warping</text>
+      "##,
+      "FIX: Temp & Humidity Dials (Tropical / Hot / Cold / Humid)",
+      r##"
+        <rect x="274" y="20" width="136" height="52" rx="4" fill="#1e2738" stroke="#50fa7b" stroke-width="2"/>
+        <text x="342" y="37" fill="#50fa7b" font-size="8" font-family="monospace" text-anchor="middle">🌴 Tropical: -15% MVS • Spiral Z • Wipe</text>
+        <text x="342" y="51" fill="#8be9fd" font-size="8" font-family="monospace" text-anchor="middle">❄️ Cold: 0% Exhaust • +5°C Bed • Brim</text>
+        <text x="342" y="64" fill="#f1fa8c" font-size="7.5" font-family="monospace" text-anchor="middle">🎛️ Ambient °C &amp; % RH Dials</text>
+        <text x="342" y="88" fill="#50fa7b" font-size="8.5" font-family="monospace" text-anchor="middle">Auto-Tunes PLA, Silk, PETG, TPU, ABS/ASA &amp; PA/PC</text>
       "##,
     ),
     _ => (

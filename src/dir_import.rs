@@ -456,6 +456,9 @@ pub fn import_scanned_directory(
       ],
       notes: String::new(),
       source_disk_profile: Some(rel_path.clone()),
+      climate_preset: "temperate".to_string(),
+      ambient_temp_c: 22,
+      humidity_pct: 45,
     };
     let (_, hrc) = rig.orca_machine_nozzle_type_and_hrc();
     rig.nozzle_hrc = hrc;

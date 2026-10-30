@@ -61,10 +61,28 @@ pub struct MachineRig {
   pub source_disk_profile: Option<String>,
   #[serde(default)]
   pub notes: String,
+  #[serde(default = "default_climate_preset")]
+  pub climate_preset: String, // "temperate", "tropical", "hot_dry", "cold_dry", "cold_humid", "custom"
+  #[serde(default = "default_ambient_temp_c")]
+  pub ambient_temp_c: i32, // e.g. 22°C temperate, 30°C tropical, 33°C hot_dry, 14°C cold_dry, 15°C cold_humid
+  #[serde(default = "default_humidity_pct")]
+  pub humidity_pct: i32, // e.g. 45% RH temperate, 80% RH tropical/cold_humid, 20-25% RH dry
 }
 
 fn default_nozzle_hrc() -> u32 {
   55
+}
+
+fn default_climate_preset() -> String {
+  "temperate".to_string()
+}
+
+fn default_ambient_temp_c() -> i32 {
+  22
+}
+
+fn default_humidity_pct() -> i32 {
+  45
 }
 
 fn default_spool_nozzle_type() -> String {
@@ -317,8 +335,9 @@ impl MachineRig {
     } else {
       self.addons.join(", ")
     };
+    let climate_note = self.climate_summary_badge();
     format!(
-      "[OrcaSlicer WebConfig Machine] {} ({}, {}). Nozzle: {}mm {} [Orca nozzle_type={}, nozzle_hrc={}] ({}; Max Flow: {}, Retract: {:.2}mm, Melt-Zone Mult: {:.2}x). Add-Ons: {}.",
+      "[OrcaSlicer WebConfig Machine] {} ({}, {}). Nozzle: {}mm {} [Orca nozzle_type={}, nozzle_hrc={}] ({}; Max Flow: {}, Retract: {:.2}mm, Melt-Zone Mult: {:.2}x). Add-Ons: {}. Weather: {}.",
       self.printer_model,
       self.kinematics,
       self.bed_size,
@@ -330,7 +349,91 @@ impl MachineRig {
       self.max_volumetric_flow,
       self.base_retraction_length,
       self.melt_zone_multiplier,
-      addons_note
+      addons_note,
+      climate_note
+    )
+  }
+
+  /// Returns true if the active nozzle / hotend / add-ons use a MicroSwiss, FlowTech, Diamondback PCD,
+  /// TwinClad XT, CM2, or CHT high-conductivity / low-friction heat-creep-resistant architecture.
+  pub fn is_heat_creep_resistant_nozzle(&self) -> bool {
+    let nt = self.nozzle_type.to_lowercase();
+    let nm = self.nozzle_material.to_lowercase();
+    let he = self.hotend.to_lowercase();
+    let addons = self.addons.join(" ").to_lowercase();
+    nt.contains("microswiss")
+      || nm.contains("microswiss")
+      || nm.contains("twinclad")
+      || nt.contains("cm2")
+      || nm.contains("cm2")
+      || he.contains("microswiss")
+      || he.contains("flowtech")
+      || addons.contains("flowtech")
+      || addons.contains("microswiss")
+      || nt.contains("diamondback")
+      || nm.contains("diamondback")
+      || nt.contains("cht")
+      || nm.contains("cht")
+  }
+
+  /// Apply a named weather preset ("temperate", "tropical", "hot_dry", "cold_dry", "cold_humid")
+  /// and snap `ambient_temp_c` and `humidity_pct` accordingly.
+  pub fn apply_weather_preset(&mut self, preset: &str) {
+    self.climate_preset = preset.to_string();
+    match preset {
+      "tropical" => {
+        self.ambient_temp_c = 30;
+        self.humidity_pct = 80;
+      }
+      "hot_dry" => {
+        self.ambient_temp_c = 33;
+        self.humidity_pct = 20;
+      }
+      "cold_dry" => {
+        self.ambient_temp_c = 14;
+        self.humidity_pct = 25;
+      }
+      "cold_humid" => {
+        self.ambient_temp_c = 15;
+        self.humidity_pct = 80;
+      }
+      "temperate" => {
+        self.ambient_temp_c = 22;
+        self.humidity_pct = 45;
+      }
+      _ => {}
+    }
+  }
+
+  /// Update ambient temperature and relative humidity dials directly and set preset to `"custom"`
+  /// unless the values match a standard preset.
+  pub fn apply_weather_dials(&mut self, temp_c: i32, rh_pct: i32) {
+    self.ambient_temp_c = temp_c.clamp(8, 40);
+    self.humidity_pct = rh_pct.clamp(10, 95);
+    self.climate_preset = match (self.ambient_temp_c, self.humidity_pct) {
+      (22, 45) => "temperate".to_string(),
+      (30, 80) => "tropical".to_string(),
+      (33, 20) => "hot_dry".to_string(),
+      (14, 25) => "cold_dry".to_string(),
+      (15, 80) => "cold_humid".to_string(),
+      _ => "custom".to_string(),
+    };
+  }
+
+  /// Human-readable badge summarizing the rig's active ambient weather & heat-creep posture.
+  pub fn climate_summary_badge(&self) -> String {
+    let label = match self.climate_preset.as_str() {
+      "tropical" => "🌴 Tropical (Hot & Humid)",
+      "hot_dry" => "☀️ Hot & Dry",
+      "cold_dry" => "❄️ Cold & Dry",
+      "cold_humid" => "🌧️ Cold & Humid",
+      "custom" => "🎛️ Custom Dials",
+      _ => "🌤️ Temperate Baseline",
+    };
+    let temp_f = ((self.ambient_temp_c as f64) * 9.0 / 5.0 + 32.0).round() as i32;
+    format!(
+      "{} ({}°C / {}°F, {}% RH)",
+      label, self.ambient_temp_c, temp_f, self.humidity_pct
     )
   }
 
@@ -377,6 +480,9 @@ impl MachineRig {
         "user/434139/machine/Anycubic Kobra S1 0.4 nozzle - png.json".to_string(),
       ),
       notes: String::new(),
+      climate_preset: "temperate".to_string(),
+      ambient_temp_c: 22,
+      humidity_pct: 45,
     };
     rig.notes = rig.generate_descriptive_notes();
     rig
@@ -414,6 +520,9 @@ impl MachineRig {
         "user/434139/machine/Anycubic Kobra S1 -NewStartcode V4 -0.4n -Next.json".to_string(),
       ),
       notes: String::new(),
+      climate_preset: "temperate".to_string(),
+      ambient_temp_c: 22,
+      humidity_pct: 45,
     };
     rig.notes = rig.generate_descriptive_notes();
     rig
@@ -454,6 +563,9 @@ impl MachineRig {
       ],
       source_disk_profile: None,
       notes: String::new(),
+      climate_preset: "temperate".to_string(),
+      ambient_temp_c: 22,
+      humidity_pct: 45,
     };
     tpl_diamond.refresh_title_and_notes(true);
 
@@ -482,6 +594,9 @@ impl MachineRig {
       applied_transformations: vec!["Volumetric Speed Ceiling Rule".to_string()],
       source_disk_profile: None,
       notes: String::new(),
+      climate_preset: "temperate".to_string(),
+      ambient_temp_c: 22,
+      humidity_pct: 45,
     };
     tpl_k3.refresh_title_and_notes(true);
 

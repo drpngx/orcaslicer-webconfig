@@ -280,9 +280,10 @@ pub fn App() -> Html {
 
   let all_filament_types: Vec<String> = filaments.iter().map(|s| s.material_type.clone()).collect();
 
-  // Context for Lua Evaluation (includes rig addons & flush_multiplier!)
+  // Context for Lua Evaluation (includes rig addons, hotend, weather & flush_multiplier!)
   let eval_context = serde_json::json!({
     "printer_model": active_rig.printer_model,
+    "hotend": active_rig.hotend,
     "nozzle_type": active_rig.nozzle_type,
     "nozzle_material": active_rig.nozzle_material,
     "nozzle_diameter": active_rig.nozzle_diameter,
@@ -295,6 +296,9 @@ pub fn App() -> Html {
     "filament_type": *active_filament_type,
     "all_filament_types": all_filament_types,
     "addons": active_rig.addons,
+    "climate_preset": active_rig.climate_preset,
+    "ambient_temp_c": active_rig.ambient_temp_c,
+    "humidity_pct": active_rig.humidity_pct,
     "slots": slots_json,
   });
 
@@ -1252,6 +1256,14 @@ pub fn App() -> Html {
                 .to_string(),
             ));
           }
+          "cm2" | "microswiss_cm2" => {
+            m.nozzle_material = "MicroSwiss CM2 (Copper + M2 HSS)".to_string();
+            m.nozzle_name = format!("MicroSwiss CM2 Hardened Tip {}0mm", m.nozzle_diameter);
+            toast.set(Some(
+              "Installed MicroSwiss CM2™ Nozzle (Copper Core + M2 HSS Tip, HRC 55): 0°C copper conductivity + 0.60mm retract applied!"
+                .to_string(),
+            ));
+          }
           _ => {
             m.nozzle_material = "Bi-Metal CHT".to_string();
             m.nozzle_name = format!("Bi-Metal CHT High-Flow {}0mm", m.nozzle_diameter);
@@ -1267,6 +1279,7 @@ pub fn App() -> Html {
           &m.nozzle_material,
           m.ace_pro_units,
         );
+        TransformationEngine::sync_weather_rule_for_rig(&mut r_list, m);
         let (_, mach_hrc) = m.orca_machine_nozzle_type_and_hrc();
         m.nozzle_hrc = mach_hrc;
         m.refresh_title_and_notes(m.source_disk_profile.is_none());
@@ -1311,6 +1324,8 @@ pub fn App() -> Html {
       let mut proc_list = (*processes).clone();
       if let Some(p) = proc_list.iter_mut().find(|p| p.id == *active_process_id) {
         p.line_width = match new_diam.as_str() {
+          "0.2" => 0.22,
+          "0.25" => 0.26,
           "0.6" => 0.62,
           "0.8" => 0.84,
           _ => 0.42,
@@ -1347,6 +1362,34 @@ pub fn App() -> Html {
         "Single ACE Pro (4 Slots / up to 4×4 Flushing Matrix)"
       };
       toast.set(Some(format!("Switched multi-material bank to {}!", label)));
+    })
+  };
+
+  let on_change_weather = {
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let rules = rules.clone();
+    let toast = toast_message.clone();
+
+    Callback::from(move |(preset, temp_c, rh_pct): (String, i32, i32)| {
+      let mut mach_list = (*machines).clone();
+      let mut r_list = (*rules).clone();
+      if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
+        if preset == "custom" {
+          m.apply_weather_dials(temp_c, rh_pct);
+        } else {
+          m.apply_weather_preset(&preset);
+        }
+        m.refresh_title_and_notes(m.source_disk_profile.is_none());
+        TransformationEngine::sync_weather_rule_for_rig(&mut r_list, m);
+        let badge = m.climate_summary_badge();
+        toast.set(Some(format!(
+          "Updated rig weather to {} — relative Weather & Ambient Climate Lua rule synced!",
+          badge
+        )));
+      }
+      machines.set(mach_list);
+      rules.set(r_list);
     })
   };
 
@@ -1482,6 +1525,7 @@ pub fn App() -> Html {
             &m.nozzle_material,
             m.ace_pro_units,
           );
+          TransformationEngine::sync_weather_rule_for_rig(&mut r_list, m);
           for sp in fil_list.iter_mut() {
             sp.recompute_for_nozzle(&m.nozzle_type);
           }
@@ -2659,6 +2703,7 @@ pub fn App() -> Html {
               on_change_nozzle_diameter={on_change_nozzle_diameter}
               on_toggle_addon={on_toggle_addon}
               on_change_ace_units={on_change_ace_units}
+              on_change_weather={on_change_weather}
               on_save_rig_to_vault={on_save_rig_to_vault}
               on_open_bind_modal={on_open_bind_modal}
               active_process={active_proc.clone()}

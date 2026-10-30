@@ -93,6 +93,9 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
   let selected_addons = use_state(Vec::<String>::new);
   let selected_bed_id = use_state(|| "textured_pei".to_string());
   let selected_ams_id = use_state(|| "ace_pro_single".to_string());
+  let climate_preset = use_state(|| "temperate".to_string());
+  let ambient_temp_c = use_state(|| 22i32);
+  let humidity_pct = use_state(|| 45i32);
 
   // Requirement: Default filaments must be EMPTY in the wizard!
   let spool_drafts = use_state(Vec::<WizardSpoolDraft>::new);
@@ -153,6 +156,9 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
     let addons = (*selected_addons).clone();
     let drafts = (*spool_drafts).clone();
     let fil_catalog = catalog.filaments.clone();
+    let c_preset = (*climate_preset).clone();
+    let c_temp = *ambient_temp_c;
+    let c_rh = *humidity_pct;
 
     Callback::from(move |_: MouseEvent| {
       let mut rig = MachineRig {
@@ -184,6 +190,9 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         ],
         notes: String::new(),
         source_disk_profile: None,
+        climate_preset: c_preset.clone(),
+        ambient_temp_c: c_temp,
+        humidity_pct: c_rh,
       };
       let (_, computed_hrc) = rig.orca_machine_nozzle_type_and_hrc();
       rig.nozzle_hrc = computed_hrc;
@@ -611,6 +620,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         &cur_nozzle.material,
         cur_ams.units,
       );
+      TransformationEngine::sync_weather_rule_for_rig(&mut rules, &rig);
       // When starting from scratch, PCTG spools already have Spiral Z-hop, 70% retract-before-wipe,
       // 30 mm/s deretract, and 0.048 PA baked into their base profile, so keep the extra post-print
       // `filament_pctg_antistringing` trim rule disabled unless the user enables it after a retraction test.
@@ -916,6 +926,111 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                     </button>
                   }
                 })}
+              </div>
+
+              // Ambient Weather & Climate Selector in Step 1 (Rig Selection)
+              <div class="flex flex-col gap-space-sm bg-surface-container-low p-space-md rounded-xl border border-primary/40 mt-space-xs">
+                <div class="flex items-center justify-between flex-wrap gap-2">
+                  <div class="flex items-center gap-2">
+                    <span class="material-symbols-outlined text-primary text-base">{"thermostat"}</span>
+                    <span class="text-xs font-bold text-on-surface">
+                      {"Ambient Weather & Room Climate for This Rig (Relative Stackable Lua Rule)"}
+                    </span>
+                  </div>
+                  <span class="bg-primary/15 text-primary border border-primary/40 px-2 py-0.5 rounded text-[11px] font-mono font-bold">
+                    {format!(
+                      "{}°C ({}°F) • {}% RH",
+                      *ambient_temp_c,
+                      ((*ambient_temp_c as f64) * 9.0 / 5.0 + 32.0).round() as i32,
+                      *humidity_pct
+                    )}
+                  </span>
+                </div>
+
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-space-xs">
+                  {for vec![
+                    ("temperate", "🌤️ Temperate", "22°C • 45% RH", 22, 45),
+                    ("tropical", "🌴 Tropical", "30°C • 80% RH", 30, 80),
+                    ("hot_dry", "☀️ Hot & Dry", "33°C • 20% RH", 33, 20),
+                    ("cold_dry", "❄️ Cold & Dry", "14°C • 25% RH", 14, 25),
+                    ("cold_humid", "🌧️ Cold & Humid", "15°C • 80% RH", 15, 80),
+                  ].into_iter().map(|(pid, label, sub, t_c, rh)| {
+                    let active = *climate_preset == pid;
+                    let pid_str = pid.to_string();
+                    let cp = climate_preset.clone();
+                    let at = ambient_temp_c.clone();
+                    let hp = humidity_pct.clone();
+                    html! {
+                      <button
+                        onclick={Callback::from(move |_| {
+                          cp.set(pid_str.clone());
+                          at.set(t_c);
+                          hp.set(rh);
+                        })}
+                        class={format!(
+                          "p-2 rounded-lg border text-left flex flex-col gap-0.5 transition-all cursor-pointer {}",
+                          if active {
+                            "bg-primary/20 border-primary text-primary font-bold"
+                          } else {
+                            "bg-surface-container-lowest border-outline-variant text-on-surface-variant hover:text-on-surface"
+                          }
+                        )}
+                      >
+                        <span class="text-xs font-mono font-bold">{label}</span>
+                        <span class="text-[10px] font-mono text-secondary">{sub}</span>
+                      </button>
+                    }
+                  })}
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-space-sm pt-1">
+                  <div class="flex items-center gap-2 bg-surface-container-lowest px-3 py-1.5 rounded-lg border border-outline-variant/60">
+                    <span class="text-[11px] font-mono font-bold text-on-surface shrink-0">{"🌡️ Temp:"}</span>
+                    <input
+                      type="range"
+                      min="8"
+                      max="40"
+                      step="1"
+                      value={ambient_temp_c.to_string()}
+                      class="w-full accent-primary cursor-pointer h-1.5 rounded-lg bg-surface-container-high"
+                      oninput={
+                        let cp = climate_preset.clone();
+                        let at = ambient_temp_c.clone();
+                        Callback::from(move |e: InputEvent| {
+                          let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+                          if let Ok(v) = input.value().parse::<i32>() {
+                            at.set(v);
+                            cp.set("custom".to_string());
+                          }
+                        })
+                      }
+                    />
+                    <span class="text-[11px] font-mono text-primary font-bold shrink-0">{format!("{}°C", *ambient_temp_c)}</span>
+                  </div>
+                  <div class="flex items-center gap-2 bg-surface-container-lowest px-3 py-1.5 rounded-lg border border-outline-variant/60">
+                    <span class="text-[11px] font-mono font-bold text-on-surface shrink-0">{"💧 Humidity:"}</span>
+                    <input
+                      type="range"
+                      min="10"
+                      max="95"
+                      step="5"
+                      value={humidity_pct.to_string()}
+                      class="w-full accent-secondary cursor-pointer h-1.5 rounded-lg bg-surface-container-high"
+                      oninput={
+                        let cp = climate_preset.clone();
+                        let hp = humidity_pct.clone();
+                        Callback::from(move |e: InputEvent| {
+                          let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+                          if let Ok(v) = input.value().parse::<i32>() {
+                            hp.set(v);
+                            cp.set("custom".to_string());
+                          }
+                        })
+                      }
+                    />
+                    <span class="text-[11px] font-mono text-secondary font-bold shrink-0">{format!("{}% RH", *humidity_pct)}</span>
+                  </div>
+                </div>
               </div>
             </div>
           }

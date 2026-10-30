@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -1063,6 +1064,10 @@ impl LuaEnv {
       "sub".to_string(),
       LuaVal::NativeFn("string.sub".to_string()),
     );
+    str_lib.insert(
+      "find".to_string(),
+      LuaVal::NativeFn("string.find".to_string()),
+    );
     self.set_local("string", LuaVal::Table(Rc::new(RefCell::new(str_lib))));
 
     // math library
@@ -1324,7 +1329,19 @@ impl Interpreter {
         Ok(None)
       }
       Stmt::Return(exprs) => {
-        if let Some(first) = exprs.get(0) {
+        if exprs.len() >= 2 {
+          let first = self.eval_expr(&exprs[0], env.clone())?;
+          let second = self.eval_expr(&exprs[1], env)?;
+          if first == LuaVal::Boolean(false) {
+            let mut map = HashMap::new();
+            map.insert("ok".to_string(), LuaVal::Boolean(false));
+            map.insert("error".to_string(), LuaVal::String(second.to_lua_string()));
+            map.insert("1".to_string(), first);
+            map.insert("2".to_string(), second);
+            return Ok(Some(LuaVal::Table(Rc::new(RefCell::new(map)))));
+          }
+          Ok(Some(first))
+        } else if let Some(first) = exprs.get(0) {
           let val = self.eval_expr(first, env)?;
           Ok(Some(val))
         } else {
@@ -1674,13 +1691,20 @@ impl Interpreter {
               } else {
                 LuaVal::Nil
               }
-            } else if let Ok(n) = trimmed.parse::<f64>() {
+            } else if let Ok(n) = trimmed.trim_start_matches('+').parse::<f64>() {
               LuaVal::Number(n)
             } else {
               let stripped = trimmed
+                .trim_start_matches('+')
+                .trim_end_matches("RH")
+                .trim()
                 .trim_end_matches('%')
+                .trim_end_matches("mm³/s/mm")
+                .trim_end_matches("mm³/s")
                 .trim_end_matches("mm/s")
                 .trim_end_matches("mm")
+                .trim_end_matches("°C")
+                .trim_end_matches('s')
                 .trim();
               match stripped.parse::<f64>() {
                 Ok(n) => LuaVal::Number(n),
@@ -1752,8 +1776,31 @@ impl Interpreter {
           let mut result = String::new();
           let mut arg_idx = 1;
           let mut chars = fmt_str.chars().peekable();
+          let coerce_num = |val_opt: Option<&LuaVal>| -> Option<f64> {
+            match val_opt {
+              Some(LuaVal::Number(n)) => Some(*n),
+              Some(LuaVal::String(s)) => s
+                .trim()
+                .trim_start_matches('+')
+                .trim_end_matches('%')
+                .trim_end_matches("mm/s")
+                .trim_end_matches("mm")
+                .trim_end_matches("°C")
+                .trim_end_matches('s')
+                .trim()
+                .parse::<f64>()
+                .ok(),
+              _ => None,
+            }
+          };
           while let Some(c) = chars.next() {
             if c == '%' {
+              let force_plus = if chars.peek() == Some(&'+') {
+                chars.next();
+                true
+              } else {
+                false
+              };
               if let Some(spec) = chars.next() {
                 match spec {
                   '%' => result.push('%'),
@@ -1766,15 +1813,22 @@ impl Interpreter {
                     arg_idx += 1;
                   }
                   'd' | 'i' => {
-                    if let Some(LuaVal::Number(n)) = args.get(arg_idx) {
-                      result.push_str(&format!("{:.0}", n));
+                    if let Some(n) = coerce_num(args.get(arg_idx)) {
+                      let iv = n.round() as i64;
+                      if force_plus {
+                        result.push_str(&format!("{:+}", iv));
+                      } else {
+                        result.push_str(&format!("{}", iv));
+                      }
+                    } else if force_plus {
+                      result.push_str("+0");
                     } else {
                       result.push_str("0");
                     }
                     arg_idx += 1;
                   }
                   '.' => {
-                    // e.g. %.2f
+                    // e.g. %.2f or %+.2f
                     let mut prec = String::new();
                     while let Some(&p) = chars.peek() {
                       if p.is_ascii_digit() {
@@ -1786,8 +1840,12 @@ impl Interpreter {
                     let spec_end = chars.next().unwrap_or('f');
                     let p: usize = prec.parse::<usize>().unwrap_or(2).min(12);
                     if spec_end == 'f' {
-                      if let Some(LuaVal::Number(n)) = args.get(arg_idx) {
-                        result.push_str(&format!("{:.*}", p, n));
+                      if let Some(n) = coerce_num(args.get(arg_idx)) {
+                        if force_plus {
+                          result.push_str(&format!("{:+.*}", p, n));
+                        } else {
+                          result.push_str(&format!("{:.*}", p, n));
+                        }
                       } else {
                         result.push_str("0.00");
                       }
@@ -1795,8 +1853,12 @@ impl Interpreter {
                     arg_idx += 1;
                   }
                   'f' => {
-                    if let Some(LuaVal::Number(n)) = args.get(arg_idx) {
-                      result.push_str(&format!("{:.2}", n));
+                    if let Some(n) = coerce_num(args.get(arg_idx)) {
+                      if force_plus {
+                        result.push_str(&format!("{:+.2}", n));
+                      } else {
+                        result.push_str(&format!("{:.2}", n));
+                      }
                     } else {
                       result.push_str("0.00");
                     }
@@ -1804,6 +1866,9 @@ impl Interpreter {
                   }
                   _ => {
                     result.push('%');
+                    if force_plus {
+                      result.push('+');
+                    }
                     result.push(spec);
                   }
                 }
@@ -1874,6 +1939,19 @@ impl Interpreter {
           }
         } else {
           Ok(LuaVal::String(String::new()))
+        }
+      }
+      "string.find" => {
+        if let (Some(haystack_val), Some(needle_val)) = (args.get(0), args.get(1)) {
+          let haystack = haystack_val.to_lua_string();
+          let needle = needle_val.to_lua_string().replace("%%", "%");
+          if let Some(pos) = haystack.find(&needle) {
+            Ok(LuaVal::Number((pos + 1) as f64))
+          } else {
+            Ok(LuaVal::Nil)
+          }
+        } else {
+          Ok(LuaVal::Nil)
         }
       }
       "math.min" => {
@@ -1947,8 +2025,653 @@ impl Interpreter {
   }
 }
 
-/// Execute a Lua script that contains an `apply(config, context)` function,
-/// or runs directly at top level.
+/// Generalized parameter type specifier declared inside a Lua transformation rule (`params = { ... }`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LuaParamKind {
+  /// Numeric value constrained within `[min, max]` with an optional UI step.
+  Range {
+    min: f64,
+    max: f64,
+    step: Option<f64>,
+  },
+  /// Discrete choice from an explicit set of `(value, label)` options.
+  Enum,
+  /// Boolean flag (`"true"` / `"false"`).
+  Boolean,
+  /// Freeform string parameter.
+  Text,
+}
+
+/// A single parameter specification extracted from a Lua script's `params` table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LuaParamSpec {
+  pub id: String,
+  pub label: String,
+  pub description: String,
+  pub kind: LuaParamKind,
+  pub default_value: String,
+  pub unit: String,
+  /// Allowed `(value, label)` choices for `Enum`, or quick-select presets for `Range`.
+  pub options: Vec<(String, String)>,
+  /// Optional linked parameter assignments (`option_value -> [(target_param_id, target_value)]`)
+  /// declared via `sets = { ... }` on an option entry (e.g. a climate preset snapping temp & humidity dials).
+  #[serde(default)]
+  pub option_sets: HashMap<String, Vec<(String, String)>>,
+}
+
+/// Optional metadata declared inside a Lua rule (`meta = { ... }`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LuaRuleMeta {
+  pub id: Option<String>,
+  pub name: Option<String>,
+  pub icon: Option<String>,
+  pub category: Option<String>,
+  pub tree_category: Option<String>,
+  pub tree_subcategory: Option<String>,
+  pub slicer_menu_path: Option<String>,
+  pub when_to_run: Option<String>,
+  pub formula_summary: Option<String>,
+  pub default_condition_expr: Option<String>,
+  pub how_to_read_print: Vec<String>,
+  pub hardware_checklist: Vec<String>,
+}
+
+/// Full introspection result for a parameterized Lua transformation script.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LuaRuleSpec {
+  pub meta: LuaRuleMeta,
+  pub params: Vec<LuaParamSpec>,
+  pub configured_params: HashMap<String, String>,
+  pub has_validate_fn: bool,
+  pub has_describe_fn: bool,
+}
+
+/// Dynamic rule description returned by a Lua script's `describe(params, ctx)` function.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LuaRuleDescription {
+  pub title: Option<String>,
+  pub description: Option<String>,
+  pub badge: Option<String>,
+}
+
+fn lua_table_get_str(map: &HashMap<String, LuaVal>, key: &str) -> Option<String> {
+  match map.get(key) {
+    Some(LuaVal::Nil) | None => None,
+    Some(v) => Some(v.to_lua_string()),
+  }
+}
+
+fn lua_table_get_num(map: &HashMap<String, LuaVal>, key: &str) -> Option<f64> {
+  match map.get(key) {
+    Some(LuaVal::Number(n)) => Some(*n),
+    Some(LuaVal::String(s)) => s.trim().parse::<f64>().ok(),
+    _ => None,
+  }
+}
+
+fn lua_table_get_string_list(map: &HashMap<String, LuaVal>, key: &str) -> Vec<String> {
+  if let Some(LuaVal::Table(t)) = map.get(key) {
+    let borrowed = t.borrow();
+    let mut idx = 1usize;
+    let mut out = Vec::new();
+    while let Some(v) = borrowed.get(&idx.to_string()) {
+      if !matches!(v, LuaVal::Nil) {
+        out.push(v.to_lua_string());
+      }
+      idx += 1;
+    }
+    out
+  } else {
+    Vec::new()
+  }
+}
+
+fn parse_lua_param_spec_entry(
+  entry_map: &HashMap<String, LuaVal>,
+  fallback_idx: usize,
+) -> LuaParamSpec {
+  let id = lua_table_get_str(entry_map, "id")
+    .or_else(|| lua_table_get_str(entry_map, "key"))
+    .unwrap_or_else(|| format!("param_{}", fallback_idx));
+  let label = lua_table_get_str(entry_map, "label")
+    .or_else(|| lua_table_get_str(entry_map, "question"))
+    .or_else(|| lua_table_get_str(entry_map, "name"))
+    .unwrap_or_else(|| id.clone());
+  let description = lua_table_get_str(entry_map, "description")
+    .or_else(|| lua_table_get_str(entry_map, "hint"))
+    .unwrap_or_default();
+  let unit = lua_table_get_str(entry_map, "unit").unwrap_or_default();
+  let default_value = lua_table_get_str(entry_map, "default")
+    .or_else(|| lua_table_get_str(entry_map, "default_value"))
+    .unwrap_or_default();
+
+  let mut options = Vec::new();
+  let mut option_sets = HashMap::new();
+  if let Some(LuaVal::Table(opts_tbl)) = entry_map.get("options") {
+    let opts_borrowed = opts_tbl.borrow();
+    let mut i = 1usize;
+    while let Some(opt_val) = opts_borrowed.get(&i.to_string()) {
+      match opt_val {
+        LuaVal::Table(opt_entry) => {
+          let ob = opt_entry.borrow();
+          let val = lua_table_get_str(&ob, "value")
+            .or_else(|| lua_table_get_str(&ob, "1"))
+            .unwrap_or_default();
+          let lbl = lua_table_get_str(&ob, "label")
+            .or_else(|| lua_table_get_str(&ob, "2"))
+            .unwrap_or_else(|| val.clone());
+          if let Some(LuaVal::Table(sets_tbl)) = ob.get("sets") {
+            let sb = sets_tbl.borrow();
+            let mut linked = Vec::new();
+            let mut keys: Vec<String> = sb.keys().cloned().collect();
+            keys.sort();
+            for k in keys {
+              if let Some(v) = sb.get(&k) {
+                if !matches!(v, LuaVal::Nil) {
+                  linked.push((k, v.to_lua_string()));
+                }
+              }
+            }
+            if !linked.is_empty() {
+              option_sets.insert(val.clone(), linked);
+            }
+          }
+          options.push((val, lbl));
+        }
+        other => {
+          let s = other.to_lua_string();
+          options.push((s.clone(), s));
+        }
+      }
+      i += 1;
+    }
+  }
+
+  let raw_type = lua_table_get_str(entry_map, "type")
+    .or_else(|| lua_table_get_str(entry_map, "kind"))
+    .unwrap_or_default()
+    .to_lowercase();
+  let min_opt = lua_table_get_num(entry_map, "min");
+  let max_opt = lua_table_get_num(entry_map, "max");
+  let step_opt = lua_table_get_num(entry_map, "step");
+
+  let kind =
+    if raw_type == "range" || raw_type == "number" || min_opt.is_some() || max_opt.is_some() {
+      LuaParamKind::Range {
+        min: min_opt.unwrap_or(-1_000_000.0),
+        max: max_opt.unwrap_or(1_000_000.0),
+        step: step_opt,
+      }
+    } else if raw_type == "enum"
+      || raw_type == "select"
+      || (!options.is_empty() && raw_type.is_empty())
+    {
+      LuaParamKind::Enum
+    } else if raw_type == "bool" || raw_type == "boolean" {
+      LuaParamKind::Boolean
+    } else {
+      LuaParamKind::Text
+    };
+
+  LuaParamSpec {
+    id,
+    label,
+    description,
+    kind,
+    default_value,
+    unit,
+    options,
+    option_sets,
+  }
+}
+
+/// Parse and evaluate top-level declarations of a Lua rule script to extract `meta`, `params`,
+/// `configured_params`, and whether `validate(params, ctx)` / `describe(params, ctx)` exist.
+pub fn extract_lua_rule_spec(script: &str) -> Result<LuaRuleSpec, String> {
+  validate_lua_sandbox_security(script)?;
+
+  let lexer = Lexer::new(script);
+  let mut parser = Parser::new(lexer)?;
+  let stmts = parser.parse_chunk()?;
+
+  let mut interpreter = Interpreter::new();
+  let env = Rc::new(RefCell::new(LuaEnv::new()));
+
+  let dummy_cfg = LuaVal::from_json(&serde_json::json!({}));
+  let dummy_ctx = LuaVal::from_json(&serde_json::json!({}));
+  env.borrow_mut().set_local("config", dummy_cfg);
+  env.borrow_mut().set_local("ctx", dummy_ctx.clone());
+  env.borrow_mut().set_local("context", dummy_ctx);
+
+  interpreter.eval_chunk(&stmts, env.clone())?;
+
+  let mut spec = LuaRuleSpec::default();
+
+  if let LuaVal::Table(meta_tbl) = env.borrow().get("meta") {
+    let mb = meta_tbl.borrow();
+    spec.meta = LuaRuleMeta {
+      id: lua_table_get_str(&mb, "id"),
+      name: lua_table_get_str(&mb, "name"),
+      icon: lua_table_get_str(&mb, "icon"),
+      category: lua_table_get_str(&mb, "category"),
+      tree_category: lua_table_get_str(&mb, "tree_category"),
+      tree_subcategory: lua_table_get_str(&mb, "tree_subcategory"),
+      slicer_menu_path: lua_table_get_str(&mb, "slicer_menu_path"),
+      when_to_run: lua_table_get_str(&mb, "when_to_run"),
+      formula_summary: lua_table_get_str(&mb, "formula_summary"),
+      default_condition_expr: lua_table_get_str(&mb, "default_condition_expr"),
+      how_to_read_print: lua_table_get_string_list(&mb, "how_to_read_print"),
+      hardware_checklist: lua_table_get_string_list(&mb, "hardware_checklist"),
+    };
+  }
+
+  if let LuaVal::Table(params_tbl) = env.borrow().get("params") {
+    let pb = params_tbl.borrow();
+    let mut idx = 1usize;
+    if pb.contains_key("1") {
+      while let Some(LuaVal::Table(entry_tbl)) = pb.get(&idx.to_string()) {
+        let eb = entry_tbl.borrow();
+        spec.params.push(parse_lua_param_spec_entry(&eb, idx));
+        idx += 1;
+      }
+    } else {
+      let mut keys: Vec<String> = pb.keys().cloned().collect();
+      keys.sort();
+      for (i, k) in keys.into_iter().enumerate() {
+        if let Some(LuaVal::Table(entry_tbl)) = pb.get(&k) {
+          let mut eb = entry_tbl.borrow().clone();
+          eb.entry("id".to_string()).or_insert(LuaVal::String(k));
+          spec.params.push(parse_lua_param_spec_entry(&eb, i + 1));
+        }
+      }
+    }
+  }
+
+  if let LuaVal::Table(cfg_params_tbl) = env.borrow().get("configured_params") {
+    let cb = cfg_params_tbl.borrow();
+    for (k, v) in cb.iter() {
+      if !matches!(v, LuaVal::Nil) {
+        spec.configured_params.insert(k.clone(), v.to_lua_string());
+      }
+    }
+  }
+
+  spec.has_validate_fn = matches!(env.borrow().get("validate"), LuaVal::Function(_, _, _));
+  spec.has_describe_fn = matches!(env.borrow().get("describe"), LuaVal::Function(_, _, _));
+
+  Ok(spec)
+}
+
+/// Resolve the effective parameter map by merging `params` defaults, `configured_params` in the script,
+/// and caller-supplied `param_overrides`.
+pub fn resolve_lua_rule_params(
+  spec: &LuaRuleSpec,
+  param_overrides: &HashMap<String, String>,
+) -> HashMap<String, String> {
+  let mut resolved = HashMap::new();
+  for p in &spec.params {
+    resolved.insert(p.id.clone(), p.default_value.clone());
+  }
+  for (k, v) in &spec.configured_params {
+    resolved.insert(k.clone(), v.clone());
+  }
+  for (k, v) in param_overrides {
+    resolved.insert(k.clone(), v.clone());
+  }
+  for p in &spec.params {
+    if let Some(cur_val) = resolved.get(&p.id).cloned() {
+      if let Some(linked_sets) = p.option_sets.get(&cur_val) {
+        for (target_k, target_v) in linked_sets {
+          let explicitly_set = param_overrides.contains_key(target_k)
+            || (!param_overrides.contains_key(&p.id)
+              && spec.configured_params.contains_key(target_k));
+          if !explicitly_set {
+            resolved.insert(target_k.clone(), target_v.clone());
+          }
+        }
+      }
+    }
+  }
+  resolved
+}
+
+/// Apply a single parameter change to `map`, automatically propagating any `sets = { ... }`
+/// defined on an enum preset option (e.g., selecting `climate_preset = "tropical"` snaps
+/// `ambient_temp_c = "30"` and `humidity_pct = "80"`), OR switching a linked preset parameter
+/// to `"custom"` (or a matching preset) when one of its target dials is adjusted directly.
+pub fn apply_lua_param_change_with_sets(
+  params: &[LuaParamSpec],
+  map: &mut HashMap<String, String>,
+  changed_id: &str,
+  new_val: String,
+) {
+  map.insert(changed_id.to_string(), new_val.clone());
+
+  // 1. If `changed_id` has `option_sets` for `new_val`, snap all linked target parameters
+  if let Some(changed_spec) = params.iter().find(|p| p.id == changed_id) {
+    if let Some(linked) = changed_spec.option_sets.get(&new_val) {
+      for (target_k, target_v) in linked {
+        map.insert(target_k.clone(), target_v.clone());
+      }
+      return;
+    }
+  }
+
+  // 2. Otherwise, check if any other parameter has `option_sets` referencing `changed_id`
+  for p in params {
+    if p.id == changed_id || p.option_sets.is_empty() {
+      continue;
+    }
+    let references_changed = p
+      .option_sets
+      .values()
+      .any(|pairs| pairs.iter().any(|(tk, _)| tk == changed_id));
+    if !references_changed {
+      continue;
+    }
+
+    // Check if the updated map matches one of `p`'s presets
+    let mut matched_preset: Option<String> = None;
+    for (opt_val, _) in &p.options {
+      if let Some(pairs) = p.option_sets.get(opt_val) {
+        if !pairs.is_empty()
+          && pairs.iter().all(|(tk, tv)| {
+            map
+              .get(tk)
+              .map(|cur| cur.trim() == tv.trim())
+              .unwrap_or(false)
+          })
+        {
+          matched_preset = Some(opt_val.clone());
+          break;
+        }
+      }
+    }
+
+    if let Some(preset_val) = matched_preset {
+      map.insert(p.id.clone(), preset_val);
+    } else if p.options.iter().any(|(ov, _)| ov == "custom") {
+      map.insert(p.id.clone(), "custom".to_string());
+    }
+  }
+}
+
+fn parse_numeric_param(raw: &str) -> Option<f64> {
+  let trimmed = raw
+    .trim()
+    .trim_start_matches('+')
+    .trim_end_matches("RH")
+    .trim()
+    .trim_end_matches('%')
+    .trim_end_matches("mm³/s/mm")
+    .trim_end_matches("mm³/s")
+    .trim_end_matches("mm/s")
+    .trim_end_matches("mm")
+    .trim_end_matches("°C")
+    .trim_end_matches('s')
+    .trim();
+  trimmed.parse::<f64>().ok()
+}
+
+/// Validate resolved parameter values against both:
+/// 1. The declarative `params` schema (`Range` min/max bounds, `Enum` allowed options, `Boolean` format)
+/// 2. The Lua script's `validate(params, ctx)` function (for cross-parameter combinations).
+///
+/// Returns `Ok(resolved_params)` if valid, or `Err(human_readable_reason)` if invalid so invalid
+/// combinations cannot be saved or executed.
+pub fn validate_lua_rule_params(
+  script: &str,
+  param_overrides: &HashMap<String, String>,
+  context: &serde_json::Value,
+) -> Result<HashMap<String, String>, String> {
+  let spec = extract_lua_rule_spec(script)?;
+  let resolved = resolve_lua_rule_params(&spec, param_overrides);
+
+  // 1. Declarative schema validation (range / enum / boolean)
+  for param_spec in &spec.params {
+    let val_str = resolved
+      .get(&param_spec.id)
+      .cloned()
+      .unwrap_or_else(|| param_spec.default_value.clone());
+
+    match &param_spec.kind {
+      LuaParamKind::Range { min, max, .. } => {
+        let num = parse_numeric_param(&val_str).ok_or_else(|| {
+          format!(
+            "Parameter '{}' ({}) must be a valid number, got '{}'.",
+            param_spec.label, param_spec.id, val_str
+          )
+        })?;
+        if num < *min - 1e-9 || num > *max + 1e-9 {
+          let unit_suffix = if param_spec.unit.is_empty() {
+            String::new()
+          } else {
+            format!(" {}", param_spec.unit)
+          };
+          return Err(format!(
+            "Parameter '{}' ({}) value {}{} is outside the allowed range [{}{}, {}{}].",
+            param_spec.label, param_spec.id, num, unit_suffix, min, unit_suffix, max, unit_suffix
+          ));
+        }
+      }
+      LuaParamKind::Enum => {
+        if !param_spec.options.is_empty()
+          && !param_spec
+            .options
+            .iter()
+            .any(|(allowed, _)| allowed == &val_str)
+        {
+          let allowed_list = param_spec
+            .options
+            .iter()
+            .map(|(v, _)| format!("'{}'", v))
+            .collect::<Vec<_>>()
+            .join(", ");
+          return Err(format!(
+            "Parameter '{}' ({}) value '{}' is not one of the allowed enum options: [{}].",
+            param_spec.label, param_spec.id, val_str, allowed_list
+          ));
+        }
+      }
+      LuaParamKind::Boolean => {
+        let lower = val_str.trim().to_lowercase();
+        if !matches!(lower.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
+          return Err(format!(
+            "Parameter '{}' ({}) must be a boolean ('true' or 'false'), got '{}'.",
+            param_spec.label, param_spec.id, val_str
+          ));
+        }
+      }
+      LuaParamKind::Text => {}
+    }
+  }
+
+  // 2. Execute Lua `validate(params, ctx)` if defined
+  if spec.has_validate_fn {
+    let lexer = Lexer::new(script);
+    let mut parser = Parser::new(lexer)?;
+    let stmts = parser.parse_chunk()?;
+
+    let mut interpreter = Interpreter::new();
+    let env = Rc::new(RefCell::new(LuaEnv::new()));
+
+    let lua_context = LuaVal::from_json(context);
+    let mut params_map = HashMap::new();
+    for (k, v) in &resolved {
+      params_map.insert(k.clone(), LuaVal::String(v.clone()));
+    }
+    let lua_params = LuaVal::Table(Rc::new(RefCell::new(params_map)));
+
+    env.borrow_mut().set_local("ctx", lua_context.clone());
+    env.borrow_mut().set_local("context", lua_context.clone());
+    env.borrow_mut().set_local("params", lua_params.clone());
+
+    interpreter.eval_chunk(&stmts, env.clone())?;
+
+    let validate_fn = env.borrow().get("validate");
+    if let LuaVal::Function(_, _, _) = validate_fn {
+      let ret =
+        interpreter.call_function(&validate_fn, vec![lua_params, lua_context], env.clone())?;
+      match ret {
+        LuaVal::Boolean(true) | LuaVal::Nil => {}
+        LuaVal::Boolean(false) => {
+          return Err("Parameter combination rejected by Lua validate(params, ctx).".to_string());
+        }
+        LuaVal::String(err_msg) => {
+          if !err_msg.trim().is_empty() {
+            return Err(err_msg);
+          }
+        }
+        LuaVal::Table(tbl) => {
+          let tb = tbl.borrow();
+          let ok_val = tb
+            .get("ok")
+            .or_else(|| tb.get("valid"))
+            .or_else(|| tb.get("1"));
+          let err_val = tb
+            .get("error")
+            .or_else(|| tb.get("message"))
+            .or_else(|| tb.get("reason"))
+            .or_else(|| tb.get("2"));
+          if let Some(LuaVal::Boolean(false)) = ok_val {
+            let msg = err_val
+              .map(|v| v.to_lua_string())
+              .filter(|s: &String| !s.is_empty())
+              .unwrap_or_else(|| "Invalid parameter combination.".to_string());
+            return Err(msg);
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+
+  Ok(resolved)
+}
+
+/// Evaluate `describe(params, ctx)` in a Lua rule script if present, returning dynamic rule title,
+/// description, and badge text.
+pub fn describe_lua_rule(
+  script: &str,
+  param_overrides: &HashMap<String, String>,
+  scope: &str,
+  context: &serde_json::Value,
+) -> Result<LuaRuleDescription, String> {
+  let spec = extract_lua_rule_spec(script)?;
+  let resolved = resolve_lua_rule_params(&spec, param_overrides);
+
+  let mut out = LuaRuleDescription {
+    title: spec.meta.name.clone(),
+    description: spec.meta.formula_summary.clone(),
+    badge: spec.meta.icon.clone(),
+  };
+
+  if !spec.has_describe_fn {
+    return Ok(out);
+  }
+
+  let lexer = Lexer::new(script);
+  let mut parser = Parser::new(lexer)?;
+  let stmts = parser.parse_chunk()?;
+
+  let mut interpreter = Interpreter::new();
+  let env = Rc::new(RefCell::new(LuaEnv::new()));
+
+  let mut ctx_json = context.clone();
+  if let Some(obj) = ctx_json.as_object_mut() {
+    obj
+      .entry("scope".to_string())
+      .or_insert_with(|| serde_json::Value::String(scope.to_string()));
+  }
+  let lua_context = LuaVal::from_json(&ctx_json);
+  let mut params_map = HashMap::new();
+  for (k, v) in &resolved {
+    params_map.insert(k.clone(), LuaVal::String(v.clone()));
+  }
+  let lua_params = LuaVal::Table(Rc::new(RefCell::new(params_map)));
+
+  env.borrow_mut().set_local("ctx", lua_context.clone());
+  env.borrow_mut().set_local("context", lua_context.clone());
+  env.borrow_mut().set_local("params", lua_params.clone());
+
+  interpreter.eval_chunk(&stmts, env.clone())?;
+
+  let describe_fn = env.borrow().get("describe");
+  if let LuaVal::Function(_, _, _) = describe_fn {
+    let ret =
+      interpreter.call_function(&describe_fn, vec![lua_params, lua_context], env.clone())?;
+    match ret {
+      LuaVal::Table(tbl) => {
+        let tb = tbl.borrow();
+        if let Some(t) = lua_table_get_str(&tb, "title").or_else(|| lua_table_get_str(&tb, "name"))
+        {
+          out.title = Some(t);
+        }
+        if let Some(d) = lua_table_get_str(&tb, "description") {
+          out.description = Some(d);
+        }
+        if let Some(b) = lua_table_get_str(&tb, "badge") {
+          out.badge = Some(b);
+        }
+      }
+      LuaVal::String(s) => {
+        out.description = Some(s);
+      }
+      _ => {}
+    }
+  }
+
+  Ok(out)
+}
+
+fn escape_lua_string_literal(s: &str) -> String {
+  s.replace('\\', "\\\\")
+    .replace('"', "\\\"")
+    .replace('\n', "\\n")
+    .replace('\r', "")
+}
+
+/// Embed or update a `configured_params = { ... }` block at the top of a Lua rule script so
+/// user-chosen parameter values travel with the script while keeping `params = { ... }` and
+/// `validate(params, ctx)` intact.
+pub fn embed_param_defaults_in_lua(script: &str, param_values: &HashMap<String, String>) -> String {
+  let start_marker = "-- BEGIN_CONFIGURED_PARAMS";
+  let end_marker = "-- END_CONFIGURED_PARAMS";
+
+  let cleaned =
+    if let (Some(s_idx), Some(e_idx)) = (script.find(start_marker), script.find(end_marker)) {
+      if e_idx >= s_idx {
+        let after = script[e_idx + end_marker.len()..].trim_start_matches('\n');
+        format!("{}{}", &script[..s_idx], after)
+      } else {
+        script.to_string()
+      }
+    } else {
+      script.to_string()
+    };
+
+  if param_values.is_empty() {
+    return cleaned;
+  }
+
+  let mut keys: Vec<&String> = param_values.keys().collect();
+  keys.sort();
+  let mut block = String::from("-- BEGIN_CONFIGURED_PARAMS\nconfigured_params = {\n");
+  for k in keys {
+    if let Some(v) = param_values.get(k) {
+      block.push_str(&format!(
+        "  {} = \"{}\",\n",
+        k,
+        escape_lua_string_literal(v)
+      ));
+    }
+  }
+  block.push_str("}\n-- END_CONFIGURED_PARAMS\n\n");
+  format!("{}{}", block, cleaned)
+}
+
+/// Execute a Lua script that contains an `apply(config, context, params)` function,
+/// or runs directly at top level. Validates parameters before execution.
 pub fn execute_transformation_lua(
   script: &str,
   config: &serde_json::Value,
@@ -1961,8 +2684,42 @@ pub fn execute_transformation_lua(
   ),
   String,
 > {
+  execute_transformation_lua_with_params(script, config, context, &HashMap::new())
+}
+
+/// Execute a Lua transformation script with explicit parameter overrides.
+/// Automatically validates parameters against `params = { ... }` and `validate(params, ctx)` first.
+pub fn execute_transformation_lua_with_params(
+  script: &str,
+  config: &serde_json::Value,
+  context: &serde_json::Value,
+  param_overrides: &HashMap<String, String>,
+) -> Result<
+  (
+    serde_json::Value,
+    Vec<String>,
+    Vec<(String, String, String)>,
+  ),
+  String,
+> {
   // 1. Pre-flight sandbox security validation (blocks io.*, os.*, dofile, require, debug, coroutine, etc.)
   validate_lua_sandbox_security(script)?;
+
+  // 2. Extract and validate parameter specifications and Lua `validate(params, ctx)`
+  let mut merged_overrides = HashMap::new();
+  if let Some(ctx_params) = context.get("params").and_then(|v| v.as_object()) {
+    for (k, v) in ctx_params {
+      if let Some(s) = v.as_str() {
+        merged_overrides.insert(k.clone(), s.to_string());
+      } else {
+        merged_overrides.insert(k.clone(), v.to_string());
+      }
+    }
+  }
+  for (k, v) in param_overrides {
+    merged_overrides.insert(k.clone(), v.clone());
+  }
+  let validated_params = validate_lua_rule_params(script, &merged_overrides, context)?;
 
   let lexer = Lexer::new(script);
   let mut parser = Parser::new(lexer)?;
@@ -1974,19 +2731,34 @@ pub fn execute_transformation_lua(
   let lua_config = LuaVal::from_json(config);
   let lua_context = LuaVal::from_json(context);
 
+  let mut params_map = HashMap::new();
+  for (k, v) in &validated_params {
+    params_map.insert(k.clone(), LuaVal::String(v.clone()));
+  }
+  let lua_params = LuaVal::Table(Rc::new(RefCell::new(params_map)));
+  if let LuaVal::Table(ctx_tbl) = &lua_context {
+    ctx_tbl
+      .borrow_mut()
+      .insert("params".to_string(), lua_params.clone());
+  }
+
   env.borrow_mut().set_local("config", lua_config.clone());
   env.borrow_mut().set_local("ctx", lua_context.clone());
   env.borrow_mut().set_local("context", lua_context.clone());
+  env.borrow_mut().set_local("params", lua_params.clone());
 
   // Execute the script
   interpreter.eval_chunk(&stmts, env.clone())?;
 
-  // If an `apply` function was defined, invoke it: apply(config, ctx)
+  // Re-bind `params` in case top-level `params = { ... }` schema declaration overwrote `params`
+  env.borrow_mut().set_local("params", lua_params.clone());
+
+  // If an `apply` function was defined, invoke it: apply(config, ctx, params)
   let apply_fn = env.borrow().get("apply");
   if let LuaVal::Function(_, _, _) = apply_fn {
     let _ = interpreter.call_function(
       &apply_fn,
-      vec![lua_config.clone(), lua_context],
+      vec![lua_config.clone(), lua_context, lua_params],
       env.clone(),
     )?;
   }

@@ -1,4 +1,5 @@
 use crate::models::{MachineRig, ProcessProfile, RigAddOn};
+use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 #[derive(Properties, PartialEq)]
@@ -14,6 +15,7 @@ pub struct MachineTabProps {
   pub on_change_nozzle_diameter: Callback<String>, // "0.4", "0.6", "0.8"
   pub on_toggle_addon: Callback<String>,
   pub on_change_ace_units: Callback<usize>, // 1 (4 slots) or 2 (8 slots Double ACE Pro 2)
+  pub on_change_weather: Callback<(String, i32, i32)>, // (climate_preset, ambient_temp_c, humidity_pct)
   pub on_save_rig_to_vault: Callback<()>,
   pub on_open_bind_modal: Callback<()>,
   pub active_process: ProcessProfile,
@@ -29,6 +31,7 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
   let on_change_diam = props.on_change_nozzle_diameter.clone();
   let on_toggle_addon = props.on_toggle_addon.clone();
   let on_change_ace = props.on_change_ace_units.clone();
+  let on_change_weather = props.on_change_weather.clone();
   let on_change_machine_type = props.on_change_machine_type.clone();
   let on_add_machine = props.on_add_machine.clone();
 
@@ -249,6 +252,12 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
                         }}
                       </span>
                     </div>
+                    <div class="flex justify-between items-start">
+                      <span>{"4. Ambient Weather:"}</span>
+                      <span class="text-tertiary text-right font-bold max-w-[190px] truncate">
+                        {machine.climate_summary_badge()}
+                      </span>
+                    </div>
                     if let Some(src) = &machine.source_disk_profile {
                       <div class="flex justify-between pt-1 border-t border-surface-container text-[10px]">
                         <span>{"Disk Source:"}</span>
@@ -415,12 +424,13 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
               </label>
               <div class="flex flex-col gap-space-xs">
                 {for vec![
-                  ("brass", "🟡 Standard Brass (OrcaSlicer Default)", "0°C Factory Baseline Conductivity"),
-                  ("microswiss_brass", "🟡 MicroSwiss Plated Brass (TwinClad XT™)", "0°C Offset • Low-Friction 0.99 Flow • 0.2/0.4/0.6mm"),
+                  ("brass", "🟡 Standard Brass (OrcaSlicer Default)", "0°C Factory Baseline Conductivity • 0.2/0.25/0.4/0.6/0.8mm"),
+                  ("microswiss_brass", "🟡 MicroSwiss Plated Brass (TwinClad XT™)", "0°C Offset • Low-Friction 0.99 Flow • 0.2/0.25/0.4/0.6/0.8mm"),
                   ("ruby_brass", "🔴 Brass-Body Ruby Tip (Olsson / Gemstone)", "0°C Brass Thermal Conductivity + Handles -CF & -GF Composites"),
-                  ("hardened_steel", "🛡️ Hardened Steel", "+5°C Thermal Compensation (230°C → 235°C PETG)"),
-                  ("diamondback", "💎 MicroSwiss Diamondback™ PCD", "-10°C Temp, 0.94 Flow, 0.60mm Retract (0.4mm)"),
-                  ("cht", "🔥 MicroSwiss / Bi-Metal CHT High-Flow", "+25% High-Flow Volumetric Capacity"),
+                  ("hardened_steel", "🛡️ Hardened Steel", "+5°C Thermal Compensation (230°C → 235°C PETG) • 0.2–0.8mm"),
+                  ("cm2", "⚙️ MicroSwiss CM2™ (Copper Core + M2 HSS Tip)", "0°C Copper Conductivity + HRC 68 Hardened Tip • 0.60mm Retract"),
+                  ("diamondback", "💎 MicroSwiss Diamondback™ PCD", "-10°C Temp, 0.94 Flow, 0.60mm Retract (PCD Solid Diamond Tip)"),
+                  ("cht", "🔥 MicroSwiss / Bi-Metal CHT High-Flow", "+25% High-Flow Volumetric Capacity • 0.4/0.6/0.8mm"),
                 ].into_iter().map(|(noz_id, noz_label, sub)| {
                   let is_sel = active_rig.nozzle_type == noz_id;
                   let nid = noz_id.to_string();
@@ -446,13 +456,15 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
               </div>
             </div>
 
-            // Nozzle Diameter Selector (0.4, 0.6, 0.8)
+            // Nozzle Diameter Selector (0.2, 0.25, 0.4, 0.6, 0.8)
             <div class="flex flex-col gap-space-xs pt-space-xs border-t border-surface-container-high">
               <label class="text-xs text-on-surface-variant font-semibold">
                 {"Nozzle Orifice Diameter (mm):"}
               </label>
-              <div class="grid grid-cols-3 gap-space-xs">
+              <div class="grid grid-cols-5 gap-space-xs">
                 {for vec![
+                  ("0.2", "0.20 mm"),
+                  ("0.25", "0.25 mm"),
                   ("0.4", "0.40 mm"),
                   ("0.6", "0.60 mm"),
                   ("0.8", "0.80 mm"),
@@ -535,6 +547,154 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
                   </div>
                 }
               })}
+            </div>
+          </div>
+
+          // Full-Width Row: Part 4 — Ambient Weather & Room Climate (Presets + Dials + Nozzle Heat-Creep Awareness)
+          <div class="lg:col-span-12 flex flex-col gap-space-md bg-surface-container p-space-lg rounded-xl border border-primary/40 shadow-sm">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-space-sm">
+              <div class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary text-[20px]">{"thermostat"}</span>
+                <span class="font-headline-sm text-body-md text-on-surface font-bold">
+                  {"4. Ambient Weather & Room Climate (Relative Stackable Lua Rule)"}
+                </span>
+                <span class="bg-primary/15 text-primary border border-primary/40 px-2 py-0.5 rounded text-[11px] font-mono font-bold">
+                  {active_rig.climate_summary_badge()}
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span
+                  class={format!(
+                    "px-2.5 py-1 rounded text-[11px] font-mono font-bold border {}",
+                    if active_rig.is_heat_creep_resistant_nozzle() {
+                      "bg-secondary/15 text-secondary border-secondary/40"
+                    } else {
+                      "bg-tertiary/15 text-tertiary border-tertiary/40"
+                    }
+                  )}
+                >
+                  {if active_rig.is_heat_creep_resistant_nozzle() {
+                    "💎 MicroSwiss / High-Conductivity Nozzle: Heat-Creep Resistant (50% Reduced Hot-Weather MVS & Temp Penalty)"
+                  } else {
+                    "🛡️ Stock Throat / Nozzle: Full Hot-Weather Heat-Creep Protection Active (-15% to -18% MVS in Tropical)"
+                  }}
+                </span>
+              </div>
+            </div>
+
+            <p class="text-xs text-on-surface-variant">
+              {"Select the room climate where this rig operates (or fine-tune the Ambient Temperature and Relative Humidity dials). This automatically syncs and enables the relative Weather & Ambient Climate Lua transformation on the stack without overwriting your nozzle or add-on rules."}
+            </p>
+
+            // 1-Click Weather Presets
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-space-sm">
+              {for vec![
+                ("temperate", "🌤️ Temperate Baseline", "22°C (72°F) • 45% RH", "0°C / 1.00× MVS (Rule Off)", 22, 45),
+                ("tropical", "🌴 Tropical (Hot & Humid)", "30°C (86°F) • 80% RH", "Anti-Heat-Creep + Spiral Z-Hop + Wipe", 30, 80),
+                ("hot_dry", "☀️ Hot & Dry (Desert)", "33°C (91°F) • 20% RH", "Anti-Heat-Creep + 100% Exhaust", 33, 20),
+                ("cold_dry", "❄️ Cold & Dry (Winter/AC)", "14°C (57°F) • 25% RH", "+5°C Bed (+10°C 1st) • 0% Exhaust • Brim", 14, 25),
+                ("cold_humid", "🌧️ Cold & Humid (Coastal/AC)", "15°C (59°F) • 80% RH", "Cold Anti-Warp + Humid Anti-Stringing", 15, 80),
+              ].into_iter().map(|(preset_id, label, sub, effect, t_c, rh)| {
+                let is_sel = active_rig.climate_preset == preset_id;
+                let pid = preset_id.to_string();
+                let cb = on_change_weather.clone();
+                html! {
+                  <button
+                    class={format!(
+                      "p-space-sm rounded-lg border text-left flex flex-col justify-between gap-1 transition-all cursor-pointer {}",
+                      if is_sel {
+                        "bg-primary-container/25 border-primary text-primary font-bold shadow-sm ring-1 ring-primary/30"
+                      } else {
+                        "bg-surface-container-lowest border-outline-variant text-on-surface-variant hover:text-on-surface"
+                      }
+                    )}
+                    onclick={Callback::from(move |_| cb.emit((pid.clone(), t_c, rh)))}
+                  >
+                    <span class="text-xs font-mono font-bold">{label}</span>
+                    <span class="text-[10px] font-mono text-secondary">{sub}</span>
+                    <span class="text-[10px] text-on-surface-variant">{effect}</span>
+                  </button>
+                }
+              })}
+            </div>
+
+            // Interactive Ambient Temp (°C) and Relative Humidity (% RH) Dials
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-space-md pt-space-xs">
+              <div class="bg-surface-container-lowest p-space-md rounded-lg border border-outline-variant/60 flex flex-col gap-1.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-mono font-bold text-on-surface">
+                    {"🌡️ Ambient Room Temperature Dial"}
+                  </span>
+                  <span class="bg-primary/20 text-primary border border-primary/40 px-2 py-0.5 rounded text-xs font-mono font-bold">
+                    {format!(
+                      "{}°C ({}°F)",
+                      active_rig.ambient_temp_c,
+                      ((active_rig.ambient_temp_c as f64) * 9.0 / 5.0 + 32.0).round() as i32
+                    )}
+                  </span>
+                </div>
+                <div class="flex items-center gap-space-sm">
+                  <span class="text-[10px] font-mono text-on-surface-variant shrink-0">{"8°C"}</span>
+                  <input
+                    type="range"
+                    min="8"
+                    max="40"
+                    step="1"
+                    value={active_rig.ambient_temp_c.to_string()}
+                    class="w-full accent-primary cursor-pointer h-2 rounded-lg bg-surface-container-high"
+                    oninput={
+                      let cb = on_change_weather.clone();
+                      let cur_rh = active_rig.humidity_pct;
+                      Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        if let Ok(new_t) = input.value().parse::<i32>() {
+                          cb.emit(("custom".to_string(), new_t, cur_rh));
+                        }
+                      })
+                    }
+                  />
+                  <span class="text-[10px] font-mono text-on-surface-variant shrink-0">{"40°C"}</span>
+                </div>
+                <span class="text-[10px] font-mono text-on-surface-variant">
+                  {"Cold ≤18°C traps heat & boosts bed/nozzle; Hot ≥26°C opens exhaust & scales MVS."}
+                </span>
+              </div>
+
+              <div class="bg-surface-container-lowest p-space-md rounded-lg border border-outline-variant/60 flex flex-col gap-1.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-mono font-bold text-on-surface">
+                    {"💧 Relative Humidity (% RH) Dial"}
+                  </span>
+                  <span class="bg-secondary/20 text-secondary border border-secondary/40 px-2 py-0.5 rounded text-xs font-mono font-bold">
+                    {format!("{}% RH", active_rig.humidity_pct)}
+                  </span>
+                </div>
+                <div class="flex items-center gap-space-sm">
+                  <span class="text-[10px] font-mono text-on-surface-variant shrink-0">{"10%"}</span>
+                  <input
+                    type="range"
+                    min="10"
+                    max="95"
+                    step="5"
+                    value={active_rig.humidity_pct.to_string()}
+                    class="w-full accent-secondary cursor-pointer h-2 rounded-lg bg-surface-container-high"
+                    oninput={
+                      let cb = on_change_weather.clone();
+                      let cur_t = active_rig.ambient_temp_c;
+                      Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        if let Ok(new_rh) = input.value().parse::<i32>() {
+                          cb.emit(("custom".to_string(), cur_t, new_rh));
+                        }
+                      })
+                    }
+                  />
+                  <span class="text-[10px] font-mono text-on-surface-variant shrink-0">{"95%"}</span>
+                </div>
+                <span class="text-[10px] font-mono text-on-surface-variant">
+                  {"Humid ≥60% RH enables 0.20mm Spiral Z-Hop (0mm TPU), 1.5mm Wipe, Avoid Crossing Walls, & relative retraction boost."}
+                </span>
+              </div>
             </div>
           </div>
         </div>
