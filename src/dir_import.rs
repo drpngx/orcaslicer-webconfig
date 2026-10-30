@@ -477,8 +477,10 @@ pub fn import_scanned_directory(
     machines.push(rig);
   }
 
-  if machines.is_empty() {
-    machines.push(MachineRig::kobra_s1_hardened_steel_png());
+  if !machines.iter().any(|m| m.name.starts_with("OC -")) {
+    let mut oc_rig = MachineRig::kobra_s1_hardened_steel_png();
+    oc_rig.is_active = !machines.iter().any(|m| m.is_active);
+    machines.push(oc_rig);
   }
 
   let active_machine_id = machines
@@ -1232,9 +1234,7 @@ pub fn import_scanned_directory(
       notes: String::new(),
     };
     let disk_proc_notes = extract_str(p_val, "notes").unwrap_or_default();
-    if disk_proc_notes.trim().is_empty()
-      || disk_proc_notes.contains("[OrcaSlicer WebConfig Process")
-    {
+    if disk_proc_notes.trim().is_empty() || disk_proc_notes.contains("[OrcaSlicer WebConfig") {
       proc_prof.notes = proc_prof.generate_descriptive_notes();
     } else {
       proc_prof.notes = format!(
@@ -1602,13 +1602,35 @@ pub fn sync_live_state_to_entries(
           .map(|sp| sp == e.relative_path)
           .unwrap_or(false)
     }) {
-      if !rig.id.starts_with("disk_")
-        || rig.name.starts_with("OC -")
-        || existing.bytes != machine_json.as_bytes()
+      if rig.source_disk_profile.is_none() || rig.name.starts_with("OC -") {
+        existing.relative_path = rel_path.clone();
+        existing.filename = fname;
+        existing.bytes = machine_json.as_bytes().to_vec();
+        modified_map.insert(existing.relative_path.clone(), machine_json);
+      } else if let Ok(serde_json::Value::Object(mut map)) =
+        serde_json::from_slice::<serde_json::Value>(&existing.bytes)
       {
-        if rig.source_disk_profile.is_none() || rig.name.starts_with("OC -") {
-          existing.bytes = machine_json.as_bytes().to_vec();
-          modified_map.insert(existing.relative_path.clone(), machine_json);
+        let (orca_noz, hrc) = rig.orca_machine_nozzle_type_and_hrc();
+        let noz_diam_str = rig.formatted_nozzle_diameter();
+        let notes_str = if rig.notes.trim().is_empty() {
+          rig.generate_descriptive_notes()
+        } else {
+          rig.notes.clone()
+        };
+        map.insert("printer_notes".to_string(), serde_json::json!(notes_str));
+        map.insert("nozzle_type".to_string(), serde_json::json!(orca_noz));
+        map.insert("nozzle_hrc".to_string(), serde_json::json!(hrc.to_string()));
+        map.insert(
+          "nozzle_diameter".to_string(),
+          serde_json::json!([noz_diam_str]),
+        );
+        map.insert(
+          "version".to_string(),
+          serde_json::json!(crate::models::WEBCONFIG_ORCA_PRESET_VERSION),
+        );
+        if let Ok(pretty) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
+          existing.bytes = pretty.as_bytes().to_vec();
+          modified_map.insert(existing.relative_path.clone(), pretty);
         }
       }
     } else {
@@ -1691,7 +1713,7 @@ pub fn sync_live_state_to_entries(
   } else {
     conf_relative_path.to_string()
   };
-  let ams_slots = (active_rig.ace_pro_units * 4).max(1).min(filaments.len());
+  let ams_slots = filaments.len().max(1);
   let active_slots: Vec<&FilamentSpool> = filaments.iter().take(ams_slots).collect();
   let active_proc_name = processes
     .iter()
@@ -2067,7 +2089,11 @@ mod tests {
     let summary = import_scanned_directory(&entries).unwrap();
 
     assert_eq!(summary.user_folder_id, "434139");
-    assert_eq!(summary.machines.len(), 2);
+    assert_eq!(summary.machines.len(), 3);
+    assert!(summary
+      .machines
+      .iter()
+      .any(|m| m.name == "OC - Kobra S1 • 0.4 Hardened"));
 
     let active_rig = summary
       .machines
@@ -2134,11 +2160,13 @@ mod tests {
       active_rig.orca_machine_nozzle_type_and_hrc(),
       ("hardened_steel", 55)
     );
-    assert!(active_rig.notes.contains("[OrcaSlicer WebConfig Machine]"));
+    assert!(active_rig
+      .notes
+      .contains("[OrcaSlicer WebConfig v0.1.0 — Machine]"));
     assert!(summary
       .processes
       .iter()
-      .all(|p| p.notes.contains("[OrcaSlicer WebConfig Process")));
+      .all(|p| p.notes.contains("[OrcaSlicer WebConfig v0.1.0 — Process")));
 
     // Verify standalone base profiles PCTG and PLA-CF have accurate computed values and zero false conflicts
     let pctg = summary

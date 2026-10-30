@@ -516,7 +516,11 @@ function apply(config, ctx, p)
     local next_noz = math.max(185, math.min(320, math.floor(cur_noz + d.nozzle_delta_c + 0.5)))
     local next_noz_init = math.max(185, math.min(320, math.floor(cur_noz_init + d.nozzle_delta_c + 0.5)))
     set_orca_val(config, "nozzle_temperature", tostring(next_noz))
+    set_orca_val(config, "nozzle_temperature_HS", tostring(next_noz))
+    set_orca_val(config, "nozzle_temperature_BRASS", tostring(next_noz))
     set_orca_val(config, "nozzle_temperature_initial_layer", tostring(next_noz_init))
+    set_orca_val(config, "nozzle_temperature_initial_layer_HS", tostring(next_noz_init))
+    set_orca_val(config, "nozzle_temperature_initial_layer_BRASS", tostring(next_noz_init))
   end
 
   -- 2. Relative Bed Temperature Offset (+ extra +5°C on first layer in Cold weather)
@@ -558,7 +562,7 @@ function apply(config, ctx, p)
   if d.wipe then
     set_orca_val(config, "wipe", "1")
     set_orca_val(config, "filament_wipe", "1")
-    set_orca_val(config, "filament_retract_before_wipe", "70%")
+    set_orca_val(config, "filament_retract_before_wipe", fam == "PETG" and "0%" or "70%")
     set_orca_val(config, "filament_wipe_distance", d.wipe_dist)
     config["wipe_on_loops"] = "1"
   end
@@ -573,7 +577,11 @@ function apply(config, ctx, p)
   local next_fmin = math.max(0, math.min(100, math.floor((cur_fmin + d.fan_min_delta) * d.fan_scale + 0.5)))
   local next_fmax = math.max(next_fmin, math.min(100, math.floor((cur_fmax + d.fan_max_delta) * d.fan_scale + 0.5)))
   set_orca_val(config, "fan_min_speed", tostring(next_fmin))
+  set_orca_val(config, "fan_min_speed_HS", tostring(next_fmin))
+  set_orca_val(config, "fan_min_speed_BRASS", tostring(next_fmin))
   set_orca_val(config, "fan_max_speed", tostring(next_fmax))
+  set_orca_val(config, "fan_max_speed_HS", tostring(next_fmax))
+  set_orca_val(config, "fan_max_speed_BRASS", tostring(next_fmax))
 
   if d.no_fan_layers_delta ~= 0 or config["close_fan_the_first_x_layers"] ~= nil then
     local cur_nfl = get_orca_num(config, "close_fan_the_first_x_layers", 1)

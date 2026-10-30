@@ -77,8 +77,8 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
   }
 
   let ams_capacity = (props.ace_pro_units * 4).max(1);
-  let slot_count = ams_capacity.min(props.filaments.len());
-  let active_slots: Vec<FilamentSpool> = props.filaments.iter().take(slot_count).cloned().collect();
+  let slot_count = props.filaments.len();
+  let active_slots: Vec<FilamentSpool> = props.filaments.clone();
 
   let on_select = props.on_select_active_filament.clone();
   let on_change_ace = props.on_change_ace_units.clone();
