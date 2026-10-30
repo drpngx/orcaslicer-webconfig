@@ -73,7 +73,7 @@ jobs:
       - name: Build Yew WASM Frontend via Bazel & Stage Dist
         shell: bash
         run: |
-          bazel build -c opt //:app_wasm
+          bazel build -c opt //:app_wasm //:app_wasm_opt //:app_wasm_opt_br
           chmod +x ./scripts/stage_tauri_dist.sh
           ./scripts/stage_tauri_dist.sh
 

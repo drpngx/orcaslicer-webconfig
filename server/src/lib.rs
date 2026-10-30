@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
 use axum::extract::{Json, Path as AxumPath};
-use axum::http::{header, HeaderValue, Method, Response, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -486,8 +486,34 @@ async fn serve_wasm_js() -> impl IntoResponse {
   (StatusCode::NOT_FOUND, "app_wasm.js not found").into_response()
 }
 
-async fn serve_wasm_bg() -> impl IntoResponse {
-  if let Some(bytes) = find_asset("app_wasm/app_wasm_bg.wasm") {
+async fn serve_wasm_bg(headers: HeaderMap) -> impl IntoResponse {
+  let accepts_br = headers
+    .get(header::ACCEPT_ENCODING)
+    .and_then(|v| v.to_str().ok())
+    .map(|s| s.split(',').any(|part| part.trim().starts_with("br")))
+    .unwrap_or(false);
+
+  if accepts_br {
+    if let Some(bytes) = find_asset("app_wasm/app_wasm_bg_opt.wasm.br") {
+      let mut res = Response::new(Body::from(bytes));
+      res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/wasm"),
+      );
+      res
+        .headers_mut()
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+      res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+      );
+      return res.into_response();
+    }
+  }
+
+  if let Some(bytes) =
+    find_asset("app_wasm/app_wasm_bg_opt.wasm").or_else(|| find_asset("app_wasm/app_wasm_bg.wasm"))
+  {
     let mut res = Response::new(Body::from(bytes));
     res.headers_mut().insert(
       header::CONTENT_TYPE,

@@ -48,10 +48,10 @@ fn compile_markdown_to_html(md: &str) -> String {
       title,
       id,
     }) => {
-      // Rewrite relative `images/foo.png` in `doc/*.md` to `/doc/images/foo.png` when rendered inside the web app,
+      // Rewrite relative `images/foo.png` in `doc/*.md` to `doc/images/foo.png` when rendered inside the web app,
       // while keeping `images/foo.png` in the source `.md` so GitHub's Markdown viewer resolves it natively!
       let rewritten = if dest_url.starts_with("images/") {
-        CowStr::from(format!("/doc/{}", dest_url))
+        CowStr::from(format!("doc/{}", dest_url))
       } else {
         dest_url
       };

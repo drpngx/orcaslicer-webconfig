@@ -3,6 +3,7 @@ load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen")
+load("//emsdk:emsdk.bzl", "wasmopt")
 
 package(
     default_visibility = ["//:__subpackages__"],
@@ -191,6 +192,20 @@ rust_wasm_bindgen(
     name = "app_wasm",
     target = "web",
     wasm_file = ":app",
+)
+
+wasmopt(
+    name = "app_wasm_opt",
+    src = ":app_wasm",
+    out = "app_wasm/app_wasm_bg_opt.wasm",
+)
+
+genrule(
+    name = "app_wasm_opt_br",
+    srcs = [":app_wasm_opt"],
+    outs = ["app_wasm/app_wasm_bg_opt.wasm.br"],
+    cmd = "$(execpath @brotli) -9 $< -o $@",
+    tools = ["@brotli"],
 )
 
 filegroup(

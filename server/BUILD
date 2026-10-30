@@ -28,11 +28,20 @@ rust_binary(
         "//:local_slicer_config.json",
         "//:static/index.html",
     ],
-    data = [
-        "//:app_wasm",
-        "//:local_slicer_config.json",
-        "//:static_files",
-    ],
+    data = select({
+        "//:opt": [
+            "//:app_wasm",
+            "//:app_wasm_opt",
+            "//:app_wasm_opt_br",
+            "//:local_slicer_config.json",
+            "//:static_files",
+        ],
+        "//conditions:default": [
+            "//:app_wasm",
+            "//:local_slicer_config.json",
+            "//:static_files",
+        ],
+    }),
     edition = "2021",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

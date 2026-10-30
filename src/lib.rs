@@ -2687,30 +2687,32 @@ pub fn App() -> Html {
                           />
                         </label>
 
-                        <button
-                          disabled={import_progress.is_some()}
-                          class={format!(
-                            "flex-1 flex items-center justify-center gap-space-xs px-space-md py-space-md rounded-xl text-xs font-mono font-bold border border-outline-variant transition-colors {}",
-                            if import_progress.is_some() {
-                              "bg-surface-container-high text-on-surface-variant opacity-60 cursor-wait"
-                            } else {
-                              "bg-surface-container hover:bg-surface-container-high text-on-surface cursor-pointer"
+                        if is_tauri {
+                          <button
+                            disabled={import_progress.is_some()}
+                            class={format!(
+                              "flex-1 flex items-center justify-center gap-space-xs px-space-md py-space-md rounded-xl text-xs font-mono font-bold border border-outline-variant transition-colors {}",
+                              if import_progress.is_some() {
+                                "bg-surface-container-high text-on-surface-variant opacity-60 cursor-wait"
+                              } else {
+                                "bg-surface-container hover:bg-surface-container-high text-on-surface cursor-pointer"
+                              }
+                            )}
+                            onclick={
+                              let cb = on_load_reference_snapshot.clone();
+                              Callback::from(move |_| cb.emit(()))
                             }
-                          )}
-                          onclick={
-                            let cb = on_load_reference_snapshot.clone();
-                            Callback::from(move |_| cb.emit(()))
-                          }
-                        >
-                          <span class="material-symbols-outlined text-[16px]">
-                            {if import_progress.is_some() { "hourglass_top" } else { "folder_open" }}
-                          </span>
-                          {if import_progress.is_some() {
-                            "Importing From Local FS..."
-                          } else {
-                            "Import From Local FS (Sandboxed)"
-                          }}
-                        </button>
+                          >
+                            <span class="material-symbols-outlined text-[16px]">
+                              {if import_progress.is_some() { "hourglass_top" } else { "folder_open" }}
+                            </span>
+                            {if import_progress.is_some() {
+                              "Importing From Local FS..."
+                            } else {
+                              "Import From Local FS (Sandboxed)"
+                            }}
+                          </button>
+                        }
                       </div>
                     </div>
                   }

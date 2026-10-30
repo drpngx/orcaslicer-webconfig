@@ -1,0 +1,58 @@
+name: Build & Deploy Static Web App (GitHub Pages / Cloudflare Pages)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-static:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bazelisk Cache & Binary
+        uses: bazel-contrib/setup-bazel@0.9.0
+        with:
+          bazelisk-cache: true
+          disk-cache: static-pages-bazel
+
+      - name: Build Optimized WASM & Brotli Bundle via Bazel
+        shell: bash
+        run: |
+          bazel build -c opt //:app_wasm //:app_wasm_opt //:app_wasm_opt_br
+          chmod +x ./scripts/stage_tauri_dist.sh
+          ./scripts/stage_tauri_dist.sh
+
+      - name: Upload Portable Static Site Artifact (for Cloudflare Pages / Static Hosts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: orcaslicer-webconfig-static-site
+          path: dist/
+
+      - name: Upload GitHub Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/
+
+  deploy-github-pages:
+    needs: build-static
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
