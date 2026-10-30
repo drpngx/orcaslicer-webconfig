@@ -41,6 +41,7 @@ gloo-net = "0.3"
 wasm-bindgen-futures = "0.4"
 futures = "0.3"
 lazy_static = "1.5.0"
+pulldown-cmark = { version = "0.10", default-features = false, features = ["html"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-logger = "0.2"

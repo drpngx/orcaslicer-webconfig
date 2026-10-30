@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
-use axum::extract::Json;
+use axum::extract::{Json, Path as AxumPath};
 use axum::http::{header, HeaderValue, Method, Response, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
@@ -502,6 +502,26 @@ async fn serve_wasm_bg() -> impl IntoResponse {
   (StatusCode::NOT_FOUND, "app_wasm_bg.wasm not found").into_response()
 }
 
+async fn serve_doc_image(AxumPath(filename): AxumPath<String>) -> impl IntoResponse {
+  if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+    return (StatusCode::BAD_REQUEST, "Invalid image filename").into_response();
+  }
+  let rel = format!("doc/images/{}", filename);
+  if let Some(bytes) = find_asset(&rel) {
+    let content_type = if filename.ends_with(".svg") {
+      "image/svg+xml"
+    } else {
+      "image/png"
+    };
+    let mut res = Response::new(Body::from(bytes));
+    res
+      .headers_mut()
+      .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    return res.into_response();
+  }
+  (StatusCode::NOT_FOUND, "Doc image not found").into_response()
+}
+
 /// Shared router builder used by both the standalone web dev server (`server/src/main.rs`)
 /// and the embedded Tauri v2 desktop wrapper (`src-tauri/src/main.rs`).
 pub fn create_router() -> Router {
@@ -511,6 +531,7 @@ pub fn create_router() -> Router {
     .route("/index.html", get(index))
     .route("/app_wasm.js", get(serve_wasm_js))
     .route("/app_wasm_bg.wasm", get(serve_wasm_bg))
+    .route("/doc/images/:filename", get(serve_doc_image))
     .route(
       "/api/local-slicer-scan/start",
       get(api_local_slicer_scan_start).options(cors_preflight),

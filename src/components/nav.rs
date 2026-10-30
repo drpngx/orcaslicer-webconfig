@@ -18,6 +18,8 @@ pub struct NavProps {
   pub bound_filename: String,
   pub active_rig_name: String,
   pub ace_pro_units: usize,
+  pub show_help_docs: bool,
+  pub on_toggle_help_docs: Callback<()>,
   pub on_open_export_modal: Callback<()>,
   pub on_reset_all: Callback<()>,
   pub has_unapplied_changes: bool,
@@ -89,8 +91,29 @@ pub fn NavigationBar(props: &NavProps) -> Html {
             </div>
           </div>
 
-          // Right header actions: Prominent Reset Button + Export (Website) / Save & Export (Tauri)
+          // Right header actions: Help Button + Prominent Reset Button + Export (Website) / Save & Export (Tauri)
           <div class="flex items-center gap-space-sm">
+            // Help / Documentation Button (toggles built-in precompiled Markdown documentation viewer)
+            <button
+              class={if props.show_help_docs {
+                "flex items-center gap-space-xs bg-secondary text-on-secondary px-space-md py-space-xs rounded font-bold transition-colors shadow cursor-pointer"
+              } else {
+                "flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-secondary border border-secondary/40 px-space-md py-space-xs rounded font-bold transition-colors shadow cursor-pointer"
+              }}
+              title="Read OrcaSlicer WebConfig documentation and tuning recipes"
+              onclick={
+                let cb = props.on_toggle_help_docs.clone();
+                Callback::from(move |_| cb.emit(()))
+              }
+            >
+              <span class="material-symbols-outlined text-[16px]">
+                {if props.show_help_docs { "arrow_back" } else { "help" }}
+              </span>
+              <span class="font-code-md text-code-md font-bold">
+                {if props.show_help_docs { "Back to App" } else { "Help" }}
+              </span>
+            </button>
+
             // Reset Button: opens confirmation dialog before clearing everything and returning to Initialization
             <button
               class="flex items-center gap-space-xs bg-error-container hover:bg-error text-on-error-container hover:text-on-error border border-error px-space-md py-space-xs rounded font-bold transition-colors shadow cursor-pointer"
@@ -179,15 +202,6 @@ pub fn NavigationBar(props: &NavProps) -> Html {
               {"4. Wizard / Lua Changer"}
             </button>
           </nav>
-
-          <div class="flex items-center gap-space-md">
-            <div class="flex items-center gap-space-xs text-on-surface-variant font-code-sm text-code-sm">
-              <span>{"Active Target:"}</span>
-              <span class="font-code-sm text-code-sm text-secondary bg-surface-container-lowest px-space-sm py-space-xs rounded">
-                {&props.bound_filename}
-              </span>
-            </div>
-          </div>
         </div>
       </div>
     </header>

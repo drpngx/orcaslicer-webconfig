@@ -13,3 +13,8 @@ py_binary(
     name = "import_vendor_profiles",
     srcs = ["import_vendor_profiles.py"],
 )
+
+py_binary(
+    name = "capture_doc_screenshots",
+    srcs = ["capture_doc_screenshots.py"],
+)

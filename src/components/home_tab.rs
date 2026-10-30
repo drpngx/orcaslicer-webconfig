@@ -41,6 +41,8 @@ pub struct HomeTabProps {
   pub on_select_process: Callback<String>,
   pub safe_speed_ceiling: f64,
   pub json_diff_text: String,
+  pub base_profile_json: String,
+  pub derived_profile_json: String,
   pub our_internal_config_json: String,
   pub user_disk_config_json: String,
 }
@@ -50,6 +52,8 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
   let on_toggle_rule = props.on_toggle_rule.clone();
   let on_resolve_conflict = props.on_resolve_conflict.clone();
   let on_select_process = props.on_select_process.clone();
+  let diff_view_mode = use_state(|| "github".to_string()); // "github" or "side_by_side"
+  let diff_only_changes = use_state(|| false);
 
   if !props.is_config_loaded {
     return html! {
@@ -792,7 +796,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
         </div>
       </div>
 
-      // Interactive JSON Diff Drawer Preview
+      // JSON Diff Preview (Colored GitHub / Unified Diff & Side-by-Side Mode)
       <div class="bg-surface-container-low p-space-lg rounded-xl shadow-md border border-outline-variant flex flex-col gap-space-md">
         <div class="flex items-center justify-between flex-wrap gap-space-sm">
           <div
@@ -804,15 +808,90 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
           >
             <span class="material-symbols-outlined text-secondary">{"difference"}</span>
             <h3 class="font-headline-sm text-headline-sm text-on-surface font-semibold">
-              {"Interactive JSON Diff Preview (System Base vs Re-Created Output)"}
+              {"JSON Diff Preview (System Base vs Re-Created Output)"}
             </h3>
             <span class="material-symbols-outlined text-on-surface-variant text-[18px]">
               {if props.show_diff_drawer { "expand_less" } else { "expand_more" }}
             </span>
           </div>
 
-          if props.is_tauri {
-            <div class="flex items-center gap-space-sm">
+          <div class="flex items-center gap-space-sm flex-wrap">
+            // View Mode Toggle: GitHub / Unified vs Side-by-Side
+            <div class="flex items-center bg-surface-container-lowest p-0.5 rounded-lg border border-outline-variant font-mono text-xs">
+              <button
+                class={format!(
+                  "px-2.5 py-1 rounded transition-colors cursor-pointer {}",
+                  if *diff_view_mode == "github" {
+                    "bg-primary text-on-primary font-bold"
+                  } else {
+                    "text-on-surface-variant hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let dvm = diff_view_mode.clone();
+                  let sdd = props.on_toggle_diff_drawer.clone();
+                  let is_open = props.show_diff_drawer;
+                  Callback::from(move |_| {
+                    dvm.set("github".to_string());
+                    if !is_open {
+                      sdd.emit(());
+                    }
+                  })
+                }
+              >
+                {"GitHub / Unified"}
+              </button>
+              <button
+                class={format!(
+                  "px-2.5 py-1 rounded transition-colors cursor-pointer {}",
+                  if *diff_view_mode == "side_by_side" {
+                    "bg-primary text-on-primary font-bold"
+                  } else {
+                    "text-on-surface-variant hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let dvm = diff_view_mode.clone();
+                  let sdd = props.on_toggle_diff_drawer.clone();
+                  let is_open = props.show_diff_drawer;
+                  Callback::from(move |_| {
+                    dvm.set("side_by_side".to_string());
+                    if !is_open {
+                      sdd.emit(());
+                    }
+                  })
+                }
+              >
+                {"Side-by-Side"}
+              </button>
+            </div>
+
+            // Filter Toggle: All Lines vs Changed Only
+            <button
+              class={format!(
+                "px-2.5 py-1 rounded-lg border font-mono text-xs transition-colors cursor-pointer {}",
+                if *diff_only_changes {
+                  "bg-secondary/20 text-secondary border-secondary font-bold"
+                } else {
+                  "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
+                }
+              )}
+              onclick={
+                let doc = diff_only_changes.clone();
+                let sdd = props.on_toggle_diff_drawer.clone();
+                let is_open = props.show_diff_drawer;
+                Callback::from(move |_| {
+                  doc.set(!*doc);
+                  if !is_open {
+                    sdd.emit(());
+                  }
+                })
+              }
+            >
+              {if *diff_only_changes { "Showing: Changed Lines Only" } else { "Showing: Full JSON" }}
+            </button>
+
+            if props.is_tauri {
               <button
                 class="flex items-center gap-space-xs bg-primary hover:bg-primary-fixed-dim text-on-primary-fixed px-space-md py-space-xs rounded text-xs font-semibold transition-colors cursor-pointer"
                 onclick={
@@ -823,14 +902,85 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                 <span class="material-symbols-outlined text-[14px]">{"save"}</span>
                 {"Commit Changes to Local Disk"}
               </button>
-            </div>
-          }
+            }
+          </div>
         </div>
 
         if props.show_diff_drawer {
-          <div class="bg-surface-container-lowest p-space-md rounded-lg font-mono text-xs overflow-x-auto max-h-96 border border-outline-variant">
-            <pre class="text-on-surface whitespace-pre">{&props.json_diff_text}</pre>
-          </div>
+          if *diff_view_mode == "side_by_side" {
+            <div class="bg-surface-container-lowest rounded-lg font-mono text-xs overflow-x-auto max-h-96 border border-outline-variant">
+              <div class="grid grid-cols-2 border-b border-surface-container bg-surface-container text-[11px] font-bold uppercase tracking-wider sticky top-0 z-10">
+                <div class="px-space-md py-1.5 text-red-300 border-r border-surface-container flex items-center justify-between">
+                  <span>{"System Base Profile (Before)"}</span>
+                  <span class="text-[10px] opacity-80">{"- Base"}</span>
+                </div>
+                <div class="px-space-md py-1.5 text-emerald-300 flex items-center justify-between">
+                  <span>{"Re-Created Output (After Lua Stack)"}</span>
+                  <span class="text-[10px] opacity-80">{"+ Derived"}</span>
+                </div>
+              </div>
+              <div class="divide-y divide-surface-container/40">
+                {for props.base_profile_json.lines().zip(props.derived_profile_json.lines()).enumerate().filter_map(|(idx, (b_line, d_line))| {
+                  let is_changed = b_line != d_line;
+                  if *diff_only_changes && !is_changed {
+                    return None;
+                  }
+                  let line_no = idx + 1;
+                  Some(html! {
+                    <div class="grid grid-cols-2">
+                      <div class={format!(
+                        "px-space-sm py-0.5 whitespace-pre overflow-x-auto border-r border-surface-container flex items-start gap-2 {}",
+                        if is_changed {
+                          "bg-red-950/45 text-red-300 border-l-2 border-l-red-500 font-semibold"
+                        } else {
+                          "text-on-surface-variant/80"
+                        }
+                      )}>
+                        <span class="w-8 shrink-0 text-right text-[10px] opacity-50 select-none">{line_no}</span>
+                        <span class="w-3 shrink-0 select-none">{if is_changed { "-" } else { " " }}</span>
+                        <span>{b_line}</span>
+                      </div>
+                      <div class={format!(
+                        "px-space-sm py-0.5 whitespace-pre overflow-x-auto flex items-start gap-2 {}",
+                        if is_changed {
+                          "bg-emerald-950/45 text-emerald-300 border-l-2 border-l-emerald-500 font-semibold"
+                        } else {
+                          "text-on-surface-variant/80"
+                        }
+                      )}>
+                        <span class="w-8 shrink-0 text-right text-[10px] opacity-50 select-none">{line_no}</span>
+                        <span class="w-3 shrink-0 select-none">{if is_changed { "+" } else { " " }}</span>
+                        <span>{d_line}</span>
+                      </div>
+                    </div>
+                  })
+                })}
+              </div>
+            </div>
+          } else {
+            <div class="bg-surface-container-lowest rounded-lg font-mono text-xs overflow-x-auto max-h-96 border border-outline-variant divide-y divide-surface-container/30">
+              {for props.json_diff_text.lines().enumerate().filter_map(|(idx, line)| {
+                let is_del = line.starts_with("- ");
+                let is_add = line.starts_with("+ ");
+                if *diff_only_changes && !is_del && !is_add {
+                  return None;
+                }
+                let row_cls = if is_del {
+                  "bg-red-950/45 text-red-300 border-l-2 border-red-500 font-semibold"
+                } else if is_add {
+                  "bg-emerald-950/45 text-emerald-300 border-l-2 border-emerald-500 font-semibold"
+                } else {
+                  "text-on-surface-variant/80"
+                };
+                Some(html! {
+                  <div class={format!("px-space-md py-0.5 whitespace-pre flex items-start gap-3 {}", row_cls)}>
+                    <span class="w-8 shrink-0 text-right text-[10px] opacity-50 select-none">{idx + 1}</span>
+                    <span>{line}</span>
+                  </div>
+                })
+              })}
+            </div>
+          }
         }
       </div>
     </div>

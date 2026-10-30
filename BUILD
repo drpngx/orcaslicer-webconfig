@@ -74,6 +74,27 @@ rust_binary(
     ),
 )
 
+rust_binary(
+    name = "compile_docs",
+    srcs = ["src/bin/compile_docs.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+    ),
+)
+
+genrule(
+    name = "compiled_docs_gen",
+    srcs = glob(["doc/*.md"]),
+    outs = ["compiled_docs.json"],
+    cmd = "$(location :compile_docs) $@ $(SRCS)",
+    tools = [":compile_docs"],
+)
+
 genrule(
     name = "orcaslicer_catalog_gen",
     srcs = [
@@ -116,10 +137,12 @@ rust_library(
     aliases = aliases(),
     compile_data = glob(["transformations/**/*.lua"]) + [
         "additional_catalog.json",
+        ":compiled_docs.json",
         ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
     data = [
+        ":compiled_docs.json",
         ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
@@ -128,6 +151,7 @@ rust_library(
         proc_macro = True,
     ),
     rustc_env = {
+        "COMPILED_DOCS_JSON": "$(execpath :compiled_docs.json)",
         "IMPORTED_VENDOR_CATALOG": "$(execpath :imported_vendor_catalog.json)",
         "ORCASLICER_GENERATED_CATALOG": "$(execpath :orcaslicer_generated_catalog.json)",
     },
@@ -140,11 +164,13 @@ rust_test(
     name = "orcaslicer_webconfig_test",
     compile_data = glob(["transformations/**/*.lua"]) + [
         "additional_catalog.json",
+        ":compiled_docs.json",
         ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
     crate = ":orcaslicer_webconfig",
     data = [
+        ":compiled_docs.json",
         ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
@@ -152,6 +178,7 @@ rust_test(
         proc_macro = True,
     ),
     rustc_env = {
+        "COMPILED_DOCS_JSON": "$(execpath :compiled_docs.json)",
         "IMPORTED_VENDOR_CATALOG": "$(execpath :imported_vendor_catalog.json)",
         "ORCASLICER_GENERATED_CATALOG": "$(execpath :orcaslicer_generated_catalog.json)",
     },
@@ -168,7 +195,10 @@ rust_wasm_bindgen(
 
 filegroup(
     name = "static_files",
-    srcs = glob(["static/**"]) + ["local_slicer_config.json"],
+    srcs = glob([
+        "static/**",
+        "doc/**",
+    ]) + ["local_slicer_config.json"],
     visibility = ["//visibility:public"],
 )
 

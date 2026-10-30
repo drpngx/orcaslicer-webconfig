@@ -13,6 +13,7 @@ pub mod transformations;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
+use crate::components::docs_view::DocsView;
 use crate::components::filament_tab::FilamentTab;
 use crate::components::home_tab::HomeTab;
 use crate::components::machine_tab::MachineTab;
@@ -169,8 +170,9 @@ pub fn App() -> Html {
   });
 
   // UI & Flushing Matrix / Multiplier state
-  let show_diff_drawer = use_state(|| false);
+  let show_diff_drawer = use_state(|| true);
   let show_export_modal = use_state(|| false);
+  let show_help_docs = use_state(|| false);
   let toast_message = use_state(|| None::<String>);
   let conflicts = use_state(|| {
     (*saved_state)
@@ -424,7 +426,9 @@ pub fn App() -> Html {
   // Handlers
   let on_select_tab = {
     let active_tab = active_tab.clone();
+    let show_help_docs = show_help_docs.clone();
     Callback::from(move |tab: ActiveTab| {
+      show_help_docs.set(false);
       active_tab.set(tab);
     })
   };
@@ -2075,6 +2079,11 @@ pub fn App() -> Html {
         bound_filename={(*bound_filename).clone()}
         active_rig_name={active_rig.name.clone()}
         ace_pro_units={active_rig.ace_pro_units}
+        show_help_docs={*show_help_docs}
+        on_toggle_help_docs={{
+          let shd = show_help_docs.clone();
+          Callback::from(move |_| shd.set(!*shd))
+        }}
         on_open_export_modal={on_open_export_modal.clone()}
         on_reset_all={on_reset_all.clone()}
         has_unapplied_changes={!pending_updates.is_empty()}
@@ -2393,7 +2402,7 @@ pub fn App() -> Html {
 
       // Initialization Modal (Requirements #5 & #6: called "Initialization", no HTTP Client OS,
       // 1. Start From Scratch (Recommended & Default), 2. Load Orca WebConfig, 3. Expert Mode)
-      if *show_bind_modal {
+      if *show_bind_modal && !*show_help_docs {
         <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
           <div class="bg-surface-container-low border-2 border-primary rounded-2xl max-w-3xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
             <div class="flex items-start justify-between gap-space-md">
@@ -2733,7 +2742,15 @@ pub fn App() -> Html {
           </div>
         }
 
-        // Render Active Tab
+        // Render Documentation Viewer (`DocsView`) when Help is active, or the Active Tab
+        if *show_help_docs {
+          <DocsView
+            on_close_docs={{
+              let shd = show_help_docs.clone();
+              Callback::from(move |_| shd.set(false))
+            }}
+          />
+        } else {
         {match *active_tab {
           ActiveTab::Home => html! {
             <HomeTab
@@ -2776,6 +2793,8 @@ pub fn App() -> Html {
               on_select_process={on_select_process.clone()}
               safe_speed_ceiling={eval_result.safe_speed_ceiling}
               json_diff_text={json_diff_text}
+              base_profile_json={base_json_str}
+              derived_profile_json={derived_json_str}
               our_internal_config_json={our_internal_config_json}
               user_disk_config_json={user_disk_config_json}
             />
@@ -2936,6 +2955,7 @@ pub fn App() -> Html {
             />
           },
         }}
+        }
       </main>
     </div>
   }
