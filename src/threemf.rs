@@ -131,7 +131,9 @@ pub fn extract_file_from_zip(zip_bytes: &[u8], target_name: &str) -> Option<Stri
 
 /// Resolve a guaranteed-valid system filament preset name for Anycubic Kobra S1 0.4 nozzle
 pub fn resolve_kobra_s1_filament_inherits(spool: &FilamentSpool) -> String {
+  let is_oc = spool.name.starts_with("OC -") || spool.name.starts_with("OC:");
   if spool.id.starts_with("disk_")
+    && !is_oc
     && !spool.inherits.trim().is_empty()
     && !spool.inherits.contains("TPU for ACE @Anycubic Kobra S1 ")
     && !spool.inherits.contains("TPU 95A @Anycubic Kobra S1 ")
@@ -140,52 +142,59 @@ pub fn resolve_kobra_s1_filament_inherits(spool: &FilamentSpool) -> String {
     return spool.inherits.clone();
   }
   match spool.material_type.trim() {
+    "PLA+" => return "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA Matte" => return "Anycubic PLA Matte @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA Silk" => return "Anycubic PLA Silk @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA Glow" => return "Anycubic PLA Glow @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PLA High Speed" => return "Anycubic PLA High Speed @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    _ => {}
+  }
+  match FilamentSpool::canonical_polymer_key(&spool.material_type) {
     "PLA+" => "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA-CF" | "PLA-GF" => "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA Matte" => "Anycubic PLA Matte @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA Silk" => "Anycubic PLA Silk @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA Glow" => "Anycubic PLA Glow @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA High Speed" => "Anycubic PLA High Speed @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PETG-CF" | "PETG-GF" | "PCTG-CF" | "PCTG-GF" => {
-      "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle".to_string()
+    "PLA-CF" => "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PETG-CF" | "PCTG-CF" => "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PET-CF" => "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PETG" | "PCTG" => "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" => {
+      "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle".to_string()
     }
-    "PET-CF" | "PET-GF" => "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PETG" | "PCTG" | "PETG Translucent" | "PETG HF" => {
-      "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle".to_string()
+    "PEBA" => "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "ASA" | "ASA-CF" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "ABS" | "ABS-CF" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PC" | "PC-CF" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle".to_string(),
+    "PA" | "PA6-CF" | "PA12-CF" | "PAHT-CF" | "PPA-CF" => {
+      "Anycubic PA6-CF @Anycubic Kobra S1 0.4 nozzle".to_string()
     }
-    "TPU" | "TPU for ACE" | "TPU for AMS" | "TPU 95A" | "TPU 95A HF" | "TPU 90A" | "TPU 85A"
-    | "TPU 64D" | "Rebound TPU" | "TPE" => "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PEBA" | "PEBA 90A" | "PEBA-CF" => "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "ASA" | "ASA-CF" | "ASA-GF" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "ABS" | "ABS-CF" | "ABS-GF" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PC" | "PC-CF" | "PC-GF" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PA" | "PA-CF" | "PA6-CF" | "PA6-GF" | "PA12" | "PA12-CF" | "PAHT" | "PAHT-CF" | "PAHT-GF"
-    | "PPA" | "PPA-CF" | "PPA-GF" => "Anycubic PA6-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
     _ => "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle".to_string(),
   }
 }
 
 /// Map internal material codes to OrcaSlicer / AnycubicSlicerNext valid `filament_type` enum strings
 pub fn resolve_orca_filament_type(material_type: &str) -> String {
-  match material_type.trim() {
-    "PLA+" | "PLA Matte" | "PLA Silk" | "PLA Glow" | "PLA High Speed" => "PLA".to_string(),
-    "PLA-GF" => "PLA-CF".to_string(),
-    "PCTG" | "PETG Translucent" | "PETG HF" => "PETG".to_string(),
-    "PCTG-CF" | "PCTG-GF" | "PETG-GF" => "PETG-CF".to_string(),
-    "PET-GF" => "PET-CF".to_string(),
-    "TPU 95A" | "TPU 95A HF" | "TPU 90A" | "TPU 85A" | "TPU 64D" | "TPU for AMS"
-    | "Rebound TPU" | "TPE" => "TPU".to_string(),
-    "PEBA 90A" | "PEBA-CF" => "PEBA".to_string(),
-    "ASA-CF" | "ASA-GF" => "ASA".to_string(),
-    "ABS-CF" | "ABS-GF" => "ABS".to_string(),
-    "PA-CF" | "PA6-GF" | "PA12-CF" => "PA6-CF".to_string(),
-    "PAHT" | "PAHT-GF" | "PPA" | "PPA-CF" | "PPA-GF" => "PAHT-CF".to_string(),
-    "PA12" => "PA".to_string(),
+  match FilamentSpool::canonical_polymer_key(material_type) {
+    "PLA+" => "PLA".to_string(),
+    "PLA-CF" => "PLA-CF".to_string(),
+    "PCTG" | "PETG" => "PETG".to_string(),
+    "PCTG-CF" | "PETG-CF" => "PETG-CF".to_string(),
+    "PET-CF" => "PET-CF".to_string(),
+    "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" => "TPU".to_string(),
+    "PEBA" => "PEBA".to_string(),
+    "ASA" | "ASA-CF" => "ASA".to_string(),
+    "ABS" | "ABS-CF" => "ABS".to_string(),
+    "PC" | "PC-CF" => "PC".to_string(),
+    "PA6-CF" | "PA12-CF" => "PA6-CF".to_string(),
+    "PAHT-CF" | "PPA-CF" => "PAHT-CF".to_string(),
+    "PA" => "PA".to_string(),
+    "PVA" => "PVA".to_string(),
+    "BVOH" => "BVOH".to_string(),
+    "HIPS" => "HIPS".to_string(),
+    "PHA" => "PHA".to_string(),
+    "PCL" => "PCL".to_string(),
     other => other.to_string(),
   }
 }
 
-const FILAMENT_DIFF_KEYS: &str = "default_filament_colour;fan_max_speed;fan_max_speed_BRASS;fan_max_speed_HS;fan_min_speed;fan_min_speed_BRASS;fan_min_speed_HS;filament_deretraction_speed;filament_diameter;filament_flow_ratio;filament_max_volumetric_speed;filament_notes;filament_retract_before_wipe;filament_retraction_length;filament_retraction_speed;filament_type;filament_wipe;filament_wipe_distance;filament_z_hop;filament_z_hop_types;hot_plate_temp;hot_plate_temp_initial_layer;nozzle_temperature;nozzle_temperature_BRASS;nozzle_temperature_HS;nozzle_temperature_initial_layer;nozzle_temperature_initial_layer_BRASS;nozzle_temperature_initial_layer_HS;pressure_advance;required_nozzle_HRC;textured_plate_temp;textured_plate_temp_initial_layer";
+const FILAMENT_DIFF_KEYS: &str = "default_filament_colour;fan_max_speed;fan_max_speed_BRASS;fan_max_speed_HS;fan_min_speed;fan_min_speed_BRASS;fan_min_speed_HS;filament_deretraction_speed;filament_diameter;filament_flow_ratio;filament_max_volumetric_speed;filament_notes;filament_retract_before_wipe;filament_retraction_length;filament_retraction_speed;filament_type;filament_wipe;filament_wipe_distance;filament_z_hop;filament_z_hop_types;hot_plate_temp;hot_plate_temp_initial_layer;nozzle_temperature;nozzle_temperature_BRASS;nozzle_temperature_HS;nozzle_temperature_initial_layer;nozzle_temperature_initial_layer_BRASS;nozzle_temperature_initial_layer_HS;nozzle_temperature_range_high;nozzle_temperature_range_low;pressure_advance;required_nozzle_HRC;textured_plate_temp;textured_plate_temp_initial_layer";
 
 fn first_str_from_map(
   map: &serde_json::Map<String, serde_json::Value>,
@@ -391,6 +400,16 @@ pub fn resolve_spool_orca_filament_map_with_rig(
     "nozzle_temperature_initial_layer_HS".to_string(),
     serde_json::json!([initial_temp.to_string()]),
   );
+  let (range_low, range_high) =
+    FilamentSpool::compute_nozzle_temp_range(&spool.material_type, effective_temp, initial_temp);
+  base_map.insert(
+    "nozzle_temperature_range_low".to_string(),
+    serde_json::json!([range_low.to_string()]),
+  );
+  base_map.insert(
+    "nozzle_temperature_range_high".to_string(),
+    serde_json::json!([range_high.to_string()]),
+  );
   base_map.insert(
     "hot_plate_temp".to_string(),
     serde_json::json!([effective_bed.to_string()]),
@@ -512,6 +531,8 @@ fn build_filament_preset_json_with_source(
     "nozzle_temperature_initial_layer",
     "nozzle_temperature_initial_layer_BRASS",
     "nozzle_temperature_initial_layer_HS",
+    "nozzle_temperature_range_low",
+    "nozzle_temperature_range_high",
     "hot_plate_temp",
     "hot_plate_temp_initial_layer",
     "textured_plate_temp",
@@ -821,10 +842,24 @@ pub fn build_machine_preset_json(rig: &MachineRig) -> String {
     "nozzle_diameter".to_string(),
     serde_json::json!([noz_diam_str]),
   );
+  let ret_len_str = if (rig.base_retraction_length - rig.base_retraction_length.round()).abs() < 1e-6 {
+    format!("{:.1}", rig.base_retraction_length)
+  } else {
+    format!("{:.2}", rig.base_retraction_length)
+      .trim_end_matches('0')
+      .trim_end_matches('.')
+      .to_string()
+  };
   out.insert(
     "retraction_length".to_string(),
-    serde_json::json!([format!("{:.2}", rig.base_retraction_length)]),
+    serde_json::json!([ret_len_str]),
   );
+  if rig.ace_pro_units > 0 {
+    out.insert(
+      "retraction_distances_when_cut".to_string(),
+      serde_json::json!(["18"]),
+    );
+  }
   if let Some(ret_spd) = cat.default_machine_base.get("retraction_speed") {
     out.insert("retraction_speed".to_string(), ret_spd.clone());
   }
@@ -951,6 +986,8 @@ pub fn build_project_settings_config_json(
     "nozzle_temperature_initial_layer",
     "nozzle_temperature_initial_layer_BRASS",
     "nozzle_temperature_initial_layer_HS",
+    "nozzle_temperature_range_low",
+    "nozzle_temperature_range_high",
     "hot_plate_temp",
     "hot_plate_temp_initial_layer",
     "textured_plate_temp",
@@ -1580,5 +1617,144 @@ mod tests {
         exp_name
       );
     }
+  }
+
+  #[test]
+  fn test_tpu_for_ams_and_petg_temp_range_and_brand_preserving_and_pha_export() {
+    let catalog = crate::catalog::load_merged_catalog();
+    // 1. Verify PLA is the very first filament in Generic (never PHA)
+    let first_generic = catalog
+      .filaments
+      .iter()
+      .find(|f| f.brand == "Generic")
+      .expect("Generic brand in catalog");
+    assert_eq!(first_generic.code, "PLA");
+
+    // 2. Verify selecting PETG and switching across all brands keeps PETG (never resets to first filament of brand)
+    let petg_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.brand == "Generic" && f.code == "PETG")
+      .expect("Generic PETG in catalog");
+    let mut spool = FilamentSpool::from_catalog_entry(1, petg_entry, "hardened_steel");
+    assert_eq!(FilamentSpool::canonical_polymer_key(&spool.material_type), "PETG");
+
+    for brand in [
+      "SUNLU",
+      "Polymaker",
+      "Anycubic",
+      "Bambu Lab",
+      "eSUN",
+      "Overture",
+      "Siraya Tech",
+      "Generic",
+    ] {
+      spool.apply_brand_change(brand, "hardened_steel");
+      assert_eq!(
+        spool.brand, brand,
+        "Brand should update to '{}' when switching brand on PETG",
+        brand
+      );
+      assert_eq!(
+        FilamentSpool::canonical_polymer_key(&spool.material_type),
+        "PETG",
+        "Switching brand to '{}' must preserve PETG polymer (got '{}')",
+        brand,
+        spool.material_type
+      );
+    }
+
+    // 3. Verify TPU for AMS + PETG exported presets & .3mf project_settings.config have mutually compatible nozzle_temperature_range_low/high
+    let tpu_ams_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "TPU for AMS")
+      .expect("TPU for AMS in catalog");
+    let tpu_ams_spool = FilamentSpool::from_catalog_entry(1, tpu_ams_entry, "hardened_steel");
+    let petg_spool = FilamentSpool::from_catalog_entry(2, petg_entry, "hardened_steel");
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+
+    let tpu_json: serde_json::Value =
+      serde_json::from_str(&export_standalone_filament_json(&tpu_ams_spool, &rig)).unwrap();
+    let petg_json: serde_json::Value =
+      serde_json::from_str(&export_standalone_filament_json(&petg_spool, &rig)).unwrap();
+
+    let tpu_temp: i32 = tpu_json["nozzle_temperature"][0]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+    let petg_temp: i32 = petg_json["nozzle_temperature"][0]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+    let tpu_low: i32 = tpu_json["nozzle_temperature_range_low"][0]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+    let tpu_high: i32 = tpu_json["nozzle_temperature_range_high"][0]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+    let petg_low: i32 = petg_json["nozzle_temperature_range_low"][0]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+    let petg_high: i32 = petg_json["nozzle_temperature_range_high"][0]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+
+    assert!(
+      tpu_temp >= petg_low && tpu_temp <= petg_high,
+      "TPU for AMS temp ({}°C) must be inside PETG range [{}..{}°C]",
+      tpu_temp,
+      petg_low,
+      petg_high
+    );
+    assert!(
+      petg_temp >= tpu_low && petg_temp <= tpu_high,
+      "PETG temp ({}°C) must be inside TPU for AMS range [{}..{}°C]",
+      petg_temp,
+      tpu_low,
+      tpu_high
+    );
+
+    // 4. Verify importing OC - PHA • 0.4 Hardened.json produces zero conflicts and zero safety warnings
+    let pha_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PHA")
+      .expect("PHA in catalog");
+    let pha_spool = FilamentSpool::from_catalog_entry(1, pha_entry, "hardened_steel");
+    let pha_disk_json = export_standalone_filament_json(&pha_spool, &rig);
+    let scanned = vec![crate::fs_access::ScannedFileEntry {
+      relative_path: "user/434139/filament/OC - PHA • 0.4 Hardened.json".to_string(),
+      filename: "OC - PHA • 0.4 Hardened.json".to_string(),
+      bytes: pha_disk_json.into_bytes(),
+    }];
+    let imported = crate::dir_import::import_scanned_directory(&scanned).unwrap();
+    assert!(
+      imported.conflicts.is_empty(),
+      "OC - PHA • 0.4 Hardened must not trigger any external conflicts: {:?}",
+      imported.conflicts
+    );
+    let warnings = crate::transformations::TransformationEngine::evaluate_safety_warnings(
+      &rig,
+      &imported.filaments,
+      &imported.base_profile,
+      &imported.conflicts,
+      &imported.disk_flush_matrix,
+    );
+    assert!(
+      warnings.is_empty(),
+      "OC - PHA • 0.4 Hardened must not trigger any safety warnings at export: {:?}",
+      warnings
+    );
   }
 }

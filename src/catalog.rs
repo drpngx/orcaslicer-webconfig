@@ -196,7 +196,7 @@ impl CatalogFilament {
   pub fn base_material_code(&self) -> &str {
     match self.code.as_str() {
       "PETG Translucent" | "PETG Glow" | "PETG Conductive" | "PETG Marble"
-      | "PETG Photochromic" | "PETG-ESD" => "PETG",
+      | "PETG Photochromic" => "PETG",
       "PLA Matte" | "PLA Silk" | "PLA Wood" | "PLA Metal" | "PLA Glow" | "PLA-LW Foaming"
       | "PLA-AERO" | "PLA Conductive" | "PLA Marble" | "PLA Photochromic" => "PLA",
       "ABS Glow" | "ABS Conductive" => "ABS",
@@ -235,6 +235,40 @@ fn category_order(cat: &str) -> usize {
     "Nylon (PA / PAHT / PPA)" => 4,
     "TPU / TPE / PEBA Flex" => 5,
     "PVA / Support" => 6,
+    _ => 10,
+  }
+}
+
+/// Priority within a `(brand, category)` bucket so the foundational polymers (`PLA`, `PLA+`,
+/// `PETG`, `PCTG`, `TPU`, `ASA`, `ABS`, `PC`, `PA`, `PVA`) always sort before specialty/niche
+/// variants (`PHA`, `APLA`, `PCL`, `ESD`, `CF`, etc.).
+fn polymer_priority(code: &str) -> usize {
+  match code.trim().to_uppercase().as_str() {
+    "PLA" => 0,
+    "PLA+" | "PLA PLUS" | "PLA HIGH SPEED" | "HIGH SPEED PLA" => 1,
+    "PLA MATTE" | "PLA SILK" | "POLYLITE PLA" | "POLYTERRA PLA" | "PANCHROMA PLA" | "PLA BASIC"
+    | "PLA CLASSIC" => 2,
+    "PLA-CF" | "PLA-GF" => 3,
+    "PETG" | "POLYMAKER PETG" | "POLYLITE PETG" | "HIGH SPEED MATTE PETG" | "PETG HF"
+    | "PETG TRANSLUCENT" => 0,
+    "PCTG" => 1,
+    "PETG-CF" | "PETG-GF" | "PCTG-CF" | "PCTG-GF" | "FIBREHEART PETG-CF" => 2,
+    "PET-CF" | "PET-GF" | "FIBREHEART PET-CF" => 3,
+    "TPU" | "TPU 95A" | "TPU 95A HF" | "FLEX TPU 95A HF" => 0,
+    "TPU FOR AMS" | "TPU 64D" => 1,
+    "TPU 90A" | "TPU 85A" | "FLEX TPU 85A" | "REBOUND TPU" => 2,
+    "PEBA" | "PEBA 90A" | "PEBA AIR" | "TPE" => 3,
+    "ASA" | "POLYLITE ASA" => 0,
+    "ABS" | "POLYLITE ABS" => 1,
+    "ASA-CF" | "ASA-GF" | "ABS-CF" | "ABS-GF" | "FIBREHEART ABS-CF" | "FIBREHEART ABS-GF" => 2,
+    "PC" | "POLYLITE PC" | "POLYMAX PC" => 0,
+    "PC-CF" | "PC-GF" => 1,
+    "PA" | "PA6" | "PA12" => 0,
+    "PA6-CF" | "PA-CF" | "PA12-CF" | "PAHT-CF" | "PPA-CF" => 1,
+    "PVA" | "BVOH" | "HIPS" => 0,
+    "PHA" => 15,
+    "APLA" => 16,
+    "PCL" => 20,
     _ => 10,
   }
 }
@@ -308,11 +342,72 @@ pub fn load_merged_catalog() -> CombinedCatalog {
   for f in imported_vendor.filaments {
     fil_map.insert(f.catalog_key(), f);
   }
-  let mut filaments: Vec<CatalogFilament> = fil_map.into_values().collect();
+  let mut filaments: Vec<CatalogFilament> = fil_map
+    .into_values()
+    .map(|mut f| {
+      let up = f.code.to_uppercase();
+      let canon = crate::models::FilamentSpool::canonical_polymer_key(&f.code);
+      if !up.contains("ESD") && !f.default_finish.eq_ignore_ascii_case("Foaming") {
+        match canon {
+          "PETG" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(225, 245);
+            f.base_bed_c = f.base_bed_c.clamp(65, 80);
+          }
+          "PETG-CF" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(235, 250);
+            f.base_bed_c = f.base_bed_c.clamp(65, 80);
+          }
+          "PCTG" | "PCTG-CF" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(245, 265);
+            f.base_bed_c = f.base_bed_c.clamp(75, 90);
+          }
+          "PLA" | "PLA+" | "PLA-CF" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(200, 225);
+            f.base_bed_c = f.base_bed_c.clamp(45, 65);
+          }
+          "PHA" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(200, 225);
+            f.base_bed_c = f.base_bed_c.clamp(45, 60);
+          }
+          "PVA" | "BVOH" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(195, 215);
+            f.base_bed_c = f.base_bed_c.clamp(45, 60);
+          }
+          "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" | "TPU-GF" | "PEBA" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(210, 240);
+            f.base_bed_c = f.base_bed_c.clamp(40, 65);
+          }
+          "ABS" | "ABS-CF" | "ASA" | "ASA-CF" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(240, 270);
+            f.base_bed_c = f.base_bed_c.clamp(90, 110);
+            f.fan_pct = f.fan_pct.min(35);
+          }
+          "PEEK" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(330, 400);
+            f.base_bed_c = f.base_bed_c.clamp(115, 145);
+            f.fan_pct = f.fan_pct.min(25);
+          }
+          "PPS" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(305, 345);
+            f.base_bed_c = f.base_bed_c.clamp(100, 120);
+            f.fan_pct = f.fan_pct.min(25);
+          }
+          "PC" | "PC-CF" | "PET-CF" | "PA" | "PA6-CF" | "PA12-CF" | "PAHT-CF" | "PPA-CF" => {
+            f.base_nozzle_c = f.base_nozzle_c.clamp(255, 305);
+            f.base_bed_c = f.base_bed_c.clamp(80, 110);
+            f.fan_pct = f.fan_pct.min(35);
+          }
+          _ => {}
+        }
+      }
+      f
+    })
+    .collect();
   filaments.sort_by(|a, b| {
     brand_order(&a.brand)
       .cmp(&brand_order(&b.brand))
       .then_with(|| category_order(&a.category).cmp(&category_order(&b.category)))
+      .then_with(|| polymer_priority(&a.code).cmp(&polymer_priority(&b.code)))
       .then_with(|| a.code.cmp(&b.code))
   });
 

@@ -451,6 +451,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                   let cur_brand_norm = FilamentSpool::normalized_brand(&spool.brand).to_string();
                   let mat_options: Vec<String> = {
                     let mut opts = Vec::new();
+                    // First add the brand's own catalog material codes in priority order
                     for f in &catalog.filaments {
                       if f.brand.eq_ignore_ascii_case(&cur_brand_norm) {
                         let base = f.base_material_code().to_string();
@@ -459,8 +460,11 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                         }
                       }
                     }
-                    if opts.is_empty() {
-                      opts = material_choices.clone();
+                    // Then include all global material choices so switching brands never drops a material from the dropdown
+                    for m in &material_choices {
+                      if !opts.iter().any(|c: &String| c.eq_ignore_ascii_case(m)) {
+                        opts.push(m.clone());
+                      }
                     }
                     if !opts.iter().any(|c: &String| c.eq_ignore_ascii_case(&spool.material_type)) {
                       opts.insert(0, spool.material_type.clone());
@@ -545,6 +549,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
 
                         // Brand Selector
                         <select
+                          key={format!("brand_sel_{}_{}", spool.id, cur_brand_norm)}
                           title="Filament Brand / Vendor (loads checked-in .3mf or Preset Manager profile)"
                           onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
                           class="bg-secondary/15 border border-secondary/40 rounded px-2 py-1 text-xs font-bold text-secondary cursor-pointer shrink-0"
@@ -560,7 +565,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                         >
                           {for FILAMENT_BRAND_OPTIONS.iter().filter(|&&b| b != "All").map(|b_opt| {
                             html! {
-                              <option value={*b_opt} selected={cur_brand_norm.eq_ignore_ascii_case(b_opt)}>
+                              <option key={*b_opt} value={*b_opt} selected={cur_brand_norm.eq_ignore_ascii_case(b_opt)}>
                                 {*b_opt}
                               </option>
                             }
@@ -569,6 +574,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
 
                         // Material Type Selector
                         <select
+                          key={format!("mat_sel_{}_{}_{}", spool.id, cur_brand_norm, spool.material_type)}
                           onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
                           class="bg-surface-container-high border border-outline-variant/60 rounded px-2 py-1 text-xs font-bold text-primary cursor-pointer shrink-0"
                           value={spool.material_type.clone()}
@@ -583,7 +589,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                         >
                           {for mat_options.iter().map(|m_opt| {
                             html! {
-                              <option value={m_opt.clone()} selected={spool.material_type.eq_ignore_ascii_case(m_opt)}>
+                              <option key={m_opt.clone()} value={m_opt.clone()} selected={spool.material_type.eq_ignore_ascii_case(m_opt)}>
                                 {m_opt}
                               </option>
                             }
@@ -597,6 +603,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                       >
                         // Finish Selector
                         <select
+                          key={format!("fin_sel_{}_{}", spool.id, spool.finish_type)}
                           class="bg-surface-container-low border border-outline-variant/60 rounded px-2 py-1 text-xs text-on-surface cursor-pointer"
                           value={spool.finish_type.clone()}
                           onchange={Callback::from(move |e: Event| {
@@ -609,7 +616,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                         >
                           {for crate::catalog::FINISH_OPTIONS.iter().map(|(val, label)| {
                             html! {
-                              <option value={*val} selected={spool.finish_type == *val}>{*label}</option>
+                              <option key={*val} value={*val} selected={spool.finish_type == *val}>{*label}</option>
                             }
                           })}
                         </select>

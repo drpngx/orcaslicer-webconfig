@@ -2,7 +2,7 @@ use crate::fs_access::{LocalFsSaveFileEntry, ScannedFileEntry};
 use crate::models::{FilamentDeltaEntry, FilamentSpool, MachineRig, ProcessProfile};
 use crate::orca_profile::OrcaProfile;
 use crate::threemf::build_zip_archive;
-use crate::transformations::{ExternalConflict, PendingDiskUpdate};
+use crate::transformations::{values_are_equivalent, ExternalConflict, PendingDiskUpdate};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -317,13 +317,37 @@ pub fn import_scanned_directory(
     let name = extract_str(m_val, "name").unwrap_or_else(|| "User Machine".to_string());
     let inherits =
       extract_str(m_val, "inherits").unwrap_or_else(|| "Anycubic Kobra S1 0.4 nozzle".to_string());
-    let nozzle_type =
+    let raw_noz_type =
       extract_str(m_val, "nozzle_type").unwrap_or_else(|| "hardened_steel".to_string());
-    let nozzle_material = match nozzle_type.as_str() {
-      "hardened_steel" => "Hardened Steel".to_string(),
-      "diamondback" => "Diamondback PCD".to_string(),
-      "cht" => "Bi-Metal CHT".to_string(),
-      _ => "Brass".to_string(),
+    let name_low = name.to_lowercase();
+    let notes_low = extract_str(m_val, "printer_notes")
+      .or_else(|| extract_str(m_val, "notes"))
+      .unwrap_or_default()
+      .to_lowercase();
+    let (nozzle_type, nozzle_material) = if name_low.contains("diamond")
+      || notes_low.contains("diamondback")
+      || raw_noz_type == "diamondback"
+    {
+      ("diamondback".to_string(), "Diamondback PCD".to_string())
+    } else if name_low.contains("ruby") || notes_low.contains("ruby_brass") {
+      ("ruby_brass".to_string(), "Ruby-Tipped Brass".to_string())
+    } else if name_low.contains("cm2") || notes_low.contains("cm2") {
+      (
+        "cm2".to_string(),
+        "MicroSwiss CM2 Hardened".to_string(),
+      )
+    } else if name_low.contains("cht") || notes_low.contains("cht") || raw_noz_type == "cht" {
+      ("cht".to_string(), "Bi-Metal CHT".to_string())
+    } else if name_low.contains("brass")
+      || notes_low.contains("orca_brass")
+      || raw_noz_type == "brass"
+    {
+      ("orca_brass".to_string(), "Brass".to_string())
+    } else {
+      (
+        "hardened_steel".to_string(),
+        "Hardened Steel".to_string(),
+      )
     };
 
     let base_sys = system_machines.get(&inherits);
@@ -357,7 +381,9 @@ pub fn import_scanned_directory(
       .clone()
       .unwrap_or_else(|| base_cut_retract.clone());
 
-    if effective_disk_speed != expected_retract_speed {
+    let is_oc_machine = name.starts_with("OC -") || name.starts_with("OC:");
+
+    if !is_oc_machine && !values_are_equivalent(&effective_disk_speed, &expected_retract_speed) {
       conflicts.push(ExternalConflict {
         param_key: format!("machine:retraction_speed ({})", name),
         param_label: format!("Machine Retraction Speed [{}]", name),
@@ -375,7 +401,7 @@ pub fn import_scanned_directory(
       });
     }
 
-    if effective_disk_len != expected_retract_len {
+    if !is_oc_machine && !values_are_equivalent(&effective_disk_len, &expected_retract_len) {
       conflicts.push(ExternalConflict {
         param_key: format!("machine:retraction_length ({})", name),
         param_label: format!("Machine Retraction Length [{}]", name),
@@ -393,7 +419,7 @@ pub fn import_scanned_directory(
       });
     }
 
-    if effective_disk_cut != expected_cut_retract {
+    if !is_oc_machine && !values_are_equivalent(&effective_disk_cut, &expected_cut_retract) {
       let actual_desc = if disk_cut_retract.is_some() {
         format!("{} mm", effective_disk_cut)
       } else {
@@ -500,17 +526,49 @@ pub fn import_scanned_directory(
   for (idx, (rel_path, f_val, raw_text)) in user_filament_files.iter().enumerate() {
     let name = extract_str(f_val, "name").unwrap_or_else(|| format!("Filament #{}", idx + 1));
     let raw_inherits = extract_str(f_val, "inherits").unwrap_or_default();
-    let is_standalone_base_file =
-      rel_path.contains("/filament/base/") || raw_inherits.trim().is_empty();
+    let is_oc_managed_filament = name.starts_with("OC -") || name.starts_with("OC:");
+    let is_standalone_base_file = rel_path.contains("/filament/base/")
+      || raw_inherits.trim().is_empty()
+      || is_oc_managed_filament;
 
     // Determine actual material type from profile name or `filament_type` field
     let upper_name = name.to_uppercase();
-    let raw_mat_type = if upper_name.contains("PCTG") {
+    let raw_mat_type = if upper_name.contains("PCTG-CF") {
+      "PCTG-CF".to_string()
+    } else if upper_name.contains("PCTG") {
       "PCTG".to_string()
     } else if upper_name.contains("PLA CARBON") || upper_name.contains("PLA-CF") {
       "PLA-CF".to_string()
     } else if upper_name.contains("PETG-CF") {
       "PETG-CF".to_string()
+    } else if upper_name.contains("TPU-GF") || upper_name.contains("TPU-CF") {
+      "Fibreheart TPU-GF".to_string()
+    } else if upper_name.contains("FLEX TPU 64D HF") {
+      "Flex TPU 64D HF".to_string()
+    } else if upper_name.contains("TPU FOR AMS") || upper_name.contains("TPU FOR ACE") || upper_name.contains("TPU 64D") {
+      "TPU for AMS".to_string()
+    } else if upper_name.contains("TPU 95A") {
+      "TPU 95A".to_string()
+    } else if upper_name.contains("TPU 85A") {
+      "TPU 85A".to_string()
+    } else if upper_name.contains("FIBREHEART ABS-CF") {
+      "Fibreheart ABS-CF".to_string()
+    } else if upper_name.contains("ABS-CF") {
+      "ABS-CF".to_string()
+    } else if upper_name.contains("ASA-CF") {
+      "ASA-CF".to_string()
+    } else if upper_name.contains("PHA") {
+      "PHA".to_string()
+    } else if upper_name.contains("PVA") {
+      "PVA".to_string()
+    } else if upper_name.contains("BVOH") {
+      "BVOH".to_string()
+    } else if upper_name.contains("HIPS") {
+      "HIPS".to_string()
+    } else if upper_name.contains("PEBA") {
+      "PEBA".to_string()
+    } else if upper_name.contains("PLA+") {
+      "PLA+".to_string()
     } else {
       extract_str(f_val, "filament_type")
         .or_else(|| {
@@ -548,21 +606,26 @@ pub fn import_scanned_directory(
     };
 
     // Resolve true system base matching the actual `mat_type`
-    let canonical_base_name = match mat_type.as_str() {
+    let canonical_base_name = match FilamentSpool::canonical_polymer_key(&mat_type) {
       "PETG" | "PCTG" => "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
-      "PETG-CF" => "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle",
+      "PETG-CF" | "PCTG-CF" => "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle",
+      "PET-CF" => "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle",
       "PLA-CF" => "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
-      "TPU" => "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle",
-      "ABS" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle",
-      "ASA" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle",
-      "PA" | "PA12" | "PA6-CF" => {
+      "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" => {
+        "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle"
+      }
+      "PEBA" => "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle",
+      "ABS" | "ABS-CF" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle",
+      "ASA" | "ASA-CF" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle",
+      "PA" | "PA12-CF" | "PA6-CF" | "PAHT-CF" | "PPA-CF" => {
         if system_filaments.contains_key("yxpoler PA @Anycubic Kobra S1 0.4 nozzle") {
           "yxpoler PA @Anycubic Kobra S1 0.4 nozzle"
         } else {
           "Anycubic PA @Anycubic Kobra S1 Max 0.4 nozzle"
         }
       }
-      "PC" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle",
+      "PC" | "PC-CF" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle",
+      "PLA+" => "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle",
       _ => {
         if name.contains("PLA+") {
           "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle"
@@ -579,10 +642,22 @@ pub fn import_scanned_directory(
     };
     let inherited_mat_matches = inherited_sys
       .and_then(|b| extract_str(b, "filament_type"))
-      .map(|m| m.eq_ignore_ascii_case(&mat_type) || (mat_type == "PCTG" && m == "PETG"))
+      .map(|m| {
+        m.eq_ignore_ascii_case(&mat_type)
+          || FilamentSpool::polymer_family_key(&m) == FilamentSpool::polymer_family_key(&mat_type)
+      })
       .unwrap_or(false);
 
-    let (resolved_inherits_name, base_sys) = if is_standalone_base_file {
+    let (resolved_inherits_name, base_sys) = if is_oc_managed_filament {
+      if !raw_inherits.is_empty() && inherited_mat_matches {
+        (raw_inherits.clone(), inherited_sys)
+      } else {
+        (
+          canonical_base_name.to_string(),
+          system_filaments.get(canonical_base_name),
+        )
+      }
+    } else if is_standalone_base_file {
       (format!("Standalone Base ({})", mat_type), None)
     } else if inherited_mat_matches {
       (raw_inherits.clone(), inherited_sys)
@@ -955,10 +1030,67 @@ pub fn import_scanned_directory(
     };
 
     let vendor = extract_str(f_val, "filament_vendor")
-      .or_else(|| base_sys.and_then(|b| extract_str(b, "filament_vendor")))
+      .or_else(|| {
+        if is_oc_managed_filament {
+          let nm_up = name.to_uppercase();
+          if nm_up.contains("SIRAYA") {
+            Some("Siraya Tech".to_string())
+          } else if nm_up.contains("BAMBU") {
+            Some("Bambu Lab".to_string())
+          } else if nm_up.contains("POLYMAKER")
+            || nm_up.contains("POLYLITE")
+            || nm_up.contains("POLYMAX")
+            || nm_up.contains("POLYTERRA")
+            || nm_up.contains("FIBERON")
+            || nm_up.contains("PANCHROMA")
+          {
+            Some("Polymaker".to_string())
+          } else if nm_up.contains("ANYCUBIC") {
+            Some("Anycubic".to_string())
+          } else if nm_up.contains("SUNLU") {
+            Some("SUNLU".to_string())
+          } else if nm_up.contains("ESUN") {
+            Some("eSUN".to_string())
+          } else if nm_up.contains("OVERTURE") {
+            Some("Overture".to_string())
+          } else {
+            Some("Generic".to_string())
+          }
+        } else {
+          base_sys.and_then(|b| extract_str(b, "filament_vendor"))
+        }
+      })
       .unwrap_or_else(|| "Anycubic".to_string());
 
-    let tuned_for_nozzle_type = if explicit_hs_opt.is_some() {
+    let active_rig_noz = machines
+      .iter()
+      .find(|m| m.id == active_machine_id)
+      .or_else(|| machines.first())
+      .map(|m| m.nozzle_type.as_str())
+      .unwrap_or("hardened_steel");
+    let detected_spool_noz = if is_oc_managed_filament {
+      if lower_name.contains("diamond") {
+        "diamondback".to_string()
+      } else if lower_name.contains("ruby") {
+        "ruby_brass".to_string()
+      } else if lower_name.contains("cm2") {
+        "cm2".to_string()
+      } else if lower_name.contains("cht") {
+        "cht".to_string()
+      } else if lower_name.contains("• 0.4 brass") || lower_name.ends_with(" brass") {
+        "orca_brass".to_string()
+      } else if lower_name.contains("hardened") {
+        "hardened_steel".to_string()
+      } else {
+        active_rig_noz.to_string()
+      }
+    } else {
+      active_rig_noz.to_string()
+    };
+
+    let tuned_for_nozzle_type = if is_oc_managed_filament {
+      detected_spool_noz.clone()
+    } else if explicit_hs_opt.is_some() {
       "hardened_steel".to_string()
     } else if is_standalone_base_file {
       "brass".to_string()
@@ -973,13 +1105,24 @@ pub fn import_scanned_directory(
       _ => (45, 4), // PLA, PLA+, PLA-CF, PLA Matte, Silk -> 45°C for 4h (below 45°C Tg vitrification!)
     };
 
+    let default_fan = match FilamentSpool::canonical_polymer_key(&mat_type) {
+      "PETG" | "PETG-CF" | "PCTG" | "PCTG-CF" => 40,
+      "ABS" | "ABS-CF" | "ASA" | "ASA-CF" | "PC" | "PC-CF" | "PA" | "PA6-CF" | "PA12-CF"
+      | "PAHT-CF" | "PPA-CF" => 25,
+      _ => 100,
+    };
+    let disk_fan_pct = extract_str(f_val, "fan_max_speed_HS")
+      .or_else(|| extract_str(f_val, "fan_max_speed"))
+      .and_then(|s| s.parse::<i32>().ok())
+      .unwrap_or(default_fan);
+
     filaments.push(FilamentSpool {
       id: format!("disk_spool_{}", idx + 1),
       name,
       brand: vendor,
       inherits: resolved_inherits_name,
       material_type: mat_type.clone(),
-      nozzle_type: "hardened_steel".to_string(),
+      nozzle_type: detected_spool_noz,
       tuned_for_nozzle_type,
       required_nozzle_hrc,
       color_hex,
@@ -993,11 +1136,7 @@ pub fn import_scanned_directory(
       flow_ratio,
       pressure_advance,
       max_volumetric_speed: max_vol,
-      fan_speed_percent: if mat_type == "PETG" || mat_type == "PCTG" {
-        40
-      } else {
-        100
-      },
+      fan_speed_percent: disk_fan_pct,
       remaining_grams: 850,
       is_loaded: idx < 8,
       finish_type,
@@ -1376,15 +1515,43 @@ pub fn import_scanned_directory(
   }
   base_profile.set_str("flush_multiplier", &format!("{:.2}", disk_flush_multiplier));
 
-  Ok(DirectoryImportSummary {
-    user_folder_id,
+  // Run WebConfigStateSnapshot::sanitize() on the imported state so any `OC -` profiles on disk
+  // with stale temperatures, cooling fans, or cross-polymer inheritance are automatically healed on import/reload.
+  let mut snap = crate::models::WebConfigStateSnapshot {
+    schema_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
+    config_version: 1,
+    orca_slicer_version: "2.2".to_string(),
+    webconfig_app_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
+    bound_filename: format!("AnycubicSlicerNext/user/{}/", user_folder_id),
+    bound_path_hint: String::new(),
+    detected_hardware_summary: String::new(),
     machines,
     active_machine_id,
     filaments,
+    active_filament_type: "PETG".to_string(),
     processes,
     active_process_id,
     base_profile,
+    rules: Vec::new(),
     conflicts,
+    pending_updates: Vec::new(),
+    flush_multiplier: disk_flush_multiplier,
+    disk_flush_multiplier,
+    disk_flush_matrix: disk_flush_matrix.clone(),
+    disk_flush_slot_count,
+    conf_relative_path: conf_relative_path.clone(),
+  };
+  snap.sanitize();
+
+  Ok(DirectoryImportSummary {
+    user_folder_id,
+    machines: snap.machines,
+    active_machine_id: snap.active_machine_id,
+    filaments: snap.filaments,
+    processes: snap.processes,
+    active_process_id: snap.active_process_id,
+    base_profile: snap.base_profile,
+    conflicts: snap.conflicts,
     total_files_scanned: entries.len(),
     disk_flush_matrix,
     disk_flush_slot_count,

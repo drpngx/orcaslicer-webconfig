@@ -550,6 +550,11 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             });
           }
 
+          let (range_low, range_high) = FilamentSpool::compute_nozzle_temp_range(
+            &d.material_type,
+            effective_nozzle,
+            (effective_nozzle + 5).min(350),
+          );
           let raw_disk_json = serde_json::to_string_pretty(&serde_json::json!({
             "from": "User",
             "inherits": inherits,
@@ -565,8 +570,8 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             "nozzle_temperature_initial_layer": [(effective_nozzle + 5).min(350).to_string()],
             "nozzle_temperature_initial_layer_BRASS": [(base_nozzle + 5).min(350).to_string()],
             "nozzle_temperature_initial_layer_HS": [(hs_nozzle + 5).min(350).to_string()],
-            "nozzle_temperature_range_low": [(base_nozzle - 10).max(175).to_string()],
-            "nozzle_temperature_range_high": [(hs_nozzle + 15).min(350).to_string()],
+            "nozzle_temperature_range_low": [range_low.to_string()],
+            "nozzle_temperature_range_high": [range_high.to_string()],
             "hot_plate_temp": [effective_bed.to_string()],
             "hot_plate_temp_initial_layer": [effective_bed.to_string()],
             "textured_plate_temp": [effective_bed.to_string()],

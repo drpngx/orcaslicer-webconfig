@@ -368,7 +368,7 @@ impl MachineRig {
   /// - Ruby Tip (Brass Body) (`ruby_brass`) -> `("brass", 60)` (uses Brass thermal profile + HRC 60 so CF/GF composites are allowed!)
   /// - Diamondback PCD (`diamondback`) -> `("brass", 68)` (uses Brass/high-conductivity thermal profile + HRC 68 for extreme wear resistance!)
   /// - Plated Brass (`microswiss_brass`) -> `("brass", 35)`
-  /// - Standard Brass (`brass`) -> `("brass", 0)`
+  /// - Standard Brass (`brass`) -> `("brass", 3)` (matches OrcaSlicer standard Brass HRC 3 for non-abrasive filaments)
   pub fn orca_machine_nozzle_type_and_hrc(&self) -> (&'static str, u32) {
     let nt = self.nozzle_type.to_lowercase();
     let nm = self.nozzle_material.to_lowercase();
@@ -390,7 +390,7 @@ impl MachineRig {
     } else if nt.contains("cht") || nm.contains("cht") {
       ("brass", 55)
     } else {
-      ("brass", 0)
+      ("brass", 3)
     }
   }
 
@@ -902,13 +902,23 @@ impl FilamentSpool {
       brass + 5
     };
     let nt = new_nozzle_type.to_lowercase();
+    let is_external_disk_spool = self.id.starts_with("disk_")
+      && !self.name.starts_with("OC -")
+      && !self.name.starts_with("OC:");
     self.nozzle_type = new_nozzle_type.to_string();
+    if !is_external_disk_spool {
+      self.tuned_for_nozzle_type = new_nozzle_type.to_string();
+    }
 
     if nt.contains("hardened") || nt.contains("stainless") || nt.contains("cm2") {
       self.base_print_temp = hs;
-      // Only preserve a custom Hardened Steel disk override if we are on a Hardened Steel nozzle
-      if self.tuned_for_nozzle_type.contains("hardened") && self.print_temp > hs {
-        // Keep user's HS override
+      // Only preserve a custom Hardened Steel disk override on an external non-OC disk profile within +15°C of `hs`
+      if is_external_disk_spool
+        && self.tuned_for_nozzle_type.contains("hardened")
+        && self.print_temp > hs
+        && self.print_temp <= hs + 15
+      {
+        // Keep external user's HS override
       } else {
         self.print_temp = hs;
       }
@@ -921,20 +931,52 @@ impl FilamentSpool {
       self.base_print_temp = brass;
       self.print_temp = brass;
     }
+
+    if !is_external_disk_spool
+      && (self.name.starts_with("OC -") || self.name.starts_with("OC:"))
+    {
+      let new_short_noz = if nt.contains("diamondback") {
+        "Diamond"
+      } else if nt.contains("ruby") {
+        "Ruby"
+      } else if nt.contains("cht") {
+        "CHT"
+      } else if nt.contains("cm2") {
+        "CM2"
+      } else if nt.contains("hardened") {
+        "Hardened"
+      } else {
+        "Brass"
+      };
+      if let Some(dot_idx) = self.name.rfind("• 0.") {
+        let prefix = &self.name[..dot_idx];
+        let after_dot = &self.name[dot_idx + "• ".len()..];
+        let diam_token = after_dot.split_whitespace().next().unwrap_or("0.4");
+        self.name = format!("{}• {} {}", prefix, diam_token, new_short_noz);
+      } else {
+        self.name = Self::default_oc_profile_name_with_brand(
+          &self.brand,
+          &self.material_type,
+          &self.finish_type,
+          new_nozzle_type,
+        );
+      }
+    }
   }
 
   /// Returns a compatibility warning if:
-  /// 1. The filament is abrasive (`required_nozzle_hrc > rig_nozzle_hrc`, e.g. `-CF`/`-GF` on a Brass `HRC 0` nozzle), OR
+  /// 1. The filament is abrasive (`required_nozzle_hrc > 3 && required_nozzle_hrc > rig_nozzle_hrc`, e.g. `-CF`/`-GF` on a Brass nozzle), OR
   /// 2. The filament had a disk override tuned for Hardened Steel (`_HS`) and the active rig is using a different nozzle type.
   pub fn compatibility_warning(
     &self,
     rig_nozzle_type: &str,
     rig_nozzle_hrc: u32,
   ) -> Option<String> {
-    if self.required_nozzle_hrc > rig_nozzle_hrc {
+    let eff_rig_hrc = rig_nozzle_hrc.max(3);
+    if self.required_nozzle_hrc > 3 && self.required_nozzle_hrc > eff_rig_hrc {
       return Some(format!(
         "Incompatible Nozzle Hardness: {} requires HRC ≥ {} (Active nozzle is HRC {}). Use Hardened Steel (HRC 55), Ruby-Brass (HRC 60), or Diamondback (HRC 68).",
-        self.material_type, self.required_nozzle_hrc, rig_nozzle_hrc
+        self.material_type, self.required_nozzle_hrc, eff_rig_hrc
       ));
     }
     let rig_is_hs = rig_nozzle_type.contains("hardened")
@@ -950,15 +992,151 @@ impl FilamentSpool {
     None
   }
 
+  /// Maps any material code (including vendor-specific codes like `"PolyLite PETG"`,
+  /// `"Polymaker PETG"`, `"High Speed Matte PETG"`, `"Fibreheart PETG-CF"`, `"Flex TPU 95A HF"`,
+  /// `"Panchroma PLA"`, etc.) to its canonical polymer key so switching brands preserves the selected polymer.
+  pub fn canonical_polymer_key(mat: &str) -> &'static str {
+    let up = mat.trim().to_uppercase();
+    if up.contains("PCTG-CF") || up.contains("PCTG-GF") {
+      "PCTG-CF"
+    } else if up.contains("PCTG") {
+      "PCTG"
+    } else if up.contains("PETG-CF") || up.contains("PETG-GF") {
+      "PETG-CF"
+    } else if up.contains("PETG") {
+      "PETG"
+    } else if up.contains("PET-CF") || up.contains("PET-GF") {
+      "PET-CF"
+    } else if up.contains("TPU-CF") || up.contains("TPU-GF") {
+      "TPU-GF"
+    } else if up.contains("TPU FOR AMS") || up.contains("TPU FOR ACE") || up.contains("TPU 64D") {
+      "TPU for AMS"
+    } else if up.contains("TPU 85A") {
+      "TPU 85A"
+    } else if up.contains("TPU 90A") {
+      "TPU 90A"
+    } else if up.contains("TPU 95A") {
+      "TPU 95A"
+    } else if up.contains("TPU") || up.contains("TPE") {
+      "TPU"
+    } else if up.contains("PEBA") {
+      "PEBA"
+    } else if up.contains("PC-CF") || up.contains("PC-GF") {
+      "PC-CF"
+    } else if up.contains("PC-ABS")
+      || up.contains("PC/ABS")
+      || up == "PC"
+      || up.contains(" PC")
+      || up.starts_with("PC ")
+    {
+      "PC"
+    } else if up.contains("ASA-CF") || up.contains("ASA-GF") {
+      "ASA-CF"
+    } else if up.contains("ASA") {
+      "ASA"
+    } else if up.contains("ABS-CF") || up.contains("ABS-GF") {
+      "ABS-CF"
+    } else if up.contains("ABS") {
+      "ABS"
+    } else if up.contains("PEEK") {
+      "PEEK"
+    } else if up.contains("PPS") {
+      "PPS"
+    } else if up.contains("PPA-CF") || up.contains("PPA-GF") || up.contains("PPA") {
+      "PPA-CF"
+    } else if up.contains("PAHT-CF") || up.contains("PAHT-GF") || up.contains("PAHT") {
+      "PAHT-CF"
+    } else if up.contains("PA6-CF") || up.contains("PA6-GF") || up.contains("PA-CF") {
+      "PA6-CF"
+    } else if up.contains("PVA") {
+      "PVA"
+    } else if up.contains("BVOH") {
+      "BVOH"
+    } else if up.contains("HIPS") {
+      "HIPS"
+    } else if up.contains("PA12-CF") || up.contains("PA12-GF") {
+      "PA12-CF"
+    } else if up.contains("PA12") || up.contains("PA6") || up == "PA" || up.contains("NYLON") {
+      "PA"
+    } else if up == "PHA" || up.starts_with("PHA ") || up.ends_with(" PHA") {
+      "PHA"
+    } else if up == "PCL" || up.starts_with("PCL ") {
+      "PCL"
+    } else if up.contains("PLA-CF") || up.contains("PLA-GF") || up.contains("PLA CARBON") {
+      "PLA-CF"
+    } else if up.contains("PLA+") || up.contains("PLA PLUS") {
+      "PLA+"
+    } else {
+      "PLA"
+    }
+  }
+
+  /// Broad polymer family key for inheritance compatibility & fallback matching across brands.
+  pub fn polymer_family_key(mat: &str) -> &'static str {
+    match Self::canonical_polymer_key(mat) {
+      "PCTG" | "PCTG-CF" | "PETG" | "PETG-CF" | "PET-CF" => "PETG",
+      "TPU for AMS" | "TPU 85A" | "TPU 90A" | "TPU 95A" | "TPU" | "TPU-GF" | "PEBA" => "TPU",
+      "ASA" | "ASA-CF" => "ASA",
+      "ABS" | "ABS-CF" => "ABS",
+      "PC" | "PC-CF" | "PPS" | "PEEK" => "PC",
+      "PPA-CF" | "PAHT-CF" | "PA6-CF" | "PA12-CF" | "PA" => "PA",
+      "PVA" | "BVOH" | "HIPS" => "SUPPORT",
+      "PCL" => "PCL",
+      _ => "PLA",
+    }
+  }
+
+  /// Computes a multi-material-compatible `[nozzle_temperature_range_low, nozzle_temperature_range_high]`
+  /// window for OrcaSlicer / AnycubicSlicerNext so single-extruder multi-material prints (ACE Pro / AMS)
+  /// mixing compatible filaments (e.g. `TPU for AMS` at 220–230°C + `PETG` at 230–255°C, or `PLA` + `TPU` / `PETG` supports)
+  /// do not trigger false "Selected Nozzle Temperature are incompatible, which may result in clogging" errors.
+  pub fn compute_nozzle_temp_range(
+    material_type: &str,
+    effective_temp: i32,
+    initial_temp: i32,
+  ) -> (i32, i32) {
+    let canon = Self::canonical_polymer_key(material_type);
+    if canon == "PCL" {
+      return (70, 180);
+    }
+    let max_t = effective_temp.max(initial_temp);
+    let min_t = effective_temp.min(initial_temp);
+    if max_t > 265
+      || matches!(
+        canon,
+        "ABS" | "ABS-CF" | "ASA" | "ASA-CF" | "PC" | "PC-CF" | "PA" | "PA6-CF" | "PA12-CF"
+          | "PAHT-CF" | "PPA-CF" | "PET-CF"
+      )
+    {
+      let low = 215.min(min_t - 35).max(185);
+      let high = 305.max(max_t + 20).min(350);
+      (low, high)
+    } else {
+      // Standard/medium-temp ACE Pro / AMS filaments (PLA, PLA+, PHA, PVA, TPU, TPU for AMS, PEBA, PETG, PETG-CF, PCTG):
+      // Unified 185°C..270°C safe extrusion window so TPU for AMS (220–230°C), PETG (230–255°C), and PLA (200–225°C)
+      // can be loaded together on the same single-extruder toolhead without clogging range errors.
+      let low = 185.min(min_t - 15).max(175);
+      let high = 270.max(max_t + 15).min(320);
+      (low, high)
+    }
+  }
+
   /// Updates the spool's brand (`"Generic"`, `"Siraya Tech"`, `"SUNLU"`, `"Polymaker"`, `"Anycubic"`, `"Bambu Lab"`, `"eSUN"`, `"Overture"`)
-  /// and resolves the best matching material preset for that brand (preserving or falling back to the brand's primary polymer),
-  /// loading the vendor's `.3mf`/`.json` base temperatures, bed temp, flow ratio, and MVS.
+  /// and resolves the best matching material preset for that brand while **strictly preserving** the selected polymer
+  /// (e.g. if `PETG` is selected and the user switches brand, it keeps `PETG` and never resets to the first filament of the brand).
   pub fn apply_brand_change(&mut self, new_brand: &str, active_nozzle_type: &str) {
     let norm_b = Self::normalized_brand(new_brand);
     self.brand = norm_b.clone();
     let catalog = crate::catalog::load_merged_catalog();
+    let target_canon = Self::canonical_polymer_key(&self.material_type);
+    let cur_finish = self.finish_type.clone();
 
-    // 1. Exact `(brand, material_type)` match
+    let is_specialty_line = |code: &str| -> bool {
+      let up = code.to_uppercase();
+      up.contains("ESD") || up.contains("CONDUCTIVE") || up.contains("GLOW") || up.contains("WOOD")
+    };
+
+    // 1. Exact `(brand, material_type)` or `base_material_code()` match
     let matched = catalog
       .filaments
       .iter()
@@ -969,29 +1147,87 @@ impl FilamentSpool {
               .base_material_code()
               .eq_ignore_ascii_case(&self.material_type))
       })
-      // 2. Substring match within the brand (e.g. "TPU" -> "Flex TPU 95A HF" or "TPU 95A", "PLA" -> "PolyLite PLA")
+      // 2. Same canonical polymer within `new_brand` with matching finish (preferring standard lines over ESD/Glow)
       .or_else(|| {
-        let cur_up = self.material_type.to_uppercase();
-        let base_tok = cur_up.split_whitespace().next().unwrap_or(&cur_up);
         catalog.filaments.iter().find(|f| {
-          f.brand.eq_ignore_ascii_case(&norm_b) && f.code.to_uppercase().contains(base_tok)
+          f.brand.eq_ignore_ascii_case(&norm_b)
+            && Self::canonical_polymer_key(&f.code) == target_canon
+            && f.default_finish.eq_ignore_ascii_case(&cur_finish)
+            && !is_specialty_line(&f.code)
         })
       })
-      // 3. First available material for that brand
+      // 3. Same canonical polymer within `new_brand` (preferring non-specialty line)
       .or_else(|| {
-        catalog
-          .filaments
-          .iter()
-          .find(|f| f.brand.eq_ignore_ascii_case(&norm_b))
+        catalog.filaments.iter().find(|f| {
+          f.brand.eq_ignore_ascii_case(&norm_b)
+            && Self::canonical_polymer_key(&f.code) == target_canon
+            && !is_specialty_line(&f.code)
+        })
+      })
+      .or_else(|| {
+        catalog.filaments.iter().find(|f| {
+          f.brand.eq_ignore_ascii_case(&norm_b)
+            && Self::canonical_polymer_key(&f.code) == target_canon
+        })
       })
       .cloned();
 
     if let Some(m) = matched {
       let target_code = m.code.clone();
       self.apply_material_change(&target_code, active_nozzle_type);
+      self.brand = norm_b;
+      if !cur_finish.eq_ignore_ascii_case(&self.finish_type) {
+        self.apply_finish_change(&cur_finish, active_nozzle_type);
+      }
+      self.name = Self::default_oc_profile_name_with_brand(
+        &self.brand,
+        &self.material_type,
+        &self.finish_type,
+        active_nozzle_type,
+      );
+      self.rebuild_synthetic_disk_json(active_nozzle_type);
     } else {
-      let cur_mat = self.material_type.clone();
-      self.apply_material_change(&cur_mat, active_nozzle_type);
+      // Brand has no dedicated catalog entry for this polymer (e.g., Overture + PETG, or Siraya Tech + PETG):
+      // Keep the user's selected polymer (`target_canon`) and finish (`cur_finish`) and apply the new brand!
+      let preserved_mat = if Self::canonical_polymer_key(&self.material_type) == target_canon
+        && matches!(
+          self.material_type.as_str(),
+          "PLA"
+            | "PLA+"
+            | "PLA-CF"
+            | "PETG"
+            | "PETG-CF"
+            | "PCTG"
+            | "TPU"
+            | "TPU for AMS"
+            | "TPU 95A"
+            | "TPU 85A"
+            | "ASA"
+            | "ABS"
+            | "ABS-CF"
+            | "PC"
+            | "PA"
+            | "PA6-CF"
+            | "PVA"
+            | "PHA"
+        )
+      {
+        self.material_type.clone()
+      } else {
+        target_canon.to_string()
+      };
+      self.apply_material_change(&preserved_mat, active_nozzle_type);
+      self.brand = norm_b;
+      if !cur_finish.eq_ignore_ascii_case(&self.finish_type) {
+        self.apply_finish_change(&cur_finish, active_nozzle_type);
+      }
+      self.name = Self::default_oc_profile_name_with_brand(
+        &self.brand,
+        &self.material_type,
+        &self.finish_type,
+        active_nozzle_type,
+      );
+      self.rebuild_synthetic_disk_json(active_nozzle_type);
     }
   }
 
@@ -1001,6 +1237,7 @@ impl FilamentSpool {
   pub fn apply_material_change(&mut self, new_material: &str, active_nozzle_type: &str) {
     let catalog = crate::catalog::load_merged_catalog();
     let norm_brand = Self::normalized_brand(&self.brand);
+    let target_canon = Self::canonical_polymer_key(new_material);
     let mat_entry = catalog
       .filaments
       .iter()
@@ -1010,15 +1247,40 @@ impl FilamentSpool {
             || f.base_material_code().eq_ignore_ascii_case(new_material))
       })
       .or_else(|| {
+        catalog.filaments.iter().find(|f| {
+          f.brand.eq_ignore_ascii_case(&norm_brand)
+            && Self::canonical_polymer_key(&f.code) == target_canon
+            && f.default_finish.eq_ignore_ascii_case(&self.finish_type)
+        })
+      })
+      .or_else(|| {
+        catalog.filaments.iter().find(|f| {
+          f.brand.eq_ignore_ascii_case(&norm_brand)
+            && Self::canonical_polymer_key(&f.code) == target_canon
+        })
+      })
+      .or_else(|| {
+        catalog.filaments.iter().find(|f| {
+          f.brand == "Generic"
+            && (f.code.eq_ignore_ascii_case(new_material)
+              || f.base_material_code().eq_ignore_ascii_case(new_material))
+        })
+      })
+      .or_else(|| {
         catalog
           .filaments
           .iter()
           .find(|f| f.code.eq_ignore_ascii_case(new_material))
+      })
+      .or_else(|| {
+        catalog
+          .filaments
+          .iter()
+          .find(|f| Self::canonical_polymer_key(&f.code) == target_canon)
       });
 
-    if let Some(m) = mat_entry {
-      self.brand = Self::normalized_brand(&m.brand);
-    }
+    // Preserve the user's selected brand (do NOT reset `self.brand` to "Generic" when using a generic polymer baseline)
+    self.brand = norm_brand;
 
     let (brass_temp, bed_temp, max_vol, fan_pct, dry_c, dry_hr) = if let Some(m) = mat_entry {
       (
@@ -1059,6 +1321,8 @@ impl FilamentSpool {
     self.material_type = base_mat_code.clone();
     self.brass_base_temp = brass_temp;
     self.hs_base_temp = hs_temp;
+    self.base_print_temp = brass_temp;
+    self.print_temp = brass_temp;
     self.base_bed_temp = bed_temp;
     self.bed_temp = bed_temp;
     self.max_volumetric_speed = max_vol;
@@ -1131,29 +1395,71 @@ impl FilamentSpool {
     // Look up whether the catalog has a dedicated entry for `(self.brand, self.material_type, new_finish)`
     let catalog = crate::catalog::load_merged_catalog();
     let norm_brand = Self::normalized_brand(&self.brand);
-    let variant_entry = catalog
-      .filaments
-      .iter()
-      .find(|f| {
-        f.brand.eq_ignore_ascii_case(&norm_brand)
-          && f
-            .base_material_code()
-            .eq_ignore_ascii_case(&self.material_type)
-          && f.default_finish.eq_ignore_ascii_case(new_finish)
-          && f.code != self.material_type
-      })
-      .or_else(|| {
-        catalog.filaments.iter().find(|f| {
-          f.base_material_code()
-            .eq_ignore_ascii_case(&self.material_type)
+    let variant_entry = if new_finish.eq_ignore_ascii_case("Basic") {
+      None
+    } else {
+      catalog
+        .filaments
+        .iter()
+        .find(|f| {
+          f.brand.eq_ignore_ascii_case(&norm_brand)
+            && f
+              .base_material_code()
+              .eq_ignore_ascii_case(&self.material_type)
             && f.default_finish.eq_ignore_ascii_case(new_finish)
             && f.code != self.material_type
         })
-      });
+        .or_else(|| {
+          catalog.filaments.iter().find(|f| {
+            f.base_material_code()
+              .eq_ignore_ascii_case(&self.material_type)
+              && f.default_finish.eq_ignore_ascii_case(new_finish)
+              && f.code != self.material_type
+          })
+        })
+    };
 
-    if let Some(m) = variant_entry {
+    let resolved_entry = variant_entry.or_else(|| {
+      catalog
+        .filaments
+        .iter()
+        .find(|f| {
+          f.brand.eq_ignore_ascii_case(&norm_brand)
+            && (f.code.eq_ignore_ascii_case(&self.material_type)
+              || f
+                .base_material_code()
+                .eq_ignore_ascii_case(&self.material_type))
+        })
+        .or_else(|| {
+          let canon = Self::canonical_polymer_key(&self.material_type);
+          catalog
+            .filaments
+            .iter()
+            .find(|f| {
+              f.brand.eq_ignore_ascii_case(&norm_brand)
+                && Self::canonical_polymer_key(&f.code) == canon
+            })
+            .or_else(|| {
+              catalog
+                .filaments
+                .iter()
+                .find(|f| Self::canonical_polymer_key(&f.code) == canon)
+            })
+        })
+    });
+
+    if let Some(m) = resolved_entry {
       self.brass_base_temp = m.base_nozzle_c as i32;
-      self.hs_base_temp = (self.brass_base_temp + 5).clamp(80, 420);
+      self.hs_base_temp = if self.material_type.eq_ignore_ascii_case("PLA+")
+        && self.brand == "Generic"
+        && variant_entry.is_none()
+      {
+        220
+      } else {
+        (self.brass_base_temp + 5).clamp(80, 420)
+      };
+      self.base_print_temp = self.brass_base_temp;
+      self.print_temp = self.brass_base_temp;
       self.base_bed_temp = m.base_bed_c as i32;
       self.bed_temp = m.base_bed_c as i32;
       self.max_volumetric_speed = m.max_vol_mm3s;
@@ -1578,6 +1884,11 @@ impl FilamentSpool {
         json_map.insert(k.clone(), v.clone());
       }
     }
+    let (range_low, range_high) = Self::compute_nozzle_temp_range(
+      &self.material_type,
+      self.print_temp,
+      (self.print_temp + init_boost).min(420),
+    );
     let overrides = serde_json::json!({
       "from": "User",
       "inherits": self.inherits,
@@ -1594,8 +1905,8 @@ impl FilamentSpool {
       "nozzle_temperature_initial_layer": [(self.print_temp + init_boost).min(420).to_string()],
       "nozzle_temperature_initial_layer_BRASS": [(self.brass_base_temp + init_boost).min(420).to_string()],
       "nozzle_temperature_initial_layer_HS": [(self.hs_base_temp + init_boost).min(420).to_string()],
-      "nozzle_temperature_range_low": [(self.brass_base_temp - 10).max(80).to_string()],
-      "nozzle_temperature_range_high": [(self.hs_base_temp + 15).min(430).to_string()],
+      "nozzle_temperature_range_low": [range_low.to_string()],
+      "nozzle_temperature_range_high": [range_high.to_string()],
       "hot_plate_temp": [self.bed_temp.to_string()],
       "hot_plate_temp_initial_layer": [self.bed_temp.to_string()],
       "textured_plate_temp": [self.bed_temp.to_string()],
@@ -1741,6 +2052,11 @@ impl FilamentSpool {
       });
     }
 
+    let (range_low, range_high) = Self::compute_nozzle_temp_range(
+      &base_mat_code,
+      effective_nozzle,
+      (effective_nozzle + init_boost).min(350),
+    );
     let raw_disk_json = serde_json::to_string_pretty(&serde_json::json!({
       "from": "User",
       "inherits": inherits,
@@ -1756,8 +2072,8 @@ impl FilamentSpool {
       "nozzle_temperature_initial_layer": [(effective_nozzle + init_boost).min(350).to_string()],
       "nozzle_temperature_initial_layer_BRASS": [(base_nozzle + init_boost).min(350).to_string()],
       "nozzle_temperature_initial_layer_HS": [(hs_nozzle + init_boost).min(350).to_string()],
-      "nozzle_temperature_range_low": [(base_nozzle - 10).max(175).to_string()],
-      "nozzle_temperature_range_high": [(hs_nozzle + 15).min(350).to_string()],
+      "nozzle_temperature_range_low": [range_low.to_string()],
+      "nozzle_temperature_range_high": [range_high.to_string()],
       "hot_plate_temp": [base_bed.to_string()],
       "hot_plate_temp_initial_layer": [base_bed.to_string()],
       "textured_plate_temp": [base_bed.to_string()],
@@ -2000,8 +2316,12 @@ impl WebConfigStateSnapshot {
         }
       }
 
-      // Heal any scratch/catalog spool in localStorage whose base temperature or translucent PETG tuning came from an older catalog snapshot
-      if !sp.id.starts_with("disk_") {
+      // Heal any scratch/catalog/OC spool in localStorage whose base temperature, print_temp, or translucent PETG tuning was corrupted or came from an older snapshot
+      let is_oc_managed = sp.name.starts_with("OC -") || sp.name.starts_with("OC:");
+      let is_foaming_or_esd = sp.finish_type.eq_ignore_ascii_case("Foaming")
+        || sp.finish_type.eq_ignore_ascii_case("Conductive")
+        || sp.material_type.to_uppercase().contains("ESD");
+      if (!sp.id.starts_with("disk_") || is_oc_managed) && !is_foaming_or_esd {
         if let Some(cat_entry) = catalog
           .filaments
           .iter()
@@ -2015,11 +2335,49 @@ impl WebConfigStateSnapshot {
               .iter()
               .find(|f| f.code.eq_ignore_ascii_case(&sp.material_type))
           })
+          .or_else(|| {
+            let canon = FilamentSpool::canonical_polymer_key(&sp.material_type);
+            catalog
+              .filaments
+              .iter()
+              .find(|f| f.brand.eq_ignore_ascii_case(&sp.brand) && FilamentSpool::canonical_polymer_key(&f.code) == canon)
+              .or_else(|| {
+                catalog
+                  .filaments
+                  .iter()
+                  .find(|f| FilamentSpool::canonical_polymer_key(&f.code) == canon)
+              })
+          })
         {
+          let nt_low = sp.nozzle_type.to_lowercase();
+          let exp_brass = cat_entry.base_nozzle_c as i32;
+          let exp_hs = if sp.material_type.eq_ignore_ascii_case("PLA+") && sp.brand == "Generic" {
+            220
+          } else {
+            (exp_brass + 5).clamp(80, 420)
+          };
+          let exp_print_temp = if nt_low.contains("hardened")
+            || nt_low.contains("stainless")
+            || nt_low.contains("cm2")
+          {
+            exp_hs
+          } else if nt_low.contains("diamondback") {
+            (exp_brass - 10).max(80)
+          } else {
+            exp_brass
+          };
           let needs_translucent_petg_heal = sp.material_type == "PETG"
             && sp.finish_type == "Translucent"
             && (sp.bed_temp > 65 || sp.max_volumetric_speed > 10.0 || sp.fan_speed_percent > 35);
-          if sp.brass_base_temp != cat_entry.base_nozzle_c as i32 || needs_translucent_petg_heal {
+          let canon_mat = FilamentSpool::canonical_polymer_key(&sp.material_type);
+          let needs_warp_fan_heal = matches!(
+            canon_mat,
+            "ABS" | "ABS-CF" | "ASA" | "ASA-CF" | "PC" | "PC-CF" | "PA" | "PA6-CF" | "PA12-CF"
+              | "PAHT-CF" | "PPA-CF"
+          ) && sp.fan_speed_percent > 35;
+          let needs_temp_heal = !sp.is_foaming_tpu()
+            && (sp.brass_base_temp != exp_brass || (sp.print_temp - exp_print_temp).abs() > 8);
+          if needs_temp_heal || needs_translucent_petg_heal || needs_warp_fan_heal {
             let noz = sp.nozzle_type.clone();
             let fin = sp.finish_type.clone();
             let saved_name = sp.name.clone();
@@ -2045,7 +2403,27 @@ impl WebConfigStateSnapshot {
         }
       }
 
+      if is_oc_managed {
+        if !sp.is_foaming_tpu() {
+          let noz = sp.nozzle_type.clone();
+          sp.recompute_for_nozzle(&noz);
+          sp.rebuild_synthetic_disk_json(&noz);
+        }
+        sp.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(sp);
+        sp.deltas_from_base.retain(|d| d.param_key != "inherits");
+        for d in &mut sp.deltas_from_base {
+          d.reconstructed_by_lua = true;
+        }
+      }
+
       sp.deltas_from_base.retain(|d| {
+        if d.param_key == "inherits" {
+          let fam_a = FilamentSpool::polymer_family_key(&d.base_value);
+          let fam_b = FilamentSpool::polymer_family_key(&d.disk_value);
+          if fam_a == fam_b {
+            return false;
+          }
+        }
         let base_head = d
           .base_value
           .split('(')
@@ -2061,6 +2439,25 @@ impl WebConfigStateSnapshot {
         !crate::transformations::values_are_equivalent(base_head, disk_head)
       });
     }
+
+    // Never retain external drift conflicts against our own generated `OC -` profiles or compatible polymer families (e.g. PHA -> Anycubic PLA)
+    self.conflicts.retain(|c| {
+      if c.source_relative_path.contains("/OC -")
+        || c.source_relative_path.contains("/OC:")
+        || c.param_key.contains(":OC -")
+        || c.param_key.contains(":OC:")
+      {
+        return false;
+      }
+      if c.json_field_key == "inherits" {
+        let fam_expected = FilamentSpool::polymer_family_key(&c.expected_derived_value);
+        let fam_actual = FilamentSpool::polymer_family_key(&c.actual_external_value);
+        if fam_expected == fam_actual {
+          return false;
+        }
+      }
+      true
+    });
 
     if self.machines.is_empty() {
       self

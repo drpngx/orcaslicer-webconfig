@@ -92,6 +92,22 @@ rust_binary(
     ),
 )
 
+rust_binary(
+    name = "audit_random_configs",
+    srcs = ["src/bin/audit_random_configs.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    version = WEBCONFIG_VERSION,
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+    ) + [
+        ":orcaslicer_webconfig",
+    ],
+)
+
 genrule(
     name = "compiled_docs_gen",
     srcs = glob(["doc/*.md"]),
