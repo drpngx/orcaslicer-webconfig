@@ -1,0 +1,158 @@
+name: Build Portable Tauri Desktop App (Windows, Linux x64, macOS)
+
+on:
+  # 1. On-demand manual trigger from GitHub Actions UI / CLI
+  workflow_dispatch:
+    inputs:
+      upload_to_release_tag:
+        description: "Optional GitHub Release tag (e.g. v2.2.0) to attach portable builds to"
+        required: false
+        default: ""
+  # 2. Automatic trigger at release points (published releases & version tags)
+  release:
+    types: [published, created]
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-tauri-portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: orcaslicer-webconfig-portable-windows-x64
+          - platform: linux-x64
+            os: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            artifact_name: orcaslicer-webconfig-portable-linux-x64
+          - platform: macos
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+            artifact_name: orcaslicer-webconfig-portable-macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux WebKitGTK & Tauri system dependencies
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config \
+            build-essential \
+            curl \
+            wget \
+            file
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,${{ matrix.rust_target }}
+
+      - name: Setup Bazelisk Cache & Binary
+        uses: bazel-contrib/setup-bazel@0.9.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ matrix.platform }}-bazel
+
+      - name: Build Yew WASM Frontend via Bazel & Stage Dist
+        shell: bash
+        run: |
+          bazel build -c opt //:app_wasm
+          chmod +x ./scripts/stage_tauri_dist.sh
+          ./scripts/stage_tauri_dist.sh
+
+      - name: Install Tauri CLI v2
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@2
+
+      - name: Generate Default Icons if Missing
+        shell: bash
+        run: |
+          if [ ! -f "src-tauri/icons/icon.ico" ]; then
+            mkdir -p src-tauri/icons
+            python3 -c '
+          import struct, zlib
+          def make_png(w, h):
+              raw = b"".join(b"\x00" + b"\xf9\x73\x16\xff" * w for _ in range(h))
+              def chunk(t, d):
+                  return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+              return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+          open("src-tauri/icons/icon-base.png", "wb").write(make_png(512, 512))
+          '
+            cargo tauri icon src-tauri/icons/icon-base.png
+          fi
+
+      - name: Build Tauri Release Executable & Bundles
+        shell: bash
+        run: |
+          # Skip duplicate beforeBuildCommand since WASM dist is already staged
+          cargo tauri build --target ${{ matrix.rust_target }} --config '{"build":{"beforeBuildCommand":""}}'
+
+      - name: Package Portable Artifact (Windows x64)
+        if: matrix.platform == 'windows-x64'
+        shell: bash
+        run: |
+          mkdir -p portable-out
+          cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop.exe" \
+            "portable-out/orcaslicer-webconfig-portable-windows-x64.exe"
+          cp -f local_slicer_config.json portable-out/
+          (cd portable-out && 7z a "../${{ matrix.artifact_name }}.zip" *)
+
+      - name: Package Portable Artifact (Linux x64)
+        if: matrix.platform == 'linux-x64'
+        shell: bash
+        run: |
+          mkdir -p portable-out
+          cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop" \
+            "portable-out/orcaslicer-webconfig-portable-linux-x64"
+          chmod +x "portable-out/orcaslicer-webconfig-portable-linux-x64"
+          find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage" -name "*.AppImage" -exec cp -f {} portable-out/ \; || true
+          cp -f local_slicer_config.json portable-out/
+          tar -czvf "${{ matrix.artifact_name }}.tar.gz" -C portable-out .
+
+      - name: Package Portable Artifact (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          mkdir -p portable-out
+          cp -R "src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos/"*.app portable-out/ || \
+            cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop" portable-out/
+          find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg" -name "*.dmg" -exec cp -f {} portable-out/ \; || true
+          cp -f local_slicer_config.json portable-out/
+          tar -czvf "${{ matrix.artifact_name }}.tar.gz" -C portable-out .
+
+      - name: Upload On-Demand Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}.zip
+            ${{ matrix.artifact_name }}.tar.gz
+            portable-out/*
+          if-no-files-found: error
+
+      - name: Attach Portable Builds to GitHub Release (on release / tag / manual tag)
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.upload_to_release_tag != '' && inputs.upload_to_release_tag || github.ref_name }}
+          files: |
+            ${{ matrix.artifact_name }}.zip
+            ${{ matrix.artifact_name }}.tar.gz

@@ -125,6 +125,26 @@ impl FsManager {
     }
   }
 
+  /// Returns true when running inside the Tauri v2 desktop container (`window.__ORCA_WEBCONFIG_TAURI__`
+  /// or `window.__TAURI_INTERNALS__` / `window.__TAURI__`), and false in standard Website mode.
+  pub fn is_tauri() -> bool {
+    let Some(window) = web_sys::window() else {
+      return false;
+    };
+    for key in [
+      "__ORCA_WEBCONFIG_TAURI__",
+      "__TAURI_INTERNALS__",
+      "__TAURI__",
+    ] {
+      if let Ok(val) = js_sys::Reflect::get(&window, &JsValue::from_str(key)) {
+        if !val.is_undefined() && !val.is_null() && val != JsValue::FALSE {
+          return true;
+        }
+      }
+    }
+    false
+  }
+
   /// Auto-switching API URL helper for standard Web Dev (`""` relative path)
   /// and Tauri v2 Desktop App (`window.__API_BASE__`, e.g. `"http://127.0.0.1:<ephemeral_port>"`).
   pub fn api_url(path: &str) -> String {

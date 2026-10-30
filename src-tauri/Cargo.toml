@@ -11,6 +11,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+cap-std = "3.4"
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros"] }
 axum = "0.5"
 server = { path = "../server" }

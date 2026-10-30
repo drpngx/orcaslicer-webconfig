@@ -1787,9 +1787,27 @@ impl FilamentSpool {
   }
 }
 
+fn default_config_version() -> u32 {
+  1
+}
+
+fn default_orca_slicer_version() -> String {
+  "2.2".to_string()
+}
+
+fn default_webconfig_app_version() -> String {
+  "2.2.0".to_string()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WebConfigStateSnapshot {
   pub schema_version: String,
+  #[serde(default = "default_config_version")]
+  pub config_version: u32,
+  #[serde(default = "default_orca_slicer_version")]
+  pub orca_slicer_version: String,
+  #[serde(default = "default_webconfig_app_version")]
+  pub webconfig_app_version: String,
   pub machines: Vec<MachineRig>,
   pub active_machine_id: String,
   pub filaments: Vec<FilamentSpool>,
@@ -1818,6 +1836,18 @@ impl WebConfigStateSnapshot {
   /// 3. Any newly introduced built-in transformation rules (such as Scarf Seams & Arachne or PCTG Anti-Stringing)
   ///    are merged into `rules` if not already present.
   pub fn sanitize(&mut self) {
+    if self.config_version == 0 {
+      self.config_version = 1;
+    }
+    if self.orca_slicer_version.trim().is_empty() {
+      self.orca_slicer_version = default_orca_slicer_version();
+    }
+    if self.webconfig_app_version.trim().is_empty() {
+      self.webconfig_app_version = default_webconfig_app_version();
+    }
+    if self.schema_version.trim().is_empty() || self.schema_version == "1.0" {
+      self.schema_version = "2.2.0".to_string();
+    }
     if self.bound_filename.contains("From Scratch")
       || self.bound_path_hint.contains("Start-From-Scratch")
     {

@@ -11,6 +11,7 @@ use yew::prelude::*;
 #[derive(Properties, PartialEq)]
 pub struct WizardTabProps {
   pub is_config_loaded: bool,
+  pub is_tauri: bool,
   pub rules: Vec<TransformationRule>,
   pub diff_items: Vec<DiffItem>,
   pub rule_changes: Vec<RuleBeforeAfterChange>,
@@ -188,16 +189,18 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
             {"Export Lua Stack (1-Click)"}
           </button>
 
-          <button
-            class="flex items-center gap-space-sm bg-primary-container hover:bg-primary text-on-primary-container px-space-lg py-space-md rounded-lg font-semibold shadow-md transition-colors cursor-pointer"
-            onclick={
-              let cb = props.on_commit_save.clone();
-              Callback::from(move |_| cb.emit(()))
-            }
-          >
-            <span class="material-symbols-outlined text-[18px]">{"publish"}</span>
-            {"Sync & Save Changes"}
-          </button>
+          if props.is_tauri {
+            <button
+              class="flex items-center gap-space-sm bg-primary-container hover:bg-primary text-on-primary-container px-space-lg py-space-md rounded-lg font-semibold shadow-md transition-colors cursor-pointer"
+              onclick={
+                let cb = props.on_commit_save.clone();
+                Callback::from(move |_| cb.emit(()))
+              }
+            >
+              <span class="material-symbols-outlined text-[18px]">{"publish"}</span>
+              {"Sync & Save Changes"}
+            </button>
+          }
         </div>
       </div>
 

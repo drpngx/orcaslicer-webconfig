@@ -25,8 +25,8 @@ use crate::dir_import::{
   sync_live_state_to_entries,
 };
 use crate::fs_access::{
-  DetectedClientOs, FsManager, LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload,
-  LocalFsScanProgress, ScannedFileEntry,
+  FsManager, LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload, LocalFsScanProgress,
+  ScannedFileEntry,
 };
 use crate::models::{FilamentSpool, MachineRig, ProcessProfile, WebConfigStateSnapshot};
 use crate::orca_profile::OrcaProfile;
@@ -63,12 +63,21 @@ impl PendingConfirmedAction {
 pub fn App() -> Html {
   let saved_state = use_memo((), |_| FsManager::load_state_from_storage());
   let active_tab = use_state(|| ActiveTab::Home);
+  let is_tauri = FsManager::is_tauri();
 
-  // Requirement #1 & #3: Default to nothing loaded on fresh startup, or restore saved WebConfig state from browser localStorage!
+  // Default to nothing loaded on fresh startup, or restore saved WebConfig state from browser localStorage!
+  // On Initialization, Start From Scratch is the default and recommended option.
   let is_config_loaded = use_state(|| saved_state.is_some());
   let show_bind_modal = use_state(|| saved_state.is_none());
-  let modal_start_from_scratch = use_state(|| false);
-  let selected_modal_os = use_state(FsManager::detect_client_os);
+  let modal_start_from_scratch = use_state(|| true);
+  let show_expert_init = use_state(|| false);
+  let show_reset_confirm_modal = use_state(|| false);
+  let config_version = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.config_version.max(1))
+      .unwrap_or(1u32)
+  });
 
   // Pillar 1: Hardware / Hotend Rigs
   let machines = use_state(|| {
@@ -208,11 +217,14 @@ pub fn App() -> Html {
       .unwrap_or_else(|| "AnycubicSlicerNext.conf".to_string())
   });
 
-  // Requirement #3: Automatically persist full site state to browser localStorage whenever a config is loaded
+  // Automatically persist full site state to browser localStorage whenever a config is loaded
   {
     let is_loaded = *is_config_loaded;
     let snap = WebConfigStateSnapshot {
-      schema_version: "1.0".to_string(),
+      schema_version: "2.2.0".to_string(),
+      config_version: *config_version,
+      orca_slicer_version: "2.2".to_string(),
+      webconfig_app_version: "2.2.0".to_string(),
       bound_filename: (*bound_filename).clone(),
       bound_path_hint: (*bound_path_hint).clone(),
       detected_hardware_summary: (*detected_hardware_summary).clone(),
@@ -358,6 +370,10 @@ pub fn App() -> Html {
   // Build Our Internal Config Data Structure JSON vs User Disk Config JSON
   let our_internal_config_json = serde_json::to_string_pretty(&serde_json::json!({
     "architecture": "Transformation-Based Config State (Not Absolute Values)",
+    "schema_version": "2.2.0",
+    "config_version": *config_version,
+    "orca_slicer_version": "2.2",
+    "webconfig_app_version": "2.2.0",
     "active_rig": {
       "id": active_rig.id,
       "name": active_rig.name,
@@ -417,17 +433,6 @@ pub fn App() -> Html {
     let show_bind_modal = show_bind_modal.clone();
     Callback::from(move |_| {
       show_bind_modal.set(true);
-    })
-  };
-
-  let on_copy_path = {
-    let toast = toast_message.clone();
-    Callback::from(move |path_str: String| {
-      FsManager::copy_to_clipboard(&path_str);
-      toast.set(Some(format!(
-        "Copied directory path '{}' to clipboard!",
-        path_str
-      )));
     })
   };
 
@@ -822,11 +827,17 @@ pub fn App() -> Html {
     let disk_flush_matrix = disk_flush_matrix.clone();
     let disk_flush_slot_count = disk_flush_slot_count.clone();
     let conf_relative_path = conf_relative_path.clone();
+    let config_version = config_version.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
+      let next_ver = *config_version + 1;
+      config_version.set(next_ver);
       let snapshot = WebConfigStateSnapshot {
-        schema_version: "1.0".to_string(),
+        schema_version: "2.2.0".to_string(),
+        config_version: next_ver,
+        orca_slicer_version: "2.2".to_string(),
+        webconfig_app_version: "2.2.0".to_string(),
         bound_filename: (*bound_filename).clone(),
         bound_path_hint: (*bound_path_hint).clone(),
         detected_hardware_summary: (*detected_hardware_summary).clone(),
@@ -852,7 +863,9 @@ pub fn App() -> Html {
           match FsManager::trigger_browser_download(filename, &json_str) {
             Ok(()) => {
               toast.set(Some(format!(
-                "Exported full Orca WebConfig state to '{}' ({} machines, {} filaments, {} processes, {} Lua rules)!",
+                "Exported OrcaSlicer WebConfig v{} (for OrcaSlicer {}) to '{}' ({} machines, {} filaments, {} processes, {} Lua rules)!",
+                next_ver,
+                snapshot.orca_slicer_version,
                 filename,
                 snapshot.machines.len(),
                 snapshot.filaments.len(),
@@ -873,6 +886,7 @@ pub fn App() -> Html {
     let is_config_loaded = is_config_loaded.clone();
     let show_bind_modal = show_bind_modal.clone();
     let modal_start_from_scratch = modal_start_from_scratch.clone();
+    let config_version = config_version.clone();
     let bound_filename = bound_filename.clone();
     let bound_path_hint = bound_path_hint.clone();
     let detected_hardware_summary = detected_hardware_summary.clone();
@@ -899,6 +913,7 @@ pub fn App() -> Html {
       let is_config_loaded = is_config_loaded.clone();
       let show_bind_modal = show_bind_modal.clone();
       let modal_start_from_scratch = modal_start_from_scratch.clone();
+      let config_version = config_version.clone();
       let bound_filename = bound_filename.clone();
       let bound_path_hint = bound_path_hint.clone();
       let detected_hardware_summary = detected_hardware_summary.clone();
@@ -926,6 +941,7 @@ pub fn App() -> Html {
             Ok(mut snap) => {
               snap.sanitize();
               let _ = FsManager::save_state_to_storage(&snap);
+              config_version.set(snap.config_version.max(1));
               bound_filename.set(format!("Loaded WebConfig JSON ({})", fname));
               bound_path_hint.set(snap.bound_path_hint.clone());
               detected_hardware_summary.set(snap.detected_hardware_summary.clone());
@@ -947,9 +963,10 @@ pub fn App() -> Html {
               last_saved_time.set(format!("Loaded from {}", fname));
               is_config_loaded.set(true);
               show_bind_modal.set(false);
-              modal_start_from_scratch.set(false);
+              modal_start_from_scratch.set(true);
               toast.set(Some(format!(
-                "Loaded Orca WebConfig JSON '{}': restored {} machine(s), {} filament(s), {} process(es), and {} Lua rule(s)!",
+                "Loaded OrcaSlicer WebConfig v{} '{}': restored {} machine(s), {} filament(s), {} process(es), and {} Lua rule(s)!",
+                snap.config_version,
                 fname,
                 snap.machines.len(),
                 snap.filaments.len(),
@@ -972,11 +989,21 @@ pub fn App() -> Html {
     })
   };
 
-  // Requirement: Reset All button clears everything (including browser localStorage) and opens the startup Import Modal
+  // Requirement #8: Reset All opens an "Are you sure?" confirmation dialog before clearing state
   let on_reset_all = {
+    let show_reset_confirm_modal = show_reset_confirm_modal.clone();
+    Callback::from(move |_| {
+      show_reset_confirm_modal.set(true);
+    })
+  };
+
+  let on_confirm_reset_all = {
     let is_config_loaded = is_config_loaded.clone();
     let show_bind_modal = show_bind_modal.clone();
+    let show_reset_confirm_modal = show_reset_confirm_modal.clone();
     let modal_start_from_scratch = modal_start_from_scratch.clone();
+    let show_expert_init = show_expert_init.clone();
+    let config_version = config_version.clone();
     let active_tab = active_tab.clone();
     let machines = machines.clone();
     let filaments = filaments.clone();
@@ -996,9 +1023,12 @@ pub fn App() -> Html {
 
     Callback::from(move |_| {
       FsManager::clear_state_from_storage();
+      show_reset_confirm_modal.set(false);
       is_config_loaded.set(false);
       show_bind_modal.set(true);
-      modal_start_from_scratch.set(false);
+      modal_start_from_scratch.set(true);
+      show_expert_init.set(false);
+      config_version.set(1);
       active_tab.set(ActiveTab::Home);
       machines.set(Vec::new());
       filaments.set(Vec::new());
@@ -1013,12 +1043,12 @@ pub fn App() -> Html {
       detected_hardware_summary.set("Unconnected".to_string());
       bound_filename.set("No Config Loaded".to_string());
       bound_path_hint.set(
-        "All state cleared — nothing is loaded. Use Local FS Import, Load WebConfig JSON, Start From Scratch, or Import a .zip."
+        "All state cleared — nothing is loaded. Start From Scratch (Recommended), Load Orca WebConfig JSON, or use Expert Mode."
           .to_string(),
       );
       last_saved_time.set("Reset".to_string());
       toast.set(Some(
-        "Reset All: cleared browser site data, rigs, filaments, and transformations and reopened the Startup Modal."
+        "Reset All confirmed: cleared browser site data, rigs, filaments, and transformations and reopened Initialization."
           .to_string(),
       ));
     })
@@ -2028,7 +2058,6 @@ pub fn App() -> Html {
     })
   };
 
-  let modal_os = *selected_modal_os;
   let on_open_export_modal = {
     let sem = show_export_modal.clone();
     Callback::from(move |_| sem.set(true))
@@ -2041,33 +2070,35 @@ pub fn App() -> Html {
         active_tab={*active_tab}
         on_select_tab={on_select_tab}
         is_config_loaded={*is_config_loaded}
+        is_tauri={is_tauri}
+        config_version={*config_version}
         bound_filename={(*bound_filename).clone()}
         active_rig_name={active_rig.name.clone()}
         ace_pro_units={active_rig.ace_pro_units}
         on_open_export_modal={on_open_export_modal.clone()}
-        on_toggle_diff={
-          let sdd = show_diff_drawer.clone();
-          Callback::from(move |_| sdd.set(!*sdd))
-        }
         on_reset_all={on_reset_all.clone()}
         has_unapplied_changes={!pending_updates.is_empty()}
         pending_save_count={pending_updates.len()}
       />
 
-      // Save & Export Popup Modal Menu
+      // Export (Website) / Save & Export (Tauri) Popup Modal Menu
       if *show_export_modal {
         <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
           <div class="bg-surface-container-low border-2 border-primary rounded-2xl max-w-2xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
             <div class="flex items-start justify-between gap-space-md border-b border-surface-container pb-space-sm">
               <div class="flex flex-col gap-0.5">
                 <span class="bg-primary text-on-primary text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded w-fit">
-                  {"Save & Export Menu"}
+                  {if is_tauri { "Save & Export Menu" } else { "Export Menu" }}
                 </span>
                 <h2 class="font-headline-lg text-headline-sm text-on-surface font-bold mt-1">
-                  {"Save & Export Configuration"}
+                  {if is_tauri { "Save & Export Configuration" } else { "Export Configuration" }}
                 </h2>
                 <p class="text-xs text-on-surface-variant">
-                  {"Choose an export format or write your configuration directly to disk."}
+                  {if is_tauri {
+                    "Choose an export format or write your configuration directly to disk."
+                  } else {
+                    "Choose an export format to download your configuration."
+                  }}
                 </p>
               </div>
               <button
@@ -2085,14 +2116,19 @@ pub fn App() -> Html {
               // Option 1: Export Orca WebConfig (.json)
               <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
                 <div class="flex flex-col gap-1">
-                  <span class="font-code-md text-code-md text-primary font-bold">
-                    {"Export Orca WebConfig (.json)"}
-                  </span>
+                  <div class="flex items-center gap-2">
+                    <span class="font-code-md text-code-md text-primary font-bold">
+                      {"Export Orca WebConfig (.json)"}
+                    </span>
+                    <span class="bg-primary/20 text-primary text-[10px] font-mono font-bold px-2 py-0.5 rounded">
+                      {format!("Config v{} • OrcaSlicer v2.2", *config_version)}
+                    </span>
+                  </div>
                   <span class="text-xs text-on-surface">
-                    {"Exports your full Orca WebConfig state (machine rigs, filaments, processes, Lua rules, and flush matrix)."}
+                    {"Exports your full versioned OrcaSlicer WebConfig state (machine rigs, filaments, processes, Lua rules, and flush matrix)."}
                   </span>
                   <span class="text-[11px] font-mono text-on-surface-variant">
-                    {"How to load: Click Reset All → Load Orca WebConfig (.json) in this web app."}
+                    {"How to load: Click Reset All → Load Orca WebConfig (.json) in this app."}
                   </span>
                 </div>
                 <button
@@ -2157,34 +2193,36 @@ pub fn App() -> Html {
                 </button>
               </div>
 
-              // Option 4: Save to Disk
-              <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
-                <div class="flex flex-col gap-1">
-                  <span class="font-code-md text-code-md text-on-surface font-bold">
-                    {"Save to Disk"}
-                  </span>
-                  <span class="text-xs text-on-surface">
-                    {"Writes all custom machine, process, filament presets, and .conf flushing volumes directly into your local slicer folder."}
-                  </span>
-                  <span class="text-[11px] font-mono text-on-surface-variant">
-                    {"How to load: Close the slicer before clicking Save, then launch OrcaSlicer / AnycubicSlicerNext to load automatically."}
-                  </span>
+              // Option 4: Save to Disk (Tauri Desktop Mode ONLY — removed in Website mode per Requirement #2)
+              if is_tauri {
+                <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
+                  <div class="flex flex-col gap-1">
+                    <span class="font-code-md text-code-md text-on-surface font-bold">
+                      {"Save to Disk"}
+                    </span>
+                    <span class="text-xs text-on-surface">
+                      {"Writes all custom machine, process, filament presets, and .conf flushing volumes directly into your local slicer folder."}
+                    </span>
+                    <span class="text-[11px] font-mono text-on-surface-variant">
+                      {"How to load: Close the slicer before clicking Save, then launch OrcaSlicer / AnycubicSlicerNext to load automatically."}
+                    </span>
+                  </div>
+                  <button
+                    class="shrink-0 flex items-center gap-space-xs bg-primary hover:opacity-90 text-on-primary px-space-md py-2 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer"
+                    onclick={
+                      let cb = on_commit_save_guarded.clone();
+                      Callback::from(move |_| cb.emit(()))
+                    }
+                  >
+                    <span class="material-symbols-outlined text-[16px]">{"save"}</span>
+                    if !pending_updates.is_empty() {
+                      {format!("Save to Disk ({} Staged)", pending_updates.len())}
+                    } else {
+                      {"Save to Disk"}
+                    }
+                  </button>
                 </div>
-                <button
-                  class="shrink-0 flex items-center gap-space-xs bg-primary hover:opacity-90 text-on-primary px-space-md py-2 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer"
-                  onclick={
-                    let cb = on_commit_save_guarded.clone();
-                    Callback::from(move |_| cb.emit(()))
-                  }
-                >
-                  <span class="material-symbols-outlined text-[16px]">{"save"}</span>
-                  if !pending_updates.is_empty() {
-                    {format!("Save to Disk ({} Staged)", pending_updates.len())}
-                  } else {
-                    {"Save to Disk"}
-                  }
-                </button>
-              </div>
+              }
             </div>
 
             <div class="flex items-center justify-end pt-space-sm border-t border-surface-container">
@@ -2304,7 +2342,57 @@ pub fn App() -> Html {
         </div>
       }
 
-      // Startup & Reset Modal (Import Existing Directory OR Start From Scratch Wizard!)
+      // Reset All "Are You Sure?" Confirmation Modal Dialog (Requirement #8)
+      if *show_reset_confirm_modal {
+        <div class="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4 overflow-y-auto">
+          <div class="bg-surface-container-low border-2 border-error rounded-2xl max-w-lg w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
+            <div class="flex items-start justify-between gap-space-md">
+              <div class="flex flex-col gap-1">
+                <span class="bg-error text-on-error text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded w-fit">
+                  {"Confirm Reset All"}
+                </span>
+                <h2 class="font-headline-lg text-headline-sm text-on-surface font-bold mt-1">
+                  {"Are you sure you want to Reset All?"}
+                </h2>
+                <p class="text-xs text-on-surface-variant leading-relaxed">
+                  {"This will clear all loaded machine rigs, filament spools, process profiles, and Lua transformation rules from browser storage and return to the Initialization screen. Export your Orca WebConfig (.json) first if you want to save a copy."}
+                </p>
+              </div>
+              <button
+                class="text-on-surface-variant hover:text-on-surface p-1 cursor-pointer"
+                onclick={
+                  let srcm = show_reset_confirm_modal.clone();
+                  Callback::from(move |_| srcm.set(false))
+                }
+              >
+                <span class="material-symbols-outlined">{"close"}</span>
+              </button>
+            </div>
+
+            <div class="flex items-center justify-end gap-space-sm pt-space-sm border-t border-surface-container">
+              <button
+                class="bg-surface-container-highest hover:bg-surface-bright text-on-surface border border-outline-variant px-space-lg py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                onclick={
+                  let srcm = show_reset_confirm_modal.clone();
+                  Callback::from(move |_| srcm.set(false))
+                }
+              >
+                {"Cancel"}
+              </button>
+              <button
+                class="bg-error hover:opacity-90 text-on-error px-space-lg py-2 rounded-lg text-xs font-mono font-bold shadow-lg transition-opacity cursor-pointer flex items-center gap-1.5"
+                onclick={on_confirm_reset_all}
+              >
+                <span class="material-symbols-outlined text-[16px]">{"restart_alt"}</span>
+                {"Yes, Reset All"}
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+
+      // Initialization Modal (Requirements #5 & #6: called "Initialization", no HTTP Client OS,
+      // 1. Start From Scratch (Recommended & Default), 2. Load Orca WebConfig, 3. Expert Mode)
       if *show_bind_modal {
         <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
           <div class="bg-surface-container-low border-2 border-primary rounded-2xl max-w-3xl w-full p-space-xl shadow-2xl flex flex-col gap-space-md my-auto">
@@ -2312,30 +2400,30 @@ pub fn App() -> Html {
               <div class="flex flex-col gap-1">
                 <div class="flex items-center gap-space-xs">
                   <span class="bg-primary text-on-primary text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
-                    {"Startup Setup Modal"}
+                    {"Initialization"}
                   </span>
-                  <span class="text-xs font-mono uppercase text-secondary font-bold">
-                    {format!("HTTP Client OS: {}", FsManager::detect_client_os().label())}
+                  <span class="bg-tertiary/20 text-tertiary border border-tertiary/40 text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded">
+                    {"OrcaSlicer WebConfig for v2.2"}
                   </span>
                 </div>
                 <h2 class="font-headline-lg text-headline-sm text-on-surface font-bold mt-1">
                   if *modal_start_from_scratch {
-                    {"Start From Scratch — 5-Step Transformation Setup Wizard"}
+                    {"Start From Scratch (Recommended) — 5-Step Transformation Setup Wizard"}
                   } else {
-                    {"Import Slicer Configuration Directory or Start From Scratch"}
+                    {"Load Orca WebConfig or Import Existing Slicer Profiles"}
                   }
                 </h2>
                 <p class="text-xs text-on-surface-variant">
                   if *modal_start_from_scratch {
-                    {"Select your Machine, Nozzle, Bed Plate, AMS / ACE Pro unit, and Filaments to build a clean transformation-based configuration stack from scratch."}
+                    {"Select your Machine, Nozzle, Bed Plate, AMS / ACE Pro unit, and Filaments to build a clean transformation-based configuration stack from scratch, or load a saved Orca WebConfig (.json)."}
                   } else {
-                    {"Nothing is loaded by default. Import your AnycubicSlicerNext directory from disk or start from scratch with our 5-step setup wizard."}
+                    {"Load a saved Orca WebConfig (.json) state file, or expand Expert Mode below to import raw slicer configuration archives."}
                   }
                 </p>
               </div>
               if *is_config_loaded {
                 <button
-                  class="text-on-surface-variant hover:text-on-surface p-1"
+                  class="text-on-surface-variant hover:text-on-surface p-1 cursor-pointer"
                   onclick={
                     let sbm = show_bind_modal.clone();
                     Callback::from(move |_| sbm.set(false))
@@ -2346,28 +2434,14 @@ pub fn App() -> Html {
               }
             </div>
 
-            // Mode Switcher: Import Existing Directory vs Start From Scratch Wizard
-            <div class="grid grid-cols-2 gap-space-xs bg-surface-container-lowest p-1.5 rounded-xl border border-outline-variant font-mono text-xs">
+            // Primary Initialization Mode Bar:
+            // 1. Start From Scratch (Recommended, Default)
+            // 2. Load Orca WebConfig (.json)
+            // 3. Expert Mode (Deprioritized)
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-space-xs bg-surface-container-lowest p-1.5 rounded-xl border border-outline-variant font-mono text-xs">
               <button
                 class={format!(
-                  "flex items-center justify-center gap-1.5 py-2 rounded-lg transition-colors cursor-pointer {}",
-                  if !*modal_start_from_scratch {
-                    "bg-primary text-on-primary font-bold shadow"
-                  } else {
-                    "text-on-surface-variant hover:text-on-surface"
-                  }
-                )}
-                onclick={
-                  let msfs = modal_start_from_scratch.clone();
-                  Callback::from(move |_| msfs.set(false))
-                }
-              >
-                <span class="material-symbols-outlined text-[16px]">{"folder_open"}</span>
-                {"1. Import Existing Slicer Directory"}
-              </button>
-              <button
-                class={format!(
-                  "flex items-center justify-center gap-1.5 py-2 rounded-lg transition-colors cursor-pointer {}",
+                  "flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg transition-colors cursor-pointer {}",
                   if *modal_start_from_scratch {
                     "bg-primary text-on-primary font-bold shadow"
                   } else {
@@ -2376,11 +2450,68 @@ pub fn App() -> Html {
                 )}
                 onclick={
                   let msfs = modal_start_from_scratch.clone();
-                  Callback::from(move |_| msfs.set(true))
+                  let sei = show_expert_init.clone();
+                  Callback::from(move |_| {
+                    msfs.set(true);
+                    sei.set(false);
+                  })
                 }
               >
                 <span class="material-symbols-outlined text-[16px]">{"auto_fix_high"}</span>
-                {"2. Start From Scratch (5-Step Wizard)"}
+                <span>{"1. Start From Scratch"}</span>
+                <span class={format!(
+                  "text-[9px] uppercase px-1.5 py-0.5 rounded font-bold {}",
+                  if *modal_start_from_scratch {
+                    "bg-on-primary text-primary"
+                  } else {
+                    "bg-tertiary/20 text-tertiary"
+                  }
+                )}>
+                  {"Recommended"}
+                </span>
+              </button>
+
+              <label
+                class={format!(
+                  "flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg transition-colors {}",
+                  if import_progress.is_some() {
+                    "opacity-50 pointer-events-none text-on-surface-variant"
+                  } else {
+                    "bg-surface-container-high hover:bg-surface-bright text-primary border border-primary/40 font-bold cursor-pointer"
+                  }
+                )}
+                title="Load an exported orcaslicer_webconfig.json state file to recreate the entire site state"
+              >
+                <span class="material-symbols-outlined text-[16px]">{"data_object"}</span>
+                <span>{"2. Load Orca WebConfig"}</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  class="hidden"
+                  onchange={on_import_webconfig_json.clone()}
+                />
+              </label>
+
+              <button
+                class={format!(
+                  "flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg transition-colors cursor-pointer {}",
+                  if !*modal_start_from_scratch {
+                    "bg-surface-container-highest text-secondary border border-secondary/50 font-bold shadow"
+                  } else {
+                    "text-on-surface-variant/80 hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let msfs = modal_start_from_scratch.clone();
+                  let sei = show_expert_init.clone();
+                  Callback::from(move |_| {
+                    msfs.set(false);
+                    sei.set(true);
+                  })
+                }
+              >
+                <span class="material-symbols-outlined text-[15px]">{"tune"}</span>
+                <span>{"Expert Mode"}</span>
               </button>
             </div>
 
@@ -2389,232 +2520,193 @@ pub fn App() -> Html {
                 on_complete={on_complete_scratch_wizard.clone()}
                 on_back_to_import={
                   let msfs = modal_start_from_scratch.clone();
-                  Callback::from(move |_| msfs.set(false))
+                  let sei = show_expert_init.clone();
+                  Callback::from(move |_| {
+                    msfs.set(false);
+                    sei.set(true);
+                  })
                 }
               />
             } else {
-              <>
-                // OS Tabs (Windows, Linux / WSL, macOS)
-                <div class="flex items-center gap-space-xs bg-surface-container-lowest p-1 rounded-lg border border-outline-variant font-mono text-xs">
-                  {for vec![
-                    (DetectedClientOs::Windows, "Windows"),
-                    (DetectedClientOs::Linux, "Linux / WSL"),
-                    (DetectedClientOs::MacOs, "macOS"),
-                  ].into_iter().map(|(os_val, lbl)| {
-                    let is_sel = modal_os == os_val;
-                    let smo = selected_modal_os.clone();
-                    html! {
-                      <button
-                        class={format!(
-                          "flex-1 py-1.5 rounded transition-colors cursor-pointer {}",
-                          if is_sel {
-                            "bg-primary text-on-primary font-bold"
-                          } else {
-                            "text-on-surface-variant hover:text-on-surface"
-                          }
-                        )}
-                        onclick={Callback::from(move |_| smo.set(os_val))}
-                      >
-                        {lbl}
-                      </button>
-                    }
-                  })}
-                </div>
-
-                // Path boxes with 1-click Copy Icon
-                <div class="flex flex-col gap-space-sm">
-                  <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col gap-space-xs">
-                    <div class="flex items-center justify-between">
-                      <span class="text-xs font-mono text-primary font-bold">
-                        {format!("AnycubicSlicerNext Directory ({})", modal_os.label())}
+              <div class="flex flex-col gap-space-md">
+                // Option 1 (Recommended): Start From Scratch Card
+                <div class="bg-surface-container p-space-md rounded-xl border-2 border-primary/70 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
+                  <div class="flex flex-col gap-1">
+                    <div class="flex items-center gap-2">
+                      <span class="font-code-md text-code-md text-primary font-bold">
+                        {"1. Start From Scratch (5-Step Wizard)"}
                       </span>
-                      <button
-                        class="flex items-center gap-1 bg-primary-container hover:bg-primary text-on-primary-container px-2.5 py-1 rounded text-xs font-mono font-bold transition-colors cursor-pointer"
-                        onclick={
-                          let cb = on_copy_path.clone();
-                          let p = modal_os.anycubic_path().to_string();
-                          Callback::from(move |_| cb.emit(p.clone()))
-                        }
-                      >
-                        <span class="material-symbols-outlined text-[14px]">{"content_copy"}</span>
-                        {"Copy Path"}
-                      </button>
-                    </div>
-                    <code class="text-xs font-mono text-on-surface bg-surface-container-lowest p-2.5 rounded border border-outline-variant/60 select-all break-all">
-                      {modal_os.anycubic_path()}
-                    </code>
-                    if modal_os == DetectedClientOs::Windows {
-                      <div class="flex items-center justify-between mt-1 pt-1 border-t border-surface-container-high">
-                        <code class="text-[11px] font-mono text-on-surface-variant select-all">
-                          {modal_os.anycubic_env_shortcut()}
-                        </code>
-                        <button
-                          class="text-[11px] font-mono text-secondary hover:underline flex items-center gap-0.5 cursor-pointer"
-                          onclick={
-                            let cb = on_copy_path.clone();
-                            let p = modal_os.anycubic_env_shortcut().to_string();
-                            Callback::from(move |_| cb.emit(p.clone()))
-                          }
-                        >
-                          <span class="material-symbols-outlined text-[12px]">{"content_copy"}</span>
-                          {"Copy %APPDATA% Shortcut"}
-                        </button>
-                      </div>
-                    }
-                  </div>
-
-                  <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col gap-space-xs">
-                    <div class="flex items-center justify-between">
-                      <span class="text-xs font-mono text-secondary font-bold">
-                        {format!("OrcaSlicer Directory ({})", modal_os.label())}
-                      </span>
-                      <button
-                        class="flex items-center gap-1 bg-surface-container-highest hover:bg-surface-bright text-on-surface px-2.5 py-1 rounded text-xs font-mono font-bold transition-colors cursor-pointer"
-                        onclick={
-                          let cb = on_copy_path.clone();
-                          let p = modal_os.orca_path().to_string();
-                          Callback::from(move |_| cb.emit(p.clone()))
-                        }
-                      >
-                        <span class="material-symbols-outlined text-[14px]">{"content_copy"}</span>
-                        {"Copy Path"}
-                      </button>
-                    </div>
-                    <code class="text-xs font-mono text-on-surface bg-surface-container-lowest p-2.5 rounded border border-outline-variant/60 select-all break-all">
-                      {modal_os.orca_path()}
-                    </code>
-                  </div>
-                </div>
-
-                // Live Import Progress Bar (shown when scanning/reading the 711 files)
-                if let Some(prog) = &*import_progress {
-                  <div class="bg-surface-container-highest border border-primary/60 rounded-xl p-space-md flex flex-col gap-space-sm shadow-inner">
-                    <div class="flex items-center justify-between gap-space-sm">
-                      <div class="flex items-center gap-space-xs text-primary font-mono text-xs font-bold">
-                        <span class="material-symbols-outlined text-[16px] animate-spin">{"sync"}</span>
-                        <span>{&prog.phase}</span>
-                      </div>
-                      <span class="bg-primary text-on-primary px-2 py-0.5 rounded text-xs font-mono font-bold">
-                        if prog.total_files > 0 {
-                          {format!(
-                            "{} / {} files ({}%)",
-                            prog.files_read,
-                            prog.total_files,
-                            ((prog.files_read as f64 / prog.total_files as f64) * 100.0)
-                              .round()
-                              .clamp(1.0, 100.0) as usize
-                          )}
-                        } else {
-                          {"Discovering files..."}
-                        }
+                      <span class="bg-tertiary/20 text-tertiary border border-tertiary/40 text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold">
+                        {"Recommended"}
                       </span>
                     </div>
-
-                    <div class="w-full h-3 bg-surface-container-lowest rounded-full overflow-hidden border border-outline-variant/60">
-                      <div
-                        class="h-full bg-primary transition-all duration-75 rounded-full"
-                        style={format!(
-                          "width: {}%;",
-                          if prog.total_files > 0 {
-                            ((prog.files_read as f64 / prog.total_files as f64) * 100.0)
-                              .round()
-                              .clamp(2.0, 100.0) as usize
-                          } else {
-                            8usize
-                          }
-                        )}
-                      />
-                    </div>
-
-                    <div class="text-[11px] font-mono text-on-surface-variant truncate">
-                      {format!("File: {}", prog.current_file)}
-                    </div>
+                    <span class="text-xs text-on-surface-variant">
+                      {"Build a clean transformation stack step-by-step (Machine → Nozzle → Bed → AMS → Filaments)."}
+                    </span>
                   </div>
-                }
-
-                // Modal Action Buttons: Real Local FS Scan (`local_slicer_config.json`) + Import Backup (.zip) + Start From Scratch
-                <div class="flex flex-col gap-space-sm pt-space-sm border-t border-surface-container">
-                  <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-space-sm">
-                    <button
-                      disabled={import_progress.is_some()}
-                      class={format!(
-                        "flex-1 flex items-center justify-center gap-space-xs px-space-md py-space-md rounded-xl text-xs font-mono font-bold shadow-lg transition-colors {}",
-                        if import_progress.is_some() {
-                          "bg-surface-container-high text-on-surface-variant opacity-60 cursor-wait"
-                        } else {
-                          "bg-primary-container hover:bg-primary text-on-primary-container cursor-pointer"
-                        }
-                      )}
-                      onclick={
-                        let cb = on_load_reference_snapshot.clone();
-                        Callback::from(move |_| cb.emit(()))
-                      }
-                    >
-                      <span class="material-symbols-outlined text-[16px]">
-                        {if import_progress.is_some() { "hourglass_top" } else { "bolt" }}
-                      </span>
-                      {if import_progress.is_some() {
-                        "Importing From Local FS..."
-                      } else {
-                        "Import From Local FS (local_slicer_config.json)"
-                      }}
-                    </button>
-
-                    <label
-                      class={format!(
-                        "flex-1 flex items-center justify-center gap-space-sm bg-surface-container-highest text-secondary border border-secondary/40 px-space-md py-space-md rounded-xl text-xs font-mono font-bold transition-colors {}",
-                        if import_progress.is_some() {
-                          "opacity-50 pointer-events-none"
-                        } else {
-                          "hover:bg-surface-bright cursor-pointer"
-                        }
-                      )}
-                    >
-                      <span class="material-symbols-outlined text-[18px]">{"folder_zip"}</span>
-                      {"Import Backup Archive (.zip)"}
-                      <input
-                        type="file"
-                        accept=".zip"
-                        class="hidden"
-                        onchange={on_import_zip.clone()}
-                      />
-                    </label>
-
-                    <label
-                      class={format!(
-                        "flex-1 flex items-center justify-center gap-space-sm bg-surface-container-highest text-primary border border-primary/50 px-space-md py-space-md rounded-xl text-xs font-mono font-bold transition-colors {}",
-                        if import_progress.is_some() {
-                          "opacity-50 pointer-events-none"
-                        } else {
-                          "hover:bg-surface-bright cursor-pointer"
-                        }
-                      )}
-                      title="Load an exported orcaslicer_webconfig.json state file to recreate the entire site state"
-                    >
-                      <span class="material-symbols-outlined text-[18px]">{"data_object"}</span>
-                      {"Load Orca WebConfig (.json)"}
-                      <input
-                        type="file"
-                        accept=".json,application/json"
-                        class="hidden"
-                        onchange={on_import_webconfig_json.clone()}
-                      />
-                    </label>
-                  </div>
-
                   <button
-                    disabled={import_progress.is_some()}
-                    class="w-full flex items-center justify-center gap-space-sm bg-tertiary/15 hover:bg-tertiary/25 text-tertiary border border-tertiary/50 px-space-lg py-2.5 rounded-xl text-xs font-mono font-bold transition-colors cursor-pointer"
+                    class="shrink-0 flex items-center gap-space-xs bg-primary hover:opacity-90 text-on-primary px-space-md py-2 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer"
                     onclick={
                       let msfs = modal_start_from_scratch.clone();
                       Callback::from(move |_| msfs.set(true))
                     }
                   >
-                    <span class="material-symbols-outlined text-[18px]">{"auto_fix_high"}</span>
-                    {"Or Start From Scratch with Setup Wizard (Machine → Nozzle → Bed → AMS → Filaments)"}
+                    <span class="material-symbols-outlined text-[16px]">{"auto_fix_high"}</span>
+                    {"Start From Scratch"}
                   </button>
                 </div>
-              </>
+
+                // Option 2: Load Orca WebConfig (.json)
+                <div class="bg-surface-container p-space-md rounded-xl border border-primary/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
+                  <div class="flex flex-col gap-1">
+                    <span class="font-code-md text-code-md text-on-surface font-bold">
+                      {"2. Load Orca WebConfig (.json)"}
+                    </span>
+                    <span class="text-xs text-on-surface-variant">
+                      {"Restore a previously exported orcaslicer_webconfig.json state file with all rigs, spools, and Lua rules."}
+                    </span>
+                  </div>
+                  <label
+                    class={format!(
+                      "shrink-0 flex items-center gap-space-xs bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors {}",
+                      if import_progress.is_some() {
+                        "opacity-50 pointer-events-none"
+                      } else {
+                        "cursor-pointer"
+                      }
+                    )}
+                  >
+                    <span class="material-symbols-outlined text-[16px]">{"data_object"}</span>
+                    {"Load Orca WebConfig (.json)"}
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      class="hidden"
+                      onchange={on_import_webconfig_json.clone()}
+                    />
+                  </label>
+                </div>
+
+                // Option 3 (Deprioritized): Collapsible Expert Mode for Raw Slicer Directory / Archive Imports
+                <div class="bg-surface-container-lowest p-space-md rounded-xl border border-outline-variant/60 flex flex-col gap-space-sm">
+                  <button
+                    class="flex items-center justify-between w-full text-left font-mono text-xs text-on-surface-variant hover:text-on-surface cursor-pointer"
+                    onclick={
+                      let sei = show_expert_init.clone();
+                      Callback::from(move |_| sei.set(!*sei))
+                    }
+                  >
+                    <div class="flex items-center gap-2">
+                      <span class="material-symbols-outlined text-[16px] text-secondary">{"tune"}</span>
+                      <span class="font-bold text-secondary uppercase">{"Expert Mode"}</span>
+                      <span>{"— Import Existing Slicer Directory or Backup Archive (.zip)"}</span>
+                    </div>
+                    <span class="material-symbols-outlined text-[18px]">
+                      {if *show_expert_init { "expand_less" } else { "expand_more" }}
+                    </span>
+                  </button>
+
+                  if *show_expert_init {
+                    <div class="flex flex-col gap-space-sm pt-space-sm border-t border-surface-container">
+                      <p class="text-[11px] text-on-surface-variant">
+                        {"Expert Mode reconstructs existing flat OrcaSlicer / AnycubicSlicerNext profile folders into our transformation model and flags any one-off parameter drift."}
+                      </p>
+
+                      if let Some(prog) = &*import_progress {
+                        <div class="bg-surface-container-highest border border-primary/60 rounded-xl p-space-md flex flex-col gap-space-sm shadow-inner">
+                          <div class="flex items-center justify-between gap-space-sm">
+                            <div class="flex items-center gap-space-xs text-primary font-mono text-xs font-bold">
+                              <span class="material-symbols-outlined text-[16px] animate-spin">{"sync"}</span>
+                              <span>{&prog.phase}</span>
+                            </div>
+                            <span class="bg-primary text-on-primary px-2 py-0.5 rounded text-xs font-mono font-bold">
+                              if prog.total_files > 0 {
+                                {format!(
+                                  "{} / {} files ({}%)",
+                                  prog.files_read,
+                                  prog.total_files,
+                                  ((prog.files_read as f64 / prog.total_files as f64) * 100.0)
+                                    .round()
+                                    .clamp(1.0, 100.0) as usize
+                                )}
+                              } else {
+                                {"Discovering files..."}
+                              }
+                            </span>
+                          </div>
+
+                          <div class="w-full h-3 bg-surface-container-lowest rounded-full overflow-hidden border border-outline-variant/60">
+                            <div
+                              class="h-full bg-primary transition-all duration-75 rounded-full"
+                              style={format!(
+                                "width: {}%;",
+                                if prog.total_files > 0 {
+                                  ((prog.files_read as f64 / prog.total_files as f64) * 100.0)
+                                    .round()
+                                    .clamp(2.0, 100.0) as usize
+                                } else {
+                                  8usize
+                                }
+                              )}
+                            />
+                          </div>
+
+                          <div class="text-[11px] font-mono text-on-surface-variant truncate">
+                            {format!("File: {}", prog.current_file)}
+                          </div>
+                        </div>
+                      }
+
+                      <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-space-sm">
+                        <label
+                          class={format!(
+                            "flex-1 flex items-center justify-center gap-space-sm bg-surface-container-highest text-secondary border border-secondary/40 px-space-md py-space-md rounded-xl text-xs font-mono font-bold transition-colors {}",
+                            if import_progress.is_some() {
+                              "opacity-50 pointer-events-none"
+                            } else {
+                              "hover:bg-surface-bright cursor-pointer"
+                            }
+                          )}
+                        >
+                          <span class="material-symbols-outlined text-[18px]">{"folder_zip"}</span>
+                          {"Import Backup Archive (.zip)"}
+                          <input
+                            type="file"
+                            accept=".zip"
+                            class="hidden"
+                            onchange={on_import_zip.clone()}
+                          />
+                        </label>
+
+                        <button
+                          disabled={import_progress.is_some()}
+                          class={format!(
+                            "flex-1 flex items-center justify-center gap-space-xs px-space-md py-space-md rounded-xl text-xs font-mono font-bold border border-outline-variant transition-colors {}",
+                            if import_progress.is_some() {
+                              "bg-surface-container-high text-on-surface-variant opacity-60 cursor-wait"
+                            } else {
+                              "bg-surface-container hover:bg-surface-container-high text-on-surface cursor-pointer"
+                            }
+                          )}
+                          onclick={
+                            let cb = on_load_reference_snapshot.clone();
+                            Callback::from(move |_| cb.emit(()))
+                          }
+                        >
+                          <span class="material-symbols-outlined text-[16px]">
+                            {if import_progress.is_some() { "hourglass_top" } else { "folder_open" }}
+                          </span>
+                          {if import_progress.is_some() {
+                            "Importing From Local FS..."
+                          } else {
+                            "Import From Local FS (Sandboxed)"
+                          }}
+                        </button>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
             }
           </div>
         </div>
@@ -2646,6 +2738,7 @@ pub fn App() -> Html {
           ActiveTab::Home => html! {
             <HomeTab
               is_config_loaded={*is_config_loaded}
+              is_tauri={is_tauri}
               bound_filename={(*bound_filename).clone()}
               bound_path_hint={(*bound_path_hint).clone()}
               detected_hardware_summary={(*detected_hardware_summary).clone()}
@@ -2729,6 +2822,7 @@ pub fn App() -> Html {
           ActiveTab::Filament => html! {
             <FilamentTab
               is_config_loaded={*is_config_loaded}
+              is_tauri={is_tauri}
               filaments={(*filaments).clone()}
               active_filament_type={(*active_filament_type).clone()}
               active_nozzle_type={active_rig.nozzle_type.clone()}
@@ -2821,6 +2915,7 @@ pub fn App() -> Html {
           ActiveTab::Wizard => html! {
             <WizardTab
               is_config_loaded={*is_config_loaded}
+              is_tauri={is_tauri}
               rules={(*rules).clone()}
               diff_items={eval_result.diff_items.clone()}
               rule_changes={eval_result.rule_changes.clone()}

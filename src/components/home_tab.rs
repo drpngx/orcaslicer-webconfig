@@ -9,6 +9,7 @@ use yew::prelude::*;
 #[derive(Properties, PartialEq)]
 pub struct HomeTabProps {
   pub is_config_loaded: bool,
+  pub is_tauri: bool,
   pub bound_filename: String,
   pub bound_path_hint: String,
   pub detected_hardware_summary: String,
@@ -114,14 +115,14 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
         <div class="flex items-center gap-space-sm flex-wrap">
           <button
             class="flex items-center gap-space-xs bg-primary hover:opacity-90 text-on-primary px-space-md py-1.5 rounded-lg text-xs font-mono font-bold transition-opacity shadow cursor-pointer"
-            title="Open Save & Export menu"
+            title={if props.is_tauri { "Open Save & Export menu" } else { "Open Export menu" }}
             onclick={
               let cb = props.on_open_export_modal.clone();
               Callback::from(move |_| cb.emit(()))
             }
           >
             <span class="material-symbols-outlined text-[16px]">{"ios_share"}</span>
-            {"Save & Export"}
+            {if props.is_tauri { "Save & Export" } else { "Export" }}
           </button>
           <button
             class="flex items-center gap-space-xs bg-error-container/30 hover:bg-error-container text-error border border-error/50 px-space-md py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
@@ -321,8 +322,8 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
         </div>
       }
 
-      // Staged Clean Rule Values Ready to Save to Disk Banner (only shown when values actually differ!)
-      if !changed_pending_updates.is_empty() {
+      // Staged Clean Rule Values Ready to Save to Disk Banner (only shown in Tauri mode when values actually differ!)
+      if props.is_tauri && !changed_pending_updates.is_empty() {
         <div class="bg-primary-container/15 border-2 border-primary p-space-lg rounded-xl shadow-lg flex flex-col gap-space-sm">
           <div class="flex items-center justify-between flex-wrap gap-space-sm">
             <div class="flex items-center gap-space-sm text-primary">
@@ -399,10 +400,14 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                   }
                 >
                   <span class="material-symbols-outlined text-[14px]">{"ios_share"}</span>
-                  if !props.pending_updates.is_empty() {
-                    {format!("Save & Export ({} Staged)", props.pending_updates.len())}
+                  if props.is_tauri {
+                    if !props.pending_updates.is_empty() {
+                      {format!("Save & Export ({} Staged)", props.pending_updates.len())}
+                    } else {
+                      {"Save & Export"}
+                    }
                   } else {
-                    {"Save & Export"}
+                    {"Export"}
                   }
                 </button>
               </div>
@@ -432,16 +437,18 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                   onchange={props.on_import_zip.clone()}
                 />
               </label>
-              <button
-                class="flex items-center gap-1 text-xs text-primary hover:underline font-semibold cursor-pointer"
-                onclick={
-                  let cb = props.on_load_reference_snapshot.clone();
-                  Callback::from(move |_| cb.emit(()))
-                }
-              >
-                <span class="material-symbols-outlined text-[14px]">{"sync"}</span>
-                {"Refresh Local FS"}
-              </button>
+              if props.is_tauri {
+                <button
+                  class="flex items-center gap-1 text-xs text-primary hover:underline font-semibold cursor-pointer"
+                  onclick={
+                    let cb = props.on_load_reference_snapshot.clone();
+                    Callback::from(move |_| cb.emit(()))
+                  }
+                >
+                  <span class="material-symbols-outlined text-[14px]">{"sync"}</span>
+                  {"Refresh Local FS"}
+                </button>
+              }
             </div>
           </div>
 
@@ -804,18 +811,20 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
             </span>
           </div>
 
-          <div class="flex items-center gap-space-sm">
-            <button
-              class="flex items-center gap-space-xs bg-primary hover:bg-primary-fixed-dim text-on-primary-fixed px-space-md py-space-xs rounded text-xs font-semibold transition-colors cursor-pointer"
-              onclick={
-                let cb = props.on_commit_save.clone();
-                Callback::from(move |_| cb.emit(()))
-              }
-            >
-              <span class="material-symbols-outlined text-[14px]">{"save"}</span>
-              {"Commit Changes to Local Disk"}
-            </button>
-          </div>
+          if props.is_tauri {
+            <div class="flex items-center gap-space-sm">
+              <button
+                class="flex items-center gap-space-xs bg-primary hover:bg-primary-fixed-dim text-on-primary-fixed px-space-md py-space-xs rounded text-xs font-semibold transition-colors cursor-pointer"
+                onclick={
+                  let cb = props.on_commit_save.clone();
+                  Callback::from(move |_| cb.emit(()))
+                }
+              >
+                <span class="material-symbols-outlined text-[14px]">{"save"}</span>
+                {"Commit Changes to Local Disk"}
+              </button>
+            </div>
+          }
         </div>
 
         if props.show_diff_drawer {

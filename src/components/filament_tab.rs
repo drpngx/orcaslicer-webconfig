@@ -19,6 +19,7 @@ fn extract_event_value(e: &Event) -> Option<String> {
 #[derive(Properties, PartialEq)]
 pub struct FilamentTabProps {
   pub is_config_loaded: bool,
+  pub is_tauri: bool,
   pub filaments: Vec<FilamentSpool>,
   pub active_filament_type: String,
   pub active_nozzle_type: String,
@@ -1822,13 +1823,15 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                   })}
                 </div>
 
-                <button
-                  class="flex items-center gap-1 bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-1.5 rounded-lg text-xs font-mono font-bold shadow transition-colors cursor-pointer"
-                  onclick={Callback::from(move |_| on_stage_flush.emit(()))}
-                >
-                  <span class="material-symbols-outlined text-[15px]">{"pending_actions"}</span>
-                  {"Stage Matrix & Multiplier to Disk (.conf)"}
-                </button>
+                if props.is_tauri {
+                  <button
+                    class="flex items-center gap-1 bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-1.5 rounded-lg text-xs font-mono font-bold shadow transition-colors cursor-pointer"
+                    onclick={Callback::from(move |_| on_stage_flush.emit(()))}
+                  >
+                    <span class="material-symbols-outlined text-[15px]">{"pending_actions"}</span>
+                    {"Stage Matrix & Multiplier to Disk (.conf)"}
+                  </button>
+                }
               </div>
             </div>
 

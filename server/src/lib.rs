@@ -7,6 +7,7 @@ use axum::http::{header, HeaderValue, Method, Response, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
+use cap_std::{ambient_authority, fs::Dir};
 use log::info;
 use orcaslicer_webconfig::fs_access::{
   LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload, LocalFsScanProgress,
@@ -159,27 +160,31 @@ async fn cors_preflight() -> impl IntoResponse {
 }
 
 fn discover_local_fs_files(
-  root: &Path,
-  current: &Path,
+  current_dir: &Dir,
+  rel_prefix: &str,
   depth: usize,
-  discovered: &mut Vec<(PathBuf, String, String)>,
+  discovered: &mut Vec<(String, String)>,
   state: &Arc<Mutex<ServerScanState>>,
 ) {
   if depth > 6 {
     return;
   }
-  let Ok(read_dir) = std::fs::read_dir(current) else {
+  let Ok(read_dir) = current_dir.entries() else {
     return;
   };
   let mut dir_entries: Vec<_> = read_dir.filter_map(|e| e.ok()).collect();
   dir_entries.sort_by_key(|e| e.file_name());
 
   for entry in dir_entries {
-    let path = entry.path();
     let Ok(ft) = entry.file_type() else {
       continue;
     };
     let fname = entry.file_name().to_string_lossy().to_string();
+    let rel = if rel_prefix.is_empty() {
+      fname.clone()
+    } else {
+      format!("{}/{}", rel_prefix, fname)
+    };
 
     if ft.is_dir() {
       if matches!(
@@ -188,14 +193,12 @@ fn discover_local_fs_files(
       ) {
         continue;
       }
-      discover_local_fs_files(root, &path, depth + 1, discovered, state);
+      if let Ok(sub_dir) = current_dir.open_dir(&fname) {
+        discover_local_fs_files(&sub_dir, &rel, depth + 1, discovered, state);
+      }
     } else if ft.is_file() {
       if fname.ends_with(".conf") || fname.ends_with(".json") || fname.ends_with(".info") {
-        let rel = path
-          .strip_prefix(root)
-          .map(|p| p.to_string_lossy().replace('\\', "/"))
-          .unwrap_or_else(|_| fname.clone());
-        discovered.push((path, rel.clone(), fname));
+        discovered.push((rel.clone(), fname));
         if let Ok(mut guard) = state.lock() {
           guard.progress.total_files = discovered.len();
           guard.progress.current_file = rel;
@@ -219,8 +222,9 @@ fn perform_full_local_scan(state: &Arc<Mutex<ServerScanState>>) -> LocalFsScanPa
   }
 
   let mut discovered = Vec::new();
-  if root_path.exists() {
-    discover_local_fs_files(root_path, root_path, 0, &mut discovered, state);
+  let root_cap_dir = Dir::open_ambient_dir(root_path, ambient_authority()).ok();
+  if let Some(ref cap_dir) = root_cap_dir {
+    discover_local_fs_files(cap_dir, "", 0, &mut discovered, state);
   }
 
   let total = discovered.len();
@@ -230,22 +234,24 @@ fn perform_full_local_scan(state: &Arc<Mutex<ServerScanState>>) -> LocalFsScanPa
   }
 
   let mut entries = Vec::with_capacity(total);
-  for (idx, (path, rel, fname)) in discovered.into_iter().enumerate() {
-    if let Ok(mut guard) = state.lock() {
-      guard.progress.files_read = idx + 1;
-      guard.progress.current_file = rel.clone();
-    }
-    if let Ok(bytes) = std::fs::read(&path) {
-      entries.push(ScannedFileEntry {
-        relative_path: rel,
-        filename: fname,
-        bytes,
-      });
+  if let Some(ref cap_dir) = root_cap_dir {
+    for (idx, (rel, fname)) in discovered.into_iter().enumerate() {
+      if let Ok(mut guard) = state.lock() {
+        guard.progress.files_read = idx + 1;
+        guard.progress.current_file = rel.clone();
+      }
+      if let Ok(bytes) = cap_dir.read(&rel) {
+        entries.push(ScannedFileEntry {
+          relative_path: rel,
+          filename: fname,
+          bytes,
+        });
+      }
     }
   }
 
   info!(
-    "Scanned local filesystem directory '{}' -> {} files read",
+    "Scanned local filesystem directory '{}' via cap-std -> {} files read",
     cfg.local_slicer_directory,
     entries.len()
   );
@@ -337,31 +343,51 @@ async fn api_local_slicer_save(Json(req): Json<LocalFsSaveRequest>) -> impl Into
   let root_path = Path::new(&cfg.local_slicer_directory);
   let state = scan_state().clone();
 
+  let Ok(cap_dir) = Dir::open_ambient_dir(root_path, ambient_authority()) else {
+    let resp = LocalFsSaveResponse {
+      ok: false,
+      files_saved: 0,
+      message: format!(
+        "Capability sandbox could not open slicer directory: {}",
+        cfg.local_slicer_directory
+      ),
+    };
+    let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+    let mut res = Response::new(Body::from(body));
+    res.headers_mut().insert(
+      header::CONTENT_TYPE,
+      HeaderValue::from_static("application/json"),
+    );
+    return with_cors(res);
+  };
+
   let mut files_saved = 0usize;
   for file_item in &req.files {
-    if file_item.relative_path.contains("..") || !file_item.relative_path.starts_with("user/") {
+    let rel = file_item.relative_path.replace('\\', "/");
+    let is_allowed_target =
+      (rel.starts_with("user/") && rel.ends_with(".json")) || rel.ends_with(".conf");
+    if rel.contains("..") || !is_allowed_target {
       continue;
     }
-    let full_path = root_path.join(&file_item.relative_path);
-    if full_path.exists() {
-      let _ = std::fs::write(&full_path, file_item.content.as_bytes());
-    }
-    if let Ok(mut guard) = state.lock() {
-      if let Some(ref mut payload) = guard.result {
-        if let Some(entry) = payload
-          .entries
-          .iter_mut()
-          .find(|e| e.relative_path == file_item.relative_path)
-        {
-          entry.bytes = file_item.content.as_bytes().to_vec();
-        }
+    if let Some(parent) = Path::new(&rel).parent() {
+      if !parent.as_os_str().is_empty() {
+        let _ = cap_dir.create_dir_all(parent);
       }
     }
-    files_saved += 1;
+    if cap_dir.write(&rel, file_item.content.as_bytes()).is_ok() {
+      if let Ok(mut guard) = state.lock() {
+        if let Some(ref mut payload) = guard.result {
+          if let Some(entry) = payload.entries.iter_mut().find(|e| e.relative_path == rel) {
+            entry.bytes = file_item.content.as_bytes().to_vec();
+          }
+        }
+      }
+      files_saved += 1;
+    }
   }
 
   info!(
-    "Saved {} modified user configuration files to '{}'",
+    "Saved {} modified user configuration files to '{}' via cap-std",
     files_saved, cfg.local_slicer_directory
   );
 
@@ -383,25 +409,34 @@ async fn api_local_slicer_save(Json(req): Json<LocalFsSaveRequest>) -> impl Into
 }
 
 async fn read_roaming_file(Json(req): Json<ExternalFileRequest>) -> impl IntoResponse {
-  let Some(mut path) = resolve_os_roaming_dir() else {
+  let Some(roaming_dir) = resolve_os_roaming_dir() else {
     let mut err_res = Response::new(Body::from("Could not find OS AppData/Roaming directory"));
     *err_res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     return with_cors(err_res);
   };
-  if req.app_folder.contains("..") || req.file_name.contains("..") {
-    let mut err_res = Response::new(Body::from("Invalid relative path"));
-    *err_res.status_mut() = StatusCode::BAD_REQUEST;
+  if !matches!(req.app_folder.as_str(), "AnycubicSlicerNext" | "OrcaSlicer")
+    || req.file_name.contains("..")
+  {
+    let mut err_res = Response::new(Body::from(
+      "Access denied by capability sandbox: only AnycubicSlicerNext or OrcaSlicer allowed",
+    ));
+    *err_res.status_mut() = StatusCode::FORBIDDEN;
     return with_cors(err_res);
   }
-  path.push(&req.app_folder);
-  path.push(&req.file_name);
+  let target_root = roaming_dir.join(&req.app_folder);
+  let Ok(cap_dir) = Dir::open_ambient_dir(&target_root, ambient_authority()) else {
+    let mut err_res = Response::new(Body::from(format!(
+      "Could not open capability directory {:?}",
+      target_root
+    )));
+    *err_res.status_mut() = StatusCode::NOT_FOUND;
+    return with_cors(err_res);
+  };
 
-  match tokio::fs::read_to_string(&path).await {
+  match cap_dir.read_to_string(&req.file_name) {
     Ok(content) => {
-      let payload = FileResponse {
-        full_path: path.display().to_string(),
-        content,
-      };
+      let full_path = target_root.join(&req.file_name).display().to_string();
+      let payload = FileResponse { full_path, content };
       let body = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
       let mut res = Response::new(Body::from(body));
       res.headers_mut().insert(
@@ -411,7 +446,10 @@ async fn read_roaming_file(Json(req): Json<ExternalFileRequest>) -> impl IntoRes
       with_cors(res)
     }
     Err(e) => {
-      let mut err_res = Response::new(Body::from(format!("Failed to read {:?}: {}", path, e)));
+      let mut err_res = Response::new(Body::from(format!(
+        "Failed to read {:?} in {:?}: {}",
+        req.file_name, target_root, e
+      )));
       *err_res.status_mut() = StatusCode::NOT_FOUND;
       with_cors(err_res)
     }
