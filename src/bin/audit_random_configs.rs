@@ -336,7 +336,28 @@ fn main() {
       }
     }
 
+    // Seed half of the configs with a pre-existing stale `AnycubicSlicerNext.conf` referencing stock Anycubic PLA-CF
+    // so we verify `sync_live_state_to_entries` overwrites pre-existing `AnycubicSlicerNext.conf` with `OC -` spools!
     let mut entries: Vec<ScannedFileEntry> = Vec::new();
+    if cfg_idx % 2 == 0 {
+      let stale_conf = br##"{
+        "app": { "preset_folder": "default", "version": "2.0.0.3", "flush_multiplier": "1.000000" },
+        "models": [{ "model": "Anycubic Kobra S1", "nozzle_diameter": "0.4", "vendor": "Anycubic" }],
+        "presets": { "machine": "Anycubic Kobra S1 0.4 nozzle" },
+        "anycubic_presets": [{
+          "machine": "Anycubic Kobra S1 0.4 nozzle",
+          "process": "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle",
+          "filament": "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
+          "filament_01": "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
+          "filament_colors": "#658946,#E10600"
+        }]
+      }"##;
+      entries.push(ScannedFileEntry {
+        relative_path: "AnycubicSlicerNext.conf".to_string(),
+        filename: "AnycubicSlicerNext.conf".to_string(),
+        bytes: stale_conf.to_vec(),
+      });
+    }
     let save_files = sync_live_state_to_entries(
       &mut entries,
       std::slice::from_ref(&rig),
@@ -480,6 +501,12 @@ fn main() {
       let ret_spd: f32 = first_str_val(&val, "filament_retraction_speed")
         .and_then(|s| s.parse().ok())
         .unwrap_or(-1.0);
+      if val.get("compatible_printers").is_some() {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' contains restrictive 'compatible_printers' key that would hide it from the Kobra S1 dropdown!",
+          cfg_name, name
+        ));
+      }
 
       let matching_spool = snap.filaments.iter().find(|s| s.name == name);
       let mat_for_bounds = matching_spool

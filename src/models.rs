@@ -1366,12 +1366,7 @@ impl FilamentSpool {
       self.pressure_advance = 0.035;
     }
 
-    let base_mat_tag = match base_mat_code.as_str() {
-      "PCTG" | "PCTG-CF" | "PCTG-GF" => "PETG",
-      "PLA-CF" | "PLA-GF" | "PLA Glow" => "PLA",
-      other => other,
-    };
-    self.inherits = format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", base_mat_tag);
+    self.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(self);
     self.name = Self::default_oc_profile_name_with_brand(
       &self.brand,
       &base_mat_code,
@@ -1881,7 +1876,9 @@ impl FilamentSpool {
     let mut json_map = serde_json::Map::new();
     if let Some(vb) = vendor_base {
       for (k, v) in vb {
-        json_map.insert(k.clone(), v.clone());
+        if k != "compatible_printers" {
+          json_map.insert(k.clone(), v.clone());
+        }
       }
     }
     let (range_low, range_high) = Self::compute_nozzle_temp_range(
@@ -1979,8 +1976,9 @@ impl FilamentSpool {
         0.98f32
       };
     let base_mat_tag = match base_mat_code.as_str() {
-      "PCTG" | "PCTG-CF" | "PCTG-GF" => "PETG",
-      "PLA-CF" | "PLA-GF" | "PLA Glow" => "PLA",
+      "PCTG" => "PETG",
+      "PCTG-CF" | "PCTG-GF" | "PETG-GF" => "PETG-CF",
+      "PLA-GF" | "PLA Glow" => "PLA",
       other => other,
     };
     let inherits = format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", base_mat_tag);
@@ -2247,7 +2245,51 @@ impl WebConfigStateSnapshot {
     }
 
     let catalog = crate::catalog::load_merged_catalog();
+    let has_oc_spools = self
+      .filaments
+      .iter()
+      .any(|f| f.name.starts_with("OC -") || f.name.starts_with("OC:"));
+    let active_noz_for_sanitize = self
+      .machines
+      .iter()
+      .find(|m| m.id == self.active_machine_id)
+      .or_else(|| self.machines.first())
+      .map(|m| m.nozzle_type.clone())
+      .unwrap_or_else(|| "hardened_steel".to_string());
     for sp in &mut self.filaments {
+      if has_oc_spools
+        && !sp.name.starts_with("OC -")
+        && !sp.name.starts_with("OC:")
+        && sp.name.contains("@Anycubic")
+        && sp.id.starts_with("disk_sys_spool_")
+      {
+        let col_hex = sp.color_hex.clone();
+        let col_name = sp.color_name.clone();
+        let is_loaded = sp.is_loaded;
+        let mat_code = sp.material_type.clone();
+        if let Some(cat_entry) = catalog
+          .filaments
+          .iter()
+          .find(|f| {
+            f.brand.eq_ignore_ascii_case("Anycubic") && f.code.eq_ignore_ascii_case(&mat_code)
+          })
+          .or_else(|| {
+            catalog
+              .filaments
+              .iter()
+              .find(|f| f.code.eq_ignore_ascii_case(&mat_code))
+          })
+        {
+          let mut upgraded =
+            FilamentSpool::from_catalog_entry(1, cat_entry, &active_noz_for_sanitize);
+          upgraded.id = sp.id.clone();
+          upgraded.color_hex = col_hex;
+          upgraded.color_name = col_name;
+          upgraded.is_loaded = is_loaded;
+          upgraded.rebuild_synthetic_disk_json(&active_noz_for_sanitize);
+          *sp = upgraded;
+        }
+      }
       if sp.name.contains(':') {
         sp.name = sp.name.replace(": ", " - ").replace(':', "-");
       }
@@ -2408,6 +2450,12 @@ impl WebConfigStateSnapshot {
           let noz = sp.nozzle_type.clone();
           sp.recompute_for_nozzle(&noz);
           sp.rebuild_synthetic_disk_json(&noz);
+        } else if let Some(ref raw) = sp.raw_disk_json {
+          if let Ok(serde_json::Value::Object(mut rmap)) = serde_json::from_str::<serde_json::Value>(raw) {
+            if rmap.remove("compatible_printers").is_some() {
+              sp.raw_disk_json = serde_json::to_string_pretty(&serde_json::Value::Object(rmap)).ok();
+            }
+          }
         }
         sp.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(sp);
         sp.deltas_from_base.retain(|d| d.param_key != "inherits");

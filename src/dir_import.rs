@@ -245,37 +245,61 @@ pub fn import_scanned_directory(
       active_machine_name_from_conf = m.to_string();
     }
     // Extract active slot filaments, colors, process, and `flush_volumes_matrix` from `anycubic_presets`
+    // Prefer a preset with `OC -` filaments or the exact active machine
     if let Some(arr) = c.get("anycubic_presets").and_then(|a| a.as_array()) {
+      let mut best_priority = 0usize;
       for preset in arr {
         let mach = preset.get("machine").and_then(|m| m.as_str()).unwrap_or("");
+        if mach.contains(".3mf)") {
+          continue;
+        }
+        let mut f_names = Vec::new();
+        for key in [
+          "filament",
+          "filament_01",
+          "filament_02",
+          "filament_03",
+          "filament_04",
+          "filament_05",
+          "filament_06",
+          "filament_07",
+        ] {
+          if let Some(fnm) = preset.get(key).and_then(|v| v.as_str()) {
+            let trimmed = fnm.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('(') {
+              let clean_fnm = trimmed
+                .split_once(".3mf)")
+                .map(|(head, _)| head.rsplit_once('(').map(|(h, _)| h).unwrap_or(head))
+                .unwrap_or(trimmed);
+              f_names.push(clean_fnm.trim().to_string());
+            }
+          }
+        }
+        let oc_fil_count = f_names
+          .iter()
+          .filter(|n| n.starts_with("OC -") || n.starts_with("OC:"))
+          .count();
         let is_exact_active =
           !active_machine_name_from_conf.is_empty() && mach == active_machine_name_from_conf;
-        if is_exact_active
-          || (mach.contains("Kobra S1") && slot_filament_names_from_conf.is_empty())
-        {
+        let priority = if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC")) {
+          40 + oc_fil_count
+        } else if is_exact_active && oc_fil_count > 0 {
+          30 + oc_fil_count
+        } else if is_exact_active {
+          20
+        } else if (mach.contains("Kobra S1") || mach.starts_with("OC")) && oc_fil_count > 0 {
+          15 + oc_fil_count
+        } else if mach.contains("Kobra S1") {
+          10
+        } else {
+          0
+        };
+        if priority > best_priority && !f_names.is_empty() {
+          best_priority = priority;
           if let Some(proc_str) = preset.get("process").and_then(|p| p.as_str()) {
             active_process_name_from_conf = proc_str.to_string();
           }
-          let mut f_names = Vec::new();
-          for key in [
-            "filament",
-            "filament_01",
-            "filament_02",
-            "filament_03",
-            "filament_04",
-            "filament_05",
-            "filament_06",
-            "filament_07",
-          ] {
-            if let Some(fnm) = preset.get(key).and_then(|v| v.as_str()) {
-              if !fnm.trim().is_empty() {
-                f_names.push(fnm.trim().to_string());
-              }
-            }
-          }
-          if !f_names.is_empty() {
-            slot_filament_names_from_conf = f_names;
-          }
+          slot_filament_names_from_conf = f_names;
           if let Some(cols) = preset.get("filament_colors").and_then(|fc| fc.as_str()) {
             let parsed_cols: Vec<String> = cols
               .split(',')
@@ -1153,14 +1177,38 @@ pub fn import_scanned_directory(
   // Include any system filaments referenced in `slot_filament_names_from_conf` (e.g. `Anycubic TPU @Anycubic Kobra S1 0.4 nozzle`
   // or `Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle`) that don't have a separate user override file,
   // and order the leading slots to match `AnycubicSlicerNext.conf` 1-to-1 so `flush_volumes_matrix` aligns with Slots #1..#N!
-  for (slot_idx, slot_fname) in slot_filament_names_from_conf.iter().enumerate() {
-    if !filaments.iter().any(|f| &f.name == slot_fname) {
-      let sys_val = system_filaments.get(slot_fname);
+  // If an `OC -` spool for that polymer already exists on disk (or the active machine is an `OC -` rig),
+  // bind the slot to the `OC -` spool rather than loading a raw system default name!
+  let active_rig_for_slots = machines
+    .iter()
+    .find(|m| m.id == active_machine_id)
+    .or_else(|| machines.first())
+    .cloned()
+    .unwrap_or_else(MachineRig::kobra_s1_hardened_steel_png);
+  let is_oc_active_machine = active_machine_name_from_conf.starts_with("OC -")
+    || active_machine_name_from_conf.starts_with("OC:")
+    || filaments
+      .iter()
+      .any(|f| f.name.starts_with("OC -") || f.name.starts_with("OC:"));
+  for slot_idx in 0..slot_filament_names_from_conf.len() {
+    let slot_fname = slot_filament_names_from_conf[slot_idx].clone();
+    if !filaments.iter().any(|f| f.name == slot_fname) {
+      let sys_val = system_filaments.get(&slot_fname);
       let mat_type = sys_val
         .and_then(|b| extract_str(b, "filament_type"))
         .unwrap_or_else(|| {
           let upper = slot_fname.to_uppercase();
-          if upper.contains("TPU") {
+          if upper.contains("PLA-CF") {
+            "PLA-CF".to_string()
+          } else if upper.contains("PLA+") {
+            "PLA+".to_string()
+          } else if upper.contains("PETG-CF") {
+            "PETG-CF".to_string()
+          } else if upper.contains("PET-CF") {
+            "PET-CF".to_string()
+          } else if upper.contains("PA6-CF") {
+            "PA6-CF".to_string()
+          } else if upper.contains("TPU") {
             "TPU".to_string()
           } else if upper.contains("PETG") {
             "PETG".to_string()
@@ -1168,10 +1216,62 @@ pub fn import_scanned_directory(
             "ABS".to_string()
           } else if upper.contains("ASA") {
             "ASA".to_string()
+          } else if upper.contains("PC") {
+            "PC".to_string()
           } else {
             "PLA".to_string()
           }
         });
+      let slot_canon = FilamentSpool::canonical_polymer_key(&mat_type);
+      // Check if an `OC -` spool of this polymer already exists in `filaments` (e.g. `OC - PLA-CF • 0.4 Hardened` or `OC - Anycubic PLA-CF • 0.4 Hardened`)
+      if let Some(existing_oc_idx) = filaments.iter().position(|f| {
+        (f.name.starts_with("OC -") || f.name.starts_with("OC:"))
+          && FilamentSpool::canonical_polymer_key(&f.material_type) == slot_canon
+          && !slot_filament_names_from_conf[..slot_idx]
+            .iter()
+            .any(|prev| prev == &f.name)
+      }) {
+        if slot_fname.to_lowercase().starts_with("anycubic ")
+          && filaments[existing_oc_idx].brand == "Generic"
+        {
+          filaments[existing_oc_idx]
+            .apply_brand_change("Anycubic", &active_rig_for_slots.nozzle_type);
+        }
+        slot_filament_names_from_conf[slot_idx] = filaments[existing_oc_idx].name.clone();
+        continue;
+      }
+
+      if is_oc_active_machine && slot_fname.contains("@Anycubic") {
+        let cat = crate::catalog::load_merged_catalog();
+        if let Some(cat_entry) = cat
+          .filaments
+          .iter()
+          .find(|f| {
+            f.brand.eq_ignore_ascii_case("Anycubic") && f.code.eq_ignore_ascii_case(&mat_type)
+          })
+          .or_else(|| {
+            cat
+              .filaments
+              .iter()
+              .find(|f| f.code.eq_ignore_ascii_case(&mat_type))
+          })
+        {
+          let mut oc_sp = FilamentSpool::from_catalog_entry(
+            slot_idx + 1,
+            cat_entry,
+            &active_rig_for_slots.nozzle_type,
+          );
+          if let Some(col) = slot_colors_from_conf.get(slot_idx % slot_colors_from_conf.len()) {
+            oc_sp.color_hex = col.clone();
+          }
+          oc_sp.color_name = format!("Slot #{}", slot_idx + 1);
+          oc_sp.rebuild_synthetic_disk_json(&active_rig_for_slots.nozzle_type);
+          slot_filament_names_from_conf[slot_idx] = oc_sp.name.clone();
+          filaments.push(oc_sp);
+          continue;
+        }
+      }
+
       let sys_brass = sys_val
         .and_then(|b| {
           extract_str(b, "nozzle_temperature_BRASS")
@@ -2015,6 +2115,92 @@ pub fn sync_live_state_to_entries(
       bytes: conf_json.as_bytes().to_vec(),
     });
     modified_map.insert(conf_path, conf_json);
+  } else if let Some(conf_entry) = entries.iter_mut().find(|e| e.relative_path == conf_path) {
+    if let Ok(raw_text) = std::str::from_utf8(&conf_entry.bytes) {
+      let cleaned_text = clean_conf_json(raw_text);
+      if let Ok(mut conf_val) = serde_json::from_str::<serde_json::Value>(&cleaned_text) {
+        if let Some(app_map) = conf_val.get_mut("app").and_then(|a| a.as_object_mut()) {
+          app_map.insert(
+            "flush_multiplier".to_string(),
+            serde_json::Value::String(format!("{:.6}", flush_multiplier)),
+          );
+        }
+        if let Some(presets_map) = conf_val.get_mut("presets").and_then(|p| p.as_object_mut()) {
+          presets_map.insert(
+            "machine".to_string(),
+            serde_json::Value::String(active_rig.name.clone()),
+          );
+          presets_map.insert(
+            "process".to_string(),
+            serde_json::Value::String(active_proc_name.clone()),
+          );
+        }
+        if let Some(arr) = conf_val
+          .get_mut("anycubic_presets")
+          .and_then(|a| a.as_array_mut())
+        {
+          let update_preset_map = |pmap: &mut serde_json::Map<String, serde_json::Value>| {
+            pmap.insert(
+              "machine".to_string(),
+              serde_json::Value::String(active_rig.name.clone()),
+            );
+            pmap.insert(
+              "process".to_string(),
+              serde_json::Value::String(active_proc_name.clone()),
+            );
+            for idx in 0..8 {
+              let key = if idx == 0 {
+                "filament".to_string()
+              } else {
+                format!("filament_{:02}", idx)
+              };
+              if let Some(sp) = active_slots.get(idx) {
+                pmap.insert(key, serde_json::Value::String(sp.name.clone()));
+              } else {
+                pmap.remove(&key);
+              }
+            }
+            for idx in 8..16 {
+              pmap.remove(&format!("filament_{:02}", idx));
+            }
+            pmap.insert(
+              "filament_colors".to_string(),
+              serde_json::Value::String(colors_csv.clone()),
+            );
+            if !matrix_pipe.is_empty() {
+              pmap.insert(
+                "flush_volumes_matrix".to_string(),
+                serde_json::Value::String(matrix_pipe.clone()),
+              );
+            }
+          };
+
+          let mut matched = false;
+          for preset in arr.iter_mut() {
+            let mach = preset
+              .get("machine")
+              .and_then(|m| m.as_str())
+              .unwrap_or("")
+              .to_string();
+            if mach == active_rig.name || mach.contains("Kobra S1") || mach.starts_with("OC") {
+              if let Some(pmap) = preset.as_object_mut() {
+                update_preset_map(pmap);
+                matched = true;
+              }
+            }
+          }
+          if !matched {
+            let mut pmap = serde_json::Map::new();
+            update_preset_map(&mut pmap);
+            arr.push(serde_json::Value::Object(pmap));
+          }
+        }
+        if let Ok(pretty) = serde_json::to_string_pretty(&conf_val) {
+          conf_entry.bytes = pretty.as_bytes().to_vec();
+          modified_map.insert(conf_path, pretty);
+        }
+      }
+    }
   }
 
   // 6. Apply any staged `PendingDiskUpdate` items on top for non-OC user profiles
@@ -2617,5 +2803,155 @@ mod tests {
     // Verify Bit 11 (0x0800 UTF-8 Language Encoding Flag) is set in the Local File Header
     let local_flags = u16::from_le_bytes([zip_bytes[6], zip_bytes[7]]);
     assert_eq!(local_flags & 0x0800, 0x0800);
+  }
+
+  #[test]
+  fn test_anycubic_pla_cf_dropdown_and_conf_promotion_to_oc_anycubic_pla_cf() {
+    let catalog = crate::catalog::load_merged_catalog();
+    let ac_pla_cf = catalog
+      .filaments
+      .iter()
+      .find(|f| f.brand == "Anycubic" && f.code == "PLA-CF")
+      .expect("Anycubic PLA-CF must exist in catalog");
+    let spool = FilamentSpool::from_catalog_entry(1, ac_pla_cf, "hardened_steel");
+    assert_eq!(spool.name, "OC - Anycubic PLA-CF • 0.4 Hardened");
+    assert_eq!(
+      spool.inherits,
+      "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle"
+    );
+
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let exported = crate::threemf::export_standalone_filament_json(&spool, &rig);
+    let val: serde_json::Value = serde_json::from_str(&exported).unwrap();
+    assert!(
+      val.get("compatible_printers").is_none(),
+      "OC - Anycubic PLA-CF must never emit restrictive compatible_printers: {}",
+      exported
+    );
+
+    // Simulate a user directory where AnycubicSlicerNext.conf has "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle"
+    // in filament_03 alongside OC - filaments and an OC - PLA-CF • 0.4 Hardened file on disk
+    let mut entries = vec![
+      ScannedFileEntry {
+        relative_path: "AnycubicSlicerNext.conf".to_string(),
+        filename: "AnycubicSlicerNext.conf".to_string(),
+        bytes: r##"{
+          "app": { "preset_folder": "434139", "version": "2.0.0.3", "flush_multiplier": "1.000000" },
+          "models": [{ "model": "Anycubic Kobra S1", "nozzle_diameter": "0.4", "vendor": "Anycubic" }],
+          "presets": { "machine": "Anycubic Kobra S1 0.4 nozzle - png" },
+          "anycubic_presets": [
+            {
+              "machine": "Anycubic Kobra S1 0.4 nozzle",
+              "process": "OC - 0.20mm Standard @Kobra S1",
+              "filament": "OC - PETG-CF • 0.4 Hardened",
+              "filament_01": "OC - PCTG • 0.4 Hardened",
+              "filament_02": "OC - TPU for AMS • 0.4 Hardened",
+              "filament_03": "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
+              "filament_colors": "#BC4033,#658946,#E10600,#4B5563"
+            },
+            {
+              "machine": "Anycubic Kobra S1 0.4 nozzle - png",
+              "process": "OC - 0.20mm Standard @Kobra S1",
+              "filament": "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
+              "filament_01": "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle",
+              "filament_colors": "#BC4033,#658946"
+            }
+          ]
+        }"##
+          .as_bytes()
+          .to_vec(),
+      },
+      ScannedFileEntry {
+        relative_path: "user/434139/filament/OC - PETG-CF • 0.4 Hardened.json".to_string(),
+        filename: "OC - PETG-CF • 0.4 Hardened.json".to_string(),
+        bytes: r#"{
+          "from": "User",
+          "inherits": "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle",
+          "name": "OC - PETG-CF • 0.4 Hardened",
+          "filament_type": ["PETG-CF"],
+          "nozzle_temperature": ["245"]
+        }"#
+          .as_bytes()
+          .to_vec(),
+      },
+      ScannedFileEntry {
+        relative_path: "user/434139/filament/OC - PCTG • 0.4 Hardened.json".to_string(),
+        filename: "OC - PCTG • 0.4 Hardened.json".to_string(),
+        bytes: r#"{
+          "from": "User",
+          "inherits": "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
+          "name": "OC - PCTG • 0.4 Hardened",
+          "filament_type": ["PCTG"],
+          "nozzle_temperature": ["260"]
+        }"#
+          .as_bytes()
+          .to_vec(),
+      },
+      ScannedFileEntry {
+        relative_path: "user/434139/filament/OC - TPU for AMS • 0.4 Hardened.json".to_string(),
+        filename: "OC - TPU for AMS • 0.4 Hardened.json".to_string(),
+        bytes: r#"{
+          "from": "User",
+          "inherits": "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle",
+          "name": "OC - TPU for AMS • 0.4 Hardened",
+          "filament_type": ["TPU for AMS"],
+          "nozzle_temperature": ["230"]
+        }"#
+          .as_bytes()
+          .to_vec(),
+      },
+      ScannedFileEntry {
+        relative_path: "user/434139/filament/OC - PLA-CF • 0.4 Hardened.json".to_string(),
+        filename: "OC - PLA-CF • 0.4 Hardened.json".to_string(),
+        bytes: r#"{
+          "compatible_printers": ["Anycubic i3 Mega S 0.4 nozzle"],
+          "from": "User",
+          "inherits": "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
+          "name": "OC - PLA-CF • 0.4 Hardened",
+          "filament_type": ["PLA-CF"],
+          "nozzle_temperature": ["215"]
+        }"#
+          .as_bytes()
+          .to_vec(),
+      },
+    ];
+
+    let imported = import_scanned_directory(&entries).unwrap();
+    assert_eq!(imported.filaments.len(), 4);
+    assert_eq!(
+      imported.filaments[3].name,
+      "OC - Anycubic PLA-CF • 0.4 Hardened",
+      "Slot #4 should be promoted to OC - Anycubic PLA-CF • 0.4 Hardened instead of loading raw default Anycubic PLA-CF"
+    );
+    assert!(
+      !imported
+        .filaments
+        .iter()
+        .any(|f| f.name == "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle"),
+      "Raw default Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle should not appear in imported filaments"
+    );
+
+    // Also verify sync_live_state_to_entries updates the existing AnycubicSlicerNext.conf with OC - Anycubic PLA-CF • 0.4 Hardened
+    let procs = ProcessProfile::get_default_processes();
+    let saved = sync_live_state_to_entries(
+      &mut entries,
+      &imported.machines,
+      &imported.active_machine_id,
+      &imported.filaments,
+      &procs,
+      &procs[0].id,
+      &vec!["0".to_string(); 16],
+      1.0,
+      "AnycubicSlicerNext.conf",
+      &[],
+      &serde_json::Map::new(),
+    );
+    let conf_saved = saved
+      .iter()
+      .find(|f| f.relative_path == "AnycubicSlicerNext.conf")
+      .expect("Existing AnycubicSlicerNext.conf must be updated and returned in save list");
+    assert!(conf_saved
+      .content
+      .contains("OC - Anycubic PLA-CF • 0.4 Hardened"));
   }
 }

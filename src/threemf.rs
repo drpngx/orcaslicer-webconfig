@@ -358,8 +358,15 @@ pub fn resolve_spool_orca_filament_map_with_rig(
     fan_min_pct
   };
 
+  if spool.name.starts_with("OC -") || spool.name.starts_with("OC:") {
+    base_map.remove("compatible_printers");
+  }
   base_map.insert("inherits".to_string(), serde_json::json!(inherits));
   base_map.insert("name".to_string(), serde_json::json!(export_name));
+  base_map.insert(
+    "filament_vendor".to_string(),
+    serde_json::json!([FilamentSpool::normalized_brand(&spool.brand)]),
+  );
   base_map.insert(
     "filament_settings_id".to_string(),
     serde_json::json!([export_name]),
@@ -519,6 +526,7 @@ fn build_filament_preset_json_with_source(
   for key in [
     "inherits",
     "name",
+    "filament_vendor",
     "filament_settings_id",
     "compatible_printers",
     "filament_type",

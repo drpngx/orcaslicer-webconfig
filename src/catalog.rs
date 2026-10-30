@@ -342,6 +342,42 @@ pub fn load_merged_catalog() -> CombinedCatalog {
   for f in imported_vendor.filaments {
     fil_map.insert(f.catalog_key(), f);
   }
+  // Ensure all official Anycubic Kobra S1 filaments (including Anycubic PLA-CF, PETG-CF, PET-CF, PA6-CF, PC, PLA+, TPU 95A)
+  // are available under `brand: "Anycubic"` in the catalog and dropdowns.
+  for ac_code in [
+    "PLA",
+    "PLA+",
+    "PLA-CF",
+    "PLA Matte",
+    "PLA Silk",
+    "PLA High Speed",
+    "PETG",
+    "PETG-CF",
+    "PET-CF",
+    "TPU",
+    "TPU 95A",
+    "ABS",
+    "ASA",
+    "PC",
+    "PA6-CF",
+  ] {
+    let ac_key = format!("Anycubic::{}", ac_code);
+    if !fil_map.contains_key(&ac_key) {
+      let gen_key = format!("Generic::{}", ac_code);
+      if let Some(mut base_f) = fil_map.get(&gen_key).cloned() {
+        base_f.brand = "Anycubic".to_string();
+        base_f.label = format!("Anycubic {} (@Anycubic Kobra S1 0.4 nozzle)", ac_code);
+        base_f.source = "AnycubicSlicerNext System".to_string();
+        if ac_code == "PLA-CF" {
+          base_f.base_nozzle_c = 210;
+          base_f.base_bed_c = 55;
+          base_f.requires_hardened = true;
+          base_f.default_finish = "Carbon Fiber".to_string();
+        }
+        fil_map.insert(ac_key, base_f);
+      }
+    }
+  }
   let mut filaments: Vec<CatalogFilament> = fil_map
     .into_values()
     .map(|mut f| {
@@ -411,9 +447,17 @@ pub fn load_merged_catalog() -> CombinedCatalog {
       .then_with(|| a.code.cmp(&b.code))
   });
 
+  let mut default_filament_bases = generated.default_filament_bases;
+  for base_map in default_filament_bases.values_mut() {
+    base_map.remove("compatible_printers");
+  }
+
   let mut vendor_filament_bases = generated.vendor_filament_bases;
   for (k, v) in imported_vendor.vendor_filament_bases {
     vendor_filament_bases.insert(k, v);
+  }
+  for base_map in vendor_filament_bases.values_mut() {
+    base_map.remove("compatible_printers");
   }
 
   CombinedCatalog {
@@ -425,7 +469,7 @@ pub fn load_merged_catalog() -> CombinedCatalog {
     standard_colors: additional.standard_colors,
     default_machine_base: generated.default_machine_base,
     default_process_base: generated.default_process_base,
-    default_filament_bases: generated.default_filament_bases,
+    default_filament_bases,
     vendor_filament_bases,
     default_voron_base: generated.default_voron_base,
   }
