@@ -3,9 +3,27 @@ module(
     version = "0.0.0",
 )
 
+bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "rules_rust", version = "0.69.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+
+kPythonVersion = "3.12"
+
+python.toolchain(
+    is_default = True,
+    python_version = kPythonVersion,
+)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "pip_deps",
+    python_version = kPythonVersion,
+    requirements_lock = "//:requirements_lock.txt",
+)
+use_repo(pip, "pip_deps")
 
 RUST_EDITION = "2021"
 RUST_VERSION = "1.92.0"

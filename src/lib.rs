@@ -1264,6 +1264,17 @@ pub fn App() -> Html {
                 .to_string(),
             ));
           }
+          "cht_cm2" | "microswiss_cht_cm2" => {
+            m.nozzle_material = "MicroSwiss CHT CM2 (High-Flow Copper + M2 HSS)".to_string();
+            m.nozzle_name = format!(
+              "MicroSwiss CHT CM2 High-Flow Hardened {}0mm",
+              m.nozzle_diameter
+            );
+            toast.set(Some(
+              "Installed MicroSwiss CHT CM2™ High-Flow Hardened Nozzle (HRC 55): +40% high-flow splitter + 0°C copper conductivity applied!"
+                .to_string(),
+            ));
+          }
           _ => {
             m.nozzle_material = "Bi-Metal CHT".to_string();
             m.nozzle_name = format!("Bi-Metal CHT High-Flow {}0mm", m.nozzle_diameter);
@@ -1272,6 +1283,9 @@ pub fn App() -> Html {
                 .to_string(),
             ));
           }
+        }
+        if !MachineRig::is_diameter_supported_for_nozzle(&m.nozzle_type, &m.nozzle_diameter) {
+          m.nozzle_diameter = "0.4".to_string();
         }
         TransformationEngine::sync_rules_for_rig(
           &mut r_list,
@@ -1326,8 +1340,10 @@ pub fn App() -> Html {
         p.line_width = match new_diam.as_str() {
           "0.2" => 0.22,
           "0.25" => 0.26,
+          "0.3" => 0.32,
           "0.6" => 0.62,
           "0.8" => 0.84,
+          "1.0" => 1.05,
           _ => 0.42,
         };
         if !p.id.starts_with("disk_proc_") {

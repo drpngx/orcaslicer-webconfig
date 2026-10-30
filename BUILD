@@ -1,10 +1,17 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen")
 
 package(
     default_visibility = ["//:__subpackages__"],
+)
+
+compile_pip_requirements(
+    name = "requirements",
+    requirements_in = "requirements.txt",
+    requirements_txt = "requirements_lock.txt",
 )
 
 config_setting(
@@ -78,6 +85,24 @@ genrule(
     tools = [":generate_orca_catalog"],
 )
 
+genrule(
+    name = "vendor_catalog_gen",
+    srcs = glob(
+        include = [
+            "vendor_profiles/siraya_tech/**",
+            "vendor_profiles/sunlu/**",
+            "vendor_profiles/polymaker/**",
+        ],
+    ),
+    outs = ["imported_vendor_catalog.json"],
+    cmd = """
+        MANIFEST_FILE="$(location vendor_profiles/siraya_tech/manifest.json)"
+        VENDOR_DIR="$$(dirname "$$(dirname "$$MANIFEST_FILE")")"
+        $(location //scripts:import_vendor_profiles) --vendor-dir "$$VENDOR_DIR" --output $@
+    """,
+    tools = ["//scripts:import_vendor_profiles"],
+)
+
 rust_library(
     name = "orcaslicer_webconfig",
     srcs = glob(
@@ -91,9 +116,11 @@ rust_library(
     aliases = aliases(),
     compile_data = glob(["transformations/**/*.lua"]) + [
         "additional_catalog.json",
+        ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
     data = [
+        ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
     edition = "2021",
@@ -101,6 +128,7 @@ rust_library(
         proc_macro = True,
     ),
     rustc_env = {
+        "IMPORTED_VENDOR_CATALOG": "$(execpath :imported_vendor_catalog.json)",
         "ORCASLICER_GENERATED_CATALOG": "$(execpath :orcaslicer_generated_catalog.json)",
     },
     deps = all_crate_deps(
@@ -112,16 +140,19 @@ rust_test(
     name = "orcaslicer_webconfig_test",
     compile_data = glob(["transformations/**/*.lua"]) + [
         "additional_catalog.json",
+        ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
     crate = ":orcaslicer_webconfig",
     data = [
+        ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
     ],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
     rustc_env = {
+        "IMPORTED_VENDOR_CATALOG": "$(execpath :imported_vendor_catalog.json)",
         "ORCASLICER_GENERATED_CATALOG": "$(execpath :orcaslicer_generated_catalog.json)",
     },
     deps = all_crate_deps(

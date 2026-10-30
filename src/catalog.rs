@@ -3,6 +3,31 @@ use std::collections::BTreeMap;
 
 const ORCA_GENERATED_JSON: &str = include_str!(env!("ORCASLICER_GENERATED_CATALOG"));
 const ADDITIONAL_CATALOG_JSON: &str = include_str!("../additional_catalog.json");
+const IMPORTED_VENDOR_CATALOG_JSON: &str = include_str!(env!("IMPORTED_VENDOR_CATALOG"));
+
+fn default_filament_brand() -> String {
+  "Generic".to_string()
+}
+
+fn default_filament_flow_ratio() -> f32 {
+  0.98
+}
+
+fn default_filament_retraction_mm() -> f32 {
+  0.8
+}
+
+pub const FILAMENT_BRAND_OPTIONS: &[&str] = &[
+  "All",
+  "Generic",
+  "Siraya Tech",
+  "SUNLU",
+  "Polymaker",
+  "Anycubic",
+  "Bambu Lab",
+  "eSUN",
+  "Overture",
+];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CombinedCatalog {
@@ -24,6 +49,8 @@ pub struct CombinedCatalog {
   pub default_process_base: BTreeMap<String, serde_json::Value>,
   #[serde(default)]
   pub default_filament_bases: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+  #[serde(default)]
+  pub vendor_filament_bases: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
   #[serde(default)]
   pub default_voron_base: BTreeMap<String, serde_json::Value>,
 }
@@ -91,6 +118,8 @@ pub struct CatalogAmsOption {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CatalogFilament {
+  #[serde(default = "default_filament_brand")]
+  pub brand: String,
   pub code: String,
   pub label: String,
   pub category: String,
@@ -100,6 +129,10 @@ pub struct CatalogFilament {
   pub base_bed_c: u16,
   pub max_vol_mm3s: f32,
   pub fan_pct: u8,
+  #[serde(default = "default_filament_flow_ratio")]
+  pub default_flow_ratio: f32,
+  #[serde(default = "default_filament_retraction_mm")]
+  pub default_retraction_mm: f32,
   pub dry_temp_c: u16,
   pub dry_hr: u8,
   pub requires_hardened: bool,
@@ -168,9 +201,28 @@ impl CatalogFilament {
       | "PLA-AERO" | "PLA Conductive" | "PLA Marble" | "PLA Photochromic" => "PLA",
       "ABS Glow" | "ABS Conductive" => "ABS",
       "ASA-LW Foaming" | "ASA-AERO" => "ASA",
-      "TPU Glow" | "TPU Conductive" | "TPU Photochromic" | "TPU-AERO" => "TPU",
+      "TPU Glow" | "TPU Conductive" | "TPU Photochromic" | "TPU Foaming" | "TPU-AERO" => "TPU",
+      "Rebound TPU Foaming" => "Rebound TPU",
       other => other,
     }
+  }
+  /// Returns a unique key `"<brand>::<code>"` for catalog lookup.
+  pub fn catalog_key(&self) -> String {
+    format!("{}::{}", self.brand, self.code)
+  }
+}
+
+fn brand_order(brand: &str) -> usize {
+  match brand {
+    "Generic" => 0,
+    "Siraya Tech" => 1,
+    "SUNLU" => 2,
+    "Polymaker" => 3,
+    "Anycubic" => 4,
+    "Bambu Lab" => 5,
+    "eSUN" => 6,
+    "Overture" => 7,
+    _ => 20,
   }
 }
 
@@ -192,6 +244,8 @@ pub fn load_merged_catalog() -> CombinedCatalog {
     serde_json::from_str(ORCA_GENERATED_JSON).expect("Invalid generated OrcaSlicer catalog JSON");
   let additional: CombinedCatalog =
     serde_json::from_str(ADDITIONAL_CATALOG_JSON).expect("Invalid additional_catalog.json");
+  let imported_vendor: CombinedCatalog = serde_json::from_str(IMPORTED_VENDOR_CATALOG_JSON)
+    .expect("Invalid vendor_profiles/imported_vendor_catalog.json");
 
   // 1. Merge machines (generated from @orcaslicer_repo + any additional)
   let mut machines = generated.machines;
@@ -243,20 +297,29 @@ pub fn load_merged_catalog() -> CombinedCatalog {
     generated.ams_options
   };
 
-  // 5. Merge Filaments (OrcaSlicer generated base + Additional Catalog overrides/extras)
+  // 5. Merge Filaments (OrcaSlicer generated base + Additional Catalog + Imported Vendor .3mf / Preset Manager Catalog)
   let mut fil_map: BTreeMap<String, CatalogFilament> = BTreeMap::new();
   for f in generated.filaments {
-    fil_map.insert(f.code.clone(), f);
+    fil_map.insert(f.catalog_key(), f);
   }
   for f in additional.filaments {
-    fil_map.insert(f.code.clone(), f);
+    fil_map.insert(f.catalog_key(), f);
+  }
+  for f in imported_vendor.filaments {
+    fil_map.insert(f.catalog_key(), f);
   }
   let mut filaments: Vec<CatalogFilament> = fil_map.into_values().collect();
   filaments.sort_by(|a, b| {
-    category_order(&a.category)
-      .cmp(&category_order(&b.category))
+    brand_order(&a.brand)
+      .cmp(&brand_order(&b.brand))
+      .then_with(|| category_order(&a.category).cmp(&category_order(&b.category)))
       .then_with(|| a.code.cmp(&b.code))
   });
+
+  let mut vendor_filament_bases = generated.vendor_filament_bases;
+  for (k, v) in imported_vendor.vendor_filament_bases {
+    vendor_filament_bases.insert(k, v);
+  }
 
   CombinedCatalog {
     machines,
@@ -268,6 +331,7 @@ pub fn load_merged_catalog() -> CombinedCatalog {
     default_machine_base: generated.default_machine_base,
     default_process_base: generated.default_process_base,
     default_filament_bases: generated.default_filament_bases,
+    vendor_filament_bases,
     default_voron_base: generated.default_voron_base,
   }
 }
@@ -288,27 +352,50 @@ mod tests {
     assert!(cat.machines.iter().any(|m| m.vendor == "Bambu Lab"));
 
     // Verify MicroSwiss nozzle diameter rules:
-    // MicroSwiss Brass has 0.2, 0.4, 0.6; MicroSwiss Diamondback, CM2, CHT only have 0.4!
+    // - MicroSwiss Brass: 0.2, 0.3, 0.4, 0.6, 0.8, 1.0
+    // - MicroSwiss Diamondback: 0.25, 0.4, 0.6, 0.8
+    // - MicroSwiss CM2 & CHT CM2: 0.4, 0.6, 0.8
+    // - MicroSwiss CHT: 0.4, 0.6, 0.8, 1.0
     let ms_brass = cat
       .nozzles
       .iter()
       .find(|n| n.id == "microswiss_brass")
       .expect("Missing microswiss_brass");
-    assert!(ms_brass.supports_diameter(0.2));
-    assert!(ms_brass.supports_diameter(0.4));
-    assert!(ms_brass.supports_diameter(0.6));
+    assert_eq!(
+      ms_brass.available_diameters,
+      vec![0.2, 0.3, 0.4, 0.6, 0.8, 1.0]
+    );
 
-    for only_04_id in ["microswiss_diamondback", "microswiss_cm2", "microswiss_cht"] {
+    let ms_db = cat
+      .nozzles
+      .iter()
+      .find(|n| n.id == "microswiss_diamondback")
+      .expect("Missing microswiss_diamondback");
+    assert_eq!(ms_db.available_diameters, vec![0.25, 0.4, 0.6, 0.8]);
+    assert!(!ms_db.supports_diameter(0.2));
+    assert!(ms_db.supports_diameter(0.25));
+    assert!(ms_db.supports_diameter(0.6));
+    assert!(ms_db.supports_diameter(0.8));
+
+    for cm2_id in ["microswiss_cm2", "microswiss_cht_cm2"] {
       let n = cat
         .nozzles
         .iter()
-        .find(|n| n.id == only_04_id)
-        .unwrap_or_else(|| panic!("Missing {}", only_04_id));
-      assert_eq!(n.available_diameters, vec![0.4]);
-      assert!(!n.supports_diameter(0.2));
+        .find(|n| n.id == cm2_id)
+        .unwrap_or_else(|| panic!("Missing {}", cm2_id));
+      assert_eq!(n.available_diameters, vec![0.4, 0.6, 0.8]);
+      assert!(!n.supports_diameter(0.25));
       assert!(n.supports_diameter(0.4));
-      assert!(!n.supports_diameter(0.6));
+      assert!(n.supports_diameter(0.8));
     }
+
+    let ms_cht = cat
+      .nozzles
+      .iter()
+      .find(|n| n.id == "microswiss_cht")
+      .expect("Missing microswiss_cht");
+    assert_eq!(ms_cht.available_diameters, vec![0.4, 0.6, 0.8, 1.0]);
+    assert!(ms_cht.supports_diameter(1.0));
 
     // Verify no "PLA Composite (-CF/-GF)" category exists
     assert!(
@@ -517,5 +604,61 @@ mod tests {
       new_clean_value: "235".to_string(),
     };
     assert!(diff_temp.has_value_change());
+
+    // Verify checked-in Vendor Profiles (Siraya Tech .3mf, SUNLU Preset Manager, Polymaker Preset Manager, Anycubic)
+    let siraya_count = cat
+      .filaments
+      .iter()
+      .filter(|f| f.brand == "Siraya Tech")
+      .count();
+    assert!(
+      siraya_count >= 20,
+      "Expected >= 20 Siraya Tech .3mf profiles, got {}",
+      siraya_count
+    );
+    let sunlu_count = cat.filaments.iter().filter(|f| f.brand == "SUNLU").count();
+    assert!(
+      sunlu_count >= 25,
+      "Expected >= 25 SUNLU Preset Manager profiles, got {}",
+      sunlu_count
+    );
+    let polymaker_count = cat
+      .filaments
+      .iter()
+      .filter(|f| f.brand == "Polymaker")
+      .count();
+    assert!(
+      polymaker_count >= 50,
+      "Expected >= 50 Polymaker Preset Manager profiles, got {}",
+      polymaker_count
+    );
+
+    // Verify Siraya Tech TPU Air 85A .3mf base profile and Shore hardness curve
+    let siraya_air = cat
+      .filaments
+      .iter()
+      .find(|f| f.brand == "Siraya Tech" && f.code == "TPU Air 85A")
+      .expect("Missing Siraya Tech TPU Air 85A from checked-in .3mf");
+    assert_eq!(siraya_air.base_nozzle_c, 250);
+    assert!((siraya_air.default_flow_ratio - 0.67).abs() < 0.02);
+    assert!(cat
+      .vendor_filament_bases
+      .contains_key("Siraya Tech::TPU Air 85A"));
+
+    let mut air_spool =
+      crate::models::FilamentSpool::from_catalog_entry(1, siraya_air, "orca_brass");
+    assert_eq!(air_spool.brand, "Siraya Tech");
+    assert!(air_spool.is_siraya_foaming_air());
+    air_spool.apply_foaming_shore_hardness(70, "orca_brass");
+    assert_eq!(air_spool.print_temp, 260);
+    assert!((air_spool.flow_ratio - 0.56).abs() < 0.01);
+
+    // Verify apply_brand_change switches to vendor base temperatures and vendor_filament_bases
+    let mut pet_cf =
+      crate::models::FilamentSpool::from_catalog_entry(2, siraya_air, "e3d_obxidian_04");
+    pet_cf.apply_brand_change("SUNLU", "e3d_obxidian_04");
+    assert_eq!(pet_cf.brand, "SUNLU");
+    pet_cf.apply_material_change("PETG-CF", "e3d_obxidian_04");
+    assert!(pet_cf.name.contains("SUNLU"));
   }
 }

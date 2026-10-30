@@ -81,6 +81,7 @@ pub struct CatalogAmsOption {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatalogFilament {
+  pub brand: String,
   pub code: String,
   pub label: String,
   pub category: String,
@@ -90,6 +91,8 @@ pub struct CatalogFilament {
   pub base_bed_c: u16,
   pub max_vol_mm3s: f32,
   pub fan_pct: u8,
+  pub default_flow_ratio: f32,
+  pub default_retraction_mm: f32,
   pub dry_temp_c: u16,
   pub dry_hr: u8,
   pub requires_hardened: bool,
@@ -1030,7 +1033,18 @@ fn main() {
           _ => (50, 6),
         };
 
+        let default_flow_ratio = first_str(resolved.get("filament_flow_ratio"))
+          .and_then(|s| s.parse::<f32>().ok())
+          .unwrap_or(0.98)
+          .clamp(0.50, 1.05);
+        let default_retraction_mm = first_str(resolved.get("filament_retraction_length"))
+          .or_else(|| first_str(resolved.get("retraction_length")))
+          .and_then(|s| s.parse::<f32>().ok())
+          .unwrap_or(0.8)
+          .clamp(0.0, 3.0);
+
         let entry = CatalogFilament {
+          brand: "Generic".to_string(),
           code: code.clone(),
           label: format!("{} (OrcaSlicer {})", code, ft),
           category: category.to_string(),
@@ -1040,6 +1054,8 @@ fn main() {
           base_bed_c: bed_c,
           max_vol_mm3s: max_vol,
           fan_pct,
+          default_flow_ratio,
+          default_retraction_mm,
           dry_temp_c,
           dry_hr,
           requires_hardened,
@@ -1051,7 +1067,46 @@ fn main() {
           Some((prev_score, _)) => score > *prev_score,
         };
         if replace {
-          best_by_code.insert(code, (score, entry));
+          best_by_code.insert(code.clone(), (score, entry.clone()));
+        }
+
+        // Also capture vendor-branded profiles from @orcaslicer_repo (Anycubic, Bambu Lab, eSUN, Overture)
+        let explicit_vendor = first_str(resolved.get("filament_vendor"))
+          .unwrap_or_default()
+          .trim()
+          .to_string();
+        let detected_brand = if explicit_vendor.eq_ignore_ascii_case("Anycubic")
+          || name.starts_with("Anycubic ")
+        {
+          Some("Anycubic")
+        } else if explicit_vendor.eq_ignore_ascii_case("Bambu")
+          || explicit_vendor.eq_ignore_ascii_case("Bambu Lab")
+          || name.starts_with("Bambu ")
+        {
+          Some("Bambu Lab")
+        } else if explicit_vendor.eq_ignore_ascii_case("eSUN") || name.starts_with("eSUN ") {
+          Some("eSUN")
+        } else if explicit_vendor.eq_ignore_ascii_case("Overture") || name.starts_with("Overture ")
+        {
+          Some("Overture")
+        } else {
+          None
+        };
+        if let Some(vb) = detected_brand {
+          if explicit_nozzle.is_some() {
+            let vkey = format!("{}::{}", vb, code);
+            let mut v_entry = entry.clone();
+            v_entry.brand = vb.to_string();
+            v_entry.label = format!("{} {} (OrcaSlicer {})", vb, code, vb);
+            v_entry.source = format!("OrcaSlicer GitHub ({})", vb);
+            let v_replace = match best_by_code.get(&vkey) {
+              None => true,
+              Some((prev_s, _)) => score > *prev_s,
+            };
+            if v_replace {
+              best_by_code.insert(vkey, (score, v_entry));
+            }
+          }
         }
       }
     }

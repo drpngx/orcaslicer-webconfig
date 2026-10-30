@@ -1,5 +1,6 @@
 use crate::catalog::{
-  load_merged_catalog, CatalogAmsOption, CatalogBed, CatalogFilament, CatalogMachine, CatalogNozzle,
+  load_merged_catalog, CatalogAmsOption, CatalogBed, CatalogFilament, CatalogMachine,
+  CatalogNozzle, FILAMENT_BRAND_OPTIONS,
 };
 use crate::components::color_picker::{ColorPicker, ColorSelection};
 use crate::models::{FilamentDeltaEntry, FilamentSpool, MachineRig, ProcessProfile};
@@ -28,6 +29,7 @@ pub struct ScratchWizardProps {
 #[derive(Clone, Debug, PartialEq)]
 struct WizardSpoolDraft {
   pub name: String,
+  pub brand: String,
   pub material_type: String,
   pub color_hex: String,
   pub finish_type: String,
@@ -35,13 +37,31 @@ struct WizardSpoolDraft {
 
 fn find_filament_entry<'a>(
   catalog: &'a [CatalogFilament],
+  brand: &str,
   code: &str,
   finish_type: &str,
 ) -> Option<&'a CatalogFilament> {
   let variant_code = format!("{} {}", code, finish_type);
   catalog
     .iter()
-    .find(|e| e.code.eq_ignore_ascii_case(&variant_code))
+    .find(|e| e.brand.eq_ignore_ascii_case(brand) && e.code.eq_ignore_ascii_case(&variant_code))
+    .or_else(|| {
+      catalog.iter().find(|e| {
+        e.brand.eq_ignore_ascii_case(brand)
+          && e.base_material_code().eq_ignore_ascii_case(code)
+          && e.default_finish.eq_ignore_ascii_case(finish_type)
+      })
+    })
+    .or_else(|| {
+      catalog
+        .iter()
+        .find(|e| e.brand.eq_ignore_ascii_case(brand) && e.code.eq_ignore_ascii_case(code))
+    })
+    .or_else(|| {
+      catalog
+        .iter()
+        .find(|e| e.code.eq_ignore_ascii_case(&variant_code))
+    })
     .or_else(|| {
       catalog.iter().find(|e| {
         e.base_material_code().eq_ignore_ascii_case(code)
@@ -67,6 +87,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
   let ams_search = use_state(String::new);
   let filament_catalog_search = use_state(String::new);
   let filament_category_filter = use_state(|| "All".to_string());
+  let filament_brand_filter = use_state(|| "All".to_string());
   let added_spools_search = use_state(String::new);
 
   // Selected Hardware & Loadout State
@@ -391,7 +412,8 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         .iter()
         .enumerate()
         .map(|(idx, d)| {
-          let mat_info = find_filament_entry(&fil_catalog, &d.material_type, &d.finish_type);
+          let mat_info =
+            find_filament_entry(&fil_catalog, &d.brand, &d.material_type, &d.finish_type);
           let base_nozzle = mat_info.map(|m| m.base_nozzle_c as i32).unwrap_or(215);
           let base_bed = mat_info.map(|m| m.base_bed_c as i32).unwrap_or(60);
           let max_vol = mat_info.map(|m| m.max_vol_mm3s).unwrap_or(15.0);
@@ -411,13 +433,18 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
           } else {
             0.035f32
           };
-          let default_flow = if d.finish_type == "Foaming" {
-            0.58f32
-          } else if is_pctg_or_petg {
-            0.95f32
-          } else {
-            0.98f32
-          };
+          let default_flow = mat_info
+            .map(|m| m.default_flow_ratio)
+            .filter(|&fl| fl > 0.40 && (fl - 0.98).abs() > 0.005)
+            .unwrap_or_else(|| {
+              if d.finish_type == "Foaming" {
+                0.58f32
+              } else if is_pctg_or_petg {
+                0.95f32
+              } else {
+                0.98f32
+              }
+            });
 
           let vendor_prefix = if cur_machine.vendor.eq_ignore_ascii_case("Anycubic") {
             "Anycubic"
@@ -558,10 +585,10 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
           }))
           .unwrap_or_default();
 
-          FilamentSpool {
+          let mut spool = FilamentSpool {
             id: format!("spool_scratch_{}", idx + 1),
             name: profile_name,
-            brand: "Custom".to_string(),
+            brand: FilamentSpool::normalized_brand(&d.brand).to_string(),
             inherits,
             material_type: d.material_type.clone(),
             nozzle_type: cur_nozzle.id.clone(),
@@ -608,7 +635,14 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             is_rfid_synced: false,
             deltas_from_base,
             raw_disk_json: Some(raw_disk_json),
+          };
+          if spool.is_foaming_tpu() {
+            let shore = spool.effective_foaming_shore_a();
+            spool.apply_foaming_shore_hardness(shore, &cur_nozzle.id);
+          } else {
+            spool.rebuild_synthetic_disk_json(&cur_nozzle.id);
           }
+          spool
         })
         .collect();
 
@@ -1063,7 +1097,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             .cloned()
             .collect();
 
-          let all_candidate_diameters: [f32; 5] = [0.2, 0.25, 0.4, 0.6, 0.8];
+          let all_candidate_diameters: [f32; 7] = [0.2, 0.25, 0.3, 0.4, 0.6, 0.8, 1.0];
 
           html! {
             <div class="flex flex-col gap-space-md bg-surface-container-lowest p-space-lg rounded-xl border border-outline-variant">
@@ -1074,7 +1108,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                     {"Step 2: Select Hotend Nozzle & Valid Orifice Diameter"}
                   </h3>
                   <p class="text-xs text-on-surface-variant">
-                    {"Note: MicroSwiss Diamondback™, CM2™, and CHT High-Flow only exist in 0.4mm; MicroSwiss Plated Brass is required for 0.2mm or 0.6mm."}
+                    {"Selecting a nozzle type filters the valid orifice diameters below (MicroSwiss Diamondback™: 0.25/0.4/0.6/0.8mm • CM2™ & CHT CM2™: 0.4/0.6/0.8mm • CHT: 0.4/0.6/0.8/1.0mm • Plated Brass: 0.2/0.3/0.4/0.6/0.8/1.0mm)."}
                   </p>
                 </div>
 
@@ -1527,17 +1561,21 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         {if *step == 5 {
           let cat_search = (*filament_catalog_search).to_lowercase();
           let cat_filter = (*filament_category_filter).clone();
+          let brand_filter = (*filament_brand_filter).clone();
 
           let filtered_catalog: Vec<CatalogFilament> = catalog
             .filaments
             .iter()
             .filter(|f| {
               let cat_ok = cat_filter == "All" || f.category == cat_filter;
+              let brand_ok = brand_filter == "All" || f.brand.eq_ignore_ascii_case(&brand_filter);
               let search_ok = cat_search.is_empty()
+                || f.brand.to_lowercase().contains(&cat_search)
                 || f.code.to_lowercase().contains(&cat_search)
                 || f.label.to_lowercase().contains(&cat_search)
-                || f.category.to_lowercase().contains(&cat_search);
-              cat_ok && search_ok
+                || f.category.to_lowercase().contains(&cat_search)
+                || f.source.to_lowercase().contains(&cat_search);
+              cat_ok && brand_ok && search_ok
             })
             .cloned()
             .collect();
@@ -1641,10 +1679,12 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                         {for (*spool_drafts).iter().enumerate().filter(|(_, d)| {
                           spool_search.is_empty()
                             || d.name.to_lowercase().contains(&spool_search)
+                            || d.brand.to_lowercase().contains(&spool_search)
                             || d.material_type.to_lowercase().contains(&spool_search)
                             || d.finish_type.to_lowercase().contains(&spool_search)
                         }).map(|(idx, draft)| {
                           let sd_name = spool_drafts.clone();
+                          let sd_brand = spool_drafts.clone();
                           let sd_col = spool_drafts.clone();
                           let sd_fin = spool_drafts.clone();
                           let sd_up = spool_drafts.clone();
@@ -1653,6 +1693,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
 
                           let mat_info = find_filament_entry(
                             &catalog.filaments,
+                            &draft.brand,
                             &draft.material_type,
                             &draft.finish_type,
                           );
@@ -1696,6 +1737,28 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                                   })}
                                 />
 
+                                <select
+                                  title="Filament Brand / Vendor"
+                                  class="bg-secondary/15 border border-secondary/40 rounded px-2 py-1 text-xs font-bold text-secondary cursor-pointer shrink-0"
+                                  value={draft.brand.clone()}
+                                  onchange={Callback::from(move |e: Event| {
+                                    let sel: web_sys::HtmlInputElement = e.target_unchecked_into();
+                                    let mut list = (*sd_brand).clone();
+                                    if let Some(item) = list.get_mut(idx) {
+                                      item.brand = sel.value();
+                                    }
+                                    sd_brand.set(list);
+                                  })}
+                                >
+                                  {for FILAMENT_BRAND_OPTIONS.iter().filter(|&&b| b != "All").map(|b_opt| {
+                                    html! {
+                                      <option value={*b_opt} selected={draft.brand.eq_ignore_ascii_case(b_opt)}>
+                                        {*b_opt}
+                                      </option>
+                                    }
+                                  })}
+                                </select>
+
                                 <span class="text-[11px] bg-surface-container-high text-primary px-2 py-0.5 rounded font-bold shrink-0">
                                   {&draft.material_type}
                                 </span>
@@ -1732,6 +1795,45 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                                     }
                                   })}
                                 </select>
+
+                                // If Foaming TPU/PEBA, show inline Shore Hardness selector (92A / 85A / 75A / 65A / 60A)
+                                {if draft.finish_type.eq_ignore_ascii_case("Foaming")
+                                  && (draft.material_type.to_uppercase().contains("TPU")
+                                    || draft.material_type.to_uppercase().contains("PEBA")
+                                    || draft.material_type.to_uppercase().contains("TPE"))
+                                {
+                                  let sd_shore = spool_drafts.clone();
+                                  let cur_shore = draft
+                                    .name
+                                    .split_whitespace()
+                                    .find_map(|tok| tok.strip_suffix('A').and_then(|n| n.parse::<u32>().ok()))
+                                    .unwrap_or(75);
+                                  html! {
+                                    <select
+                                      title="Target Shore A Hardness for Active-Foaming TPU (drives nozzle temp & flow ratio)"
+                                      class="bg-primary/15 border border-primary/40 rounded px-2 py-1 text-xs font-bold text-primary cursor-pointer"
+                                      value={cur_shore.to_string()}
+                                      onchange={Callback::from(move |e: Event| {
+                                        let sel: web_sys::HtmlInputElement = e.target_unchecked_into();
+                                        if let Ok(sh) = sel.value().parse::<u32>() {
+                                          let mut list = (*sd_shore).clone();
+                                          if let Some(item) = list.get_mut(idx) {
+                                            item.name = format!("{} Foaming {}A", item.material_type, sh);
+                                          }
+                                          sd_shore.set(list);
+                                        }
+                                      })}
+                                    >
+                                      <option value="92" selected={cur_shore == 92}>{"92A Solid (195°C)"}</option>
+                                      <option value="85" selected={cur_shore == 85}>{"85A Firm (210°C)"}</option>
+                                      <option value="75" selected={cur_shore == 75}>{"75A Midsole (220°C)"}</option>
+                                      <option value="65" selected={cur_shore == 65}>{"65A Soft (235°C)"}</option>
+                                      <option value="60" selected={cur_shore == 60}>{"60A Max Foam (245°C)"}</option>
+                                    </select>
+                                  }
+                                } else {
+                                  html! {}
+                                }}
 
                                 <span class="text-xs text-tertiary bg-tertiary-container/20 px-2 py-0.5 rounded shrink-0">
                                   {format!("{}°C / {}°C", eff_nozzle, eff_bed)}
@@ -1841,8 +1943,39 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                     </div>
                   </div>
 
+                  // Brand Filter Pills
+                  <div class="flex items-center gap-1 flex-wrap">
+                    <span class="text-[10px] font-mono text-on-surface-variant uppercase mr-1">{"Brand:"}</span>
+                    {for FILAMENT_BRAND_OPTIONS.iter().map(|b_name| {
+                      let active = *filament_brand_filter == *b_name;
+                      let b_str = b_name.to_string();
+                      let fbf = filament_brand_filter.clone();
+                      let count = if *b_name == "All" {
+                        catalog.filaments.len()
+                      } else {
+                        catalog.filaments.iter().filter(|f| f.brand.eq_ignore_ascii_case(b_name)).count()
+                      };
+                      html! {
+                        <button
+                          onclick={Callback::from(move |_| fbf.set(b_str.clone()))}
+                          class={format!(
+                            "px-2.5 py-0.5 rounded-full text-[11px] font-mono border transition-colors {}",
+                            if active {
+                              "bg-secondary text-on-secondary border-secondary font-bold"
+                            } else {
+                              "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
+                            }
+                          )}
+                        >
+                          {format!("{} ({})", b_name, count)}
+                        </button>
+                      }
+                    })}
+                  </div>
+
                   // Category Pills
                   <div class="flex items-center gap-1 flex-wrap">
+                    <span class="text-[10px] font-mono text-on-surface-variant uppercase mr-1">{"Polymer:"}</span>
                     {for categories.iter().map(|cat| {
                       let active = *filament_category_filter == *cat;
                       let cat_str = cat.to_string();
@@ -1879,6 +2012,21 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                         <div class="flex items-center justify-between bg-surface-container-lowest p-2.5 rounded-lg border border-outline-variant/60 hover:border-outline gap-2">
                           <div class="flex flex-col min-w-0">
                             <div class="flex items-center gap-1.5 flex-wrap">
+                              <span
+                                title={format!("Brand: {} • Source: {}", mat.brand, mat.source)}
+                                class={format!(
+                                  "text-[10px] font-mono px-1.5 py-0.5 rounded font-bold {}",
+                                  if mat.brand.eq_ignore_ascii_case("Siraya Tech") {
+                                    "bg-primary/20 text-primary border border-primary/40"
+                                  } else if mat.brand.eq_ignore_ascii_case("SUNLU") || mat.brand.eq_ignore_ascii_case("Polymaker") {
+                                    "bg-secondary/20 text-secondary border border-secondary/40"
+                                  } else {
+                                    "bg-surface-container-highest text-on-surface-variant"
+                                  }
+                                )}
+                              >
+                                {&mat.brand}
+                              </span>
                               <span class="text-xs font-bold text-on-surface font-mono">{mat.base_material_code()}</span>
                               <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-container-high text-on-surface-variant">
                                 {&mat.default_finish}
@@ -1919,15 +2067,21 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
                           <button
                             onclick={Callback::from(move |_| {
                               let mut list = (*sd).clone();
-                              let draft_name = if let Some(suf) =
-                                FilamentSpool::finish_title_suffix(&mat_clone.default_finish)
-                              {
-                                format!("{} {}", mat_clone.base_material_code(), suf)
+                              let base_title = if !mat_clone.brand.eq_ignore_ascii_case("Generic") {
+                                format!("{} {}", mat_clone.brand, mat_clone.base_material_code())
                               } else {
                                 mat_clone.base_material_code().to_string()
                               };
+                              let draft_name = if let Some(suf) =
+                                FilamentSpool::finish_title_suffix(&mat_clone.default_finish)
+                              {
+                                format!("{} {}", base_title, suf)
+                              } else {
+                                base_title
+                              };
                               list.push(WizardSpoolDraft {
                                 name: draft_name,
+                                brand: mat_clone.brand.clone(),
                                 material_type: mat_clone.base_material_code().to_string(),
                                 color_hex: "#8E9299".to_string(),
                                 finish_type: mat_clone.default_finish.clone(),

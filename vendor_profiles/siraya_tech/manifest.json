@@ -1,0 +1,338 @@
+[
+  {
+    "printer_tag": "Anycubic_S1_Max_0.4mm",
+    "material": "TPU Air",
+    "variant": "Siraya Tech TPU Air 250\u00b0C S1 Max 0.4mm 20260707",
+    "drive_id": "1RN9AJcsc8Z3ZVvFlBIIWhY8-Ph1jG5OC",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_S1_Max_0.4mm__Siraya_Tech_TPU_Air_250C_S1_Max_0.4mm_20260707.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_S1_Max_0.4mm__Siraya_Tech_TPU_Air_250C_S1_Max_0.4mm_20260707.json"
+  },
+  {
+    "printer_tag": "Anycubic_S1_Max_0.4mm",
+    "material": "TPU Air",
+    "variant": "Siraya Tech TPU Air 260\u00b0C S1 Max 0.4mm 20260707",
+    "drive_id": "1RN9AJcsc8Z3ZVvFlBIIWhY8-Ph1jG5OC",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_S1_Max_0.4mm__Siraya_Tech_TPU_Air_260C_S1_Max_0.4mm_20260707.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_S1_Max_0.4mm__Siraya_Tech_TPU_Air_260C_S1_Max_0.4mm_20260707.json"
+  },
+  {
+    "printer_tag": "Anycubic_S1_Max_0.4mm",
+    "material": "TPU Air",
+    "variant": "Siraya Tech TPU Air 270\u00b0C S1 Max 0.4mm 20260707",
+    "drive_id": "1RN9AJcsc8Z3ZVvFlBIIWhY8-Ph1jG5OC",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_S1_Max_0.4mm__Siraya_Tech_TPU_Air_270C_S1_Max_0.4mm_20260707.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_S1_Max_0.4mm__Siraya_Tech_TPU_Air_270C_S1_Max_0.4mm_20260707.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "TPU 85A",
+    "variant": "Siraya Tech TPU 85A AC Kobra X 0.4mm 20260323",
+    "drive_id": "1wUp1bIDD0WIld9Qj4IrqhN5RRx2VexHg",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_85A_AC_Kobra_X_0.4mm_20260323.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_85A_AC_Kobra_X_0.4mm_20260323.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "TPU 95A",
+    "variant": "Siraya Tech TPU 95A AC Kobra X 0.4mm 20260331",
+    "drive_id": "1sV-RQDZuENs0vl1ke-RM_Q_jWYtvAd-3",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_95A_AC_Kobra_X_0.4mm_20260331.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_95A_AC_Kobra_X_0.4mm_20260331.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "TPU 64D",
+    "variant": "Siraya Tech TPU 64D AC Kobra X 0.4mm 20260331",
+    "drive_id": "15FDaewPVhh4kVCq8yD-EhRAGSnMJWTr2",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_64D_AC_Kobra_X_0.4mm_20260331.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_64D_AC_Kobra_X_0.4mm_20260331.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "TPU-GF",
+    "variant": "Siraya Tech TPU-GF AC Kobra X 0.4mm 20260401",
+    "drive_id": "1Dw70JTwqyTyCajSsn0XyBJqgLBtu11pS",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU-GF_AC_Kobra_X_0.4mm_20260401.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU-GF_AC_Kobra_X_0.4mm_20260401.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "PEBA 95A",
+    "variant": "Siraya Tech TPU PEBA 95A AC Kobra X 0.4mm 20260331",
+    "drive_id": "1vLWuo_oL_M-zxkSFXGBWC36KI2C_iw0M",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_PEBA_95A_AC_Kobra_X_0.4mm_20260331.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_PEBA_95A_AC_Kobra_X_0.4mm_20260331.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "PEBA 85A",
+    "variant": "Siraya Tech TPU PEBA 85A AC Kobra X 0.4mm 20260331",
+    "drive_id": "151NdcgVctL4H827-SHaYNlqROqKUjSUj",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_PEBA_85A_AC_Kobra_X_0.4mm_20260331.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_TPU_PEBA_85A_AC_Kobra_X_0.4mm_20260331.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "PET-CF",
+    "variant": "Siraya Tech PET-CF AC Kobra X 0.4mm 20260401",
+    "drive_id": "1b3f7Tpm5s5iEm6VxRepxTAkAZIchr5LY",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_PET-CF_AC_Kobra_X_0.4mm_20260401.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_PET-CF_AC_Kobra_X_0.4mm_20260401.json"
+  },
+  {
+    "printer_tag": "Anycubic_Kobra_X_0.4mm",
+    "material": "PETG-CF Pro",
+    "variant": "Siraya Tech PETG-CF Pro AC Kobra X 0.4mm 20260401",
+    "drive_id": "1p9Cuxggqo9MbuY25JEGLZR7WK7XCtqd-",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Anycubic_Kobra_X_0.4mm__Siraya_Tech_PETG-CF_Pro_AC_Kobra_X_0.4mm_20260401.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Anycubic_Kobra_X_0.4mm__Siraya_Tech_PETG-CF_Pro_AC_Kobra_X_0.4mm_20260401.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "ABS HT HF",
+    "variant": "Siraya Tech ABS HT HF X1C 0.4mm 20260715",
+    "drive_id": "1XZBF6NYLNYmKwIxLeLIhsDuhiJN6q1iV",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_ABS_HT_HF_X1C_0.4mm_20260715.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_ABS_HT_HF_X1C_0.4mm_20260715.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "ABS-CF Core Black",
+    "variant": "Siraya Tech ABS-CF Core X1C 0.4mm 20260715",
+    "drive_id": "161m_7lpprlCmDP42irCoHmkNmAVSlh90",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_ABS-CF_Core_X1C_0.4mm_20260715.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_ABS-CF_Core_X1C_0.4mm_20260715.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "ABS-CF",
+    "variant": "Siraya Tech ABS-CF X1C 0.4mm 20260714",
+    "drive_id": "18kXzJ0inRebZczV1in522Q9Vrmv7FLEx",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_ABS-CF_X1C_0.4mm_20260714.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_ABS-CF_X1C_0.4mm_20260714.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "ABS-GF",
+    "variant": "Siraya Tech ABS-GF X1C 0.4mm 20260710",
+    "drive_id": "1reo_ijgY2MJ_VIzf_gVzQdeTysKGCoJ-",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_ABS-GF_X1C_0.4mm_20260710.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_ABS-GF_X1C_0.4mm_20260710.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "ASA-GF",
+    "variant": "Siraya Tech ASA-GF 0.4mm X1C 20260715",
+    "drive_id": "1y_M3-Q6tDVIa4UuX1vjgvjgLmszxGeR6",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_ASA-GF_0.4mm_X1C_20260715.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_ASA-GF_0.4mm_X1C_20260715.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PPA",
+    "variant": "Siraya Tech PPA X1C 0.4mm 20260715",
+    "drive_id": "1JcKQakNyEDMVfOEt-79rkbaPS0GKm4FV",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PPA_X1C_0.4mm_20260715.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PPA_X1C_0.4mm_20260715.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PPA-CF Core",
+    "variant": "Siraya Tech PPA-CF Core X1C 0.4mm 20260717",
+    "drive_id": "1kvKDgRL00c6Xhd4D2dRWXdp6VaBLuooK",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PPA-CF_Core_X1C_0.4mm_20260717.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PPA-CF_Core_X1C_0.4mm_20260717.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PPA-CF",
+    "variant": "Siraya Tech PPA-CF X1C 0.4mm 20260717",
+    "drive_id": "1moyezCIIAJNya11C8tw2LRUmFXRLhzzh",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PPA-CF_X1C_0.4mm_20260717.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PPA-CF_X1C_0.4mm_20260717.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PPA-GF",
+    "variant": "Siraya Tech PPA-GF X1C 0.4mm 20260717",
+    "drive_id": "1q7Sf3NkSPrl-KbnH1pIqO0-T4K03WYBH",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PPA-GF_X1C_0.4mm_20260717.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PPA-GF_X1C_0.4mm_20260717.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PET-CF",
+    "variant": "Siraya Tech PET-CF X1C 0.4mm 20260717",
+    "drive_id": "1-2-iIJzF4F2YavdfSIYqPCtHvr5XtjC4",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PET-CF_X1C_0.4mm_20260717.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PET-CF_X1C_0.4mm_20260717.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PET-GF",
+    "variant": "Siraya Tech PET-GF X1C 0.4mm 20260717",
+    "drive_id": "147Lp7Wl5mRrZ3hfsw4C9i4RaBTOhw5u1",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PET-GF_X1C_0.4mm_20260717.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PET-GF_X1C_0.4mm_20260717.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PETG-CF",
+    "variant": "Siraya Tech PETG-CF for X1C 20250723",
+    "drive_id": "1FDcG62kozd_TSJ7yAZ-GdPHUwGYip3OQ",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PETG-CF_for_X1C_20250723.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PETG-CF_for_X1C_20250723.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PETG-CF Pro",
+    "variant": "Siraya Tech PETG-CF Pro X1C 0.4mm 20260717",
+    "drive_id": "1pp5pavQiwk0FKsAvvQjMijyXjFmWraz_",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PETG-CF_Pro_X1C_0.4mm_20260717.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PETG-CF_Pro_X1C_0.4mm_20260717.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PEBA 95A",
+    "variant": "Siraya Tech PEBA 95A X1C 20260710",
+    "drive_id": "1QDi7aRM-0-AUE1yo45g2zW-jFXoZzGjq",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_95A_X1C_20260710.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_95A_X1C_20260710.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PEBA 85A",
+    "variant": "Siraya Tech PEBA 85A X1C 20260710",
+    "drive_id": "1yev5Ml8OAkvngV6kk1l4T-3aQvvu9Qhi",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_85A_X1C_20260710.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_85A_X1C_20260710.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PEBA Air 95A",
+    "variant": "Siraya Tech PEBA Air 250\u00b0C 76A X1C 0.4mm 20260710",
+    "drive_id": "15-B5gMR-f6qOGF4hbn8fdr_0z8UQtchE",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_Air_250C_76A_X1C_0.4mm_20260710.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_Air_250C_76A_X1C_0.4mm_20260710.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PEBA Air 95A",
+    "variant": "Siraya Tech PEBA Air 260\u00b0C 74A X1C 0.4mm 20260710",
+    "drive_id": "15-B5gMR-f6qOGF4hbn8fdr_0z8UQtchE",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_Air_260C_74A_X1C_0.4mm_20260710.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_Air_260C_74A_X1C_0.4mm_20260710.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "PEBA Air 95A",
+    "variant": "Siraya Tech PEBA Air 270\u00b0C 70A X1C 0.4mm 20260710",
+    "drive_id": "15-B5gMR-f6qOGF4hbn8fdr_0z8UQtchE",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_Air_270C_70A_X1C_0.4mm_20260710.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_PEBA_Air_270C_70A_X1C_0.4mm_20260710.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "TPU 85A HF",
+    "variant": "Siraya Tech TPU 85A X1C 0.4mm 20260709",
+    "drive_id": "1w9q3Ouc6p8U2cBaBCvAVBbkrXdbn-mZw",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_TPU_85A_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_TPU_85A_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "TPU 95A HF",
+    "variant": "Siraya Tech TPU 95A X1C 0.4mm 20260709",
+    "drive_id": "13aVEb3RdD5mY92CQ-Jb5R47T1nPkNu-9",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_TPU_95A_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_TPU_95A_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "TPU 64D HF",
+    "variant": "Siraya Tech TPU 64D X1C 0.4mm 20260709",
+    "drive_id": "1u3ytmse420NytD41pxf3BpR2L5p9E_JG",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_TPU_64D_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_TPU_64D_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "TPU Air 85A",
+    "variant": "Siraya Tech TPU Air 250\u00b0C 75A X1C 0.4mm 20260709",
+    "drive_id": "1tRTXE7ICwjzNKktM_DkRkTBcwh10JyJJ",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_TPU_Air_250C_75A_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_TPU_Air_250C_75A_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "TPU Air 85A",
+    "variant": "Siraya Tech TPU Air 260\u00b0C 70A X1C 0.4mm 20260709",
+    "drive_id": "1tRTXE7ICwjzNKktM_DkRkTBcwh10JyJJ",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_TPU_Air_260C_70A_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_TPU_Air_260C_70A_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "TPU Air 85A",
+    "variant": "Siraya Tech TPU Air 270\u00b0C 65A X1C 0.4mm 20260709",
+    "drive_id": "1tRTXE7ICwjzNKktM_DkRkTBcwh10JyJJ",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_TPU_Air_270C_65A_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_TPU_Air_270C_65A_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_P1S_0.4mm",
+    "material": "TPU Air 95A",
+    "variant": "Siraya Tech TPU Air 95A 250\u00b0C 85A P1S 0.4mm 20260818",
+    "drive_id": "1i_oB3m1MYgjicgZegu2kD08gqdhJZhVS",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_250C_85A_P1S_0.4mm_20260818.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_250C_85A_P1S_0.4mm_20260818.json"
+  },
+  {
+    "printer_tag": "Bambu_P1S_0.4mm",
+    "material": "TPU Air 95A",
+    "variant": "Siraya Tech TPU Air 95A 260\u00b0C 80A P1S 0.4mm 20260818",
+    "drive_id": "1i_oB3m1MYgjicgZegu2kD08gqdhJZhVS",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_260C_80A_P1S_0.4mm_20260818.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_260C_80A_P1S_0.4mm_20260818.json"
+  },
+  {
+    "printer_tag": "Bambu_P1S_0.4mm",
+    "material": "TPU Air 95A",
+    "variant": "Siraya Tech TPU Air 95A 270\u00b0C 75A P1S 0.4mm 20260818",
+    "drive_id": "1i_oB3m1MYgjicgZegu2kD08gqdhJZhVS",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_270C_75A_P1S_0.4mm_20260818.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_270C_75A_P1S_0.4mm_20260818.json"
+  },
+  {
+    "printer_tag": "Bambu_P1S_0.4mm",
+    "material": "TPU Air 95A",
+    "variant": "Siraya Tech TPU Air 95A 240\u00b0C 90A P1S 0.4mm 20260818",
+    "drive_id": "1i_oB3m1MYgjicgZegu2kD08gqdhJZhVS",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_240C_90A_P1S_0.4mm_20260818.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_P1S_0.4mm__Siraya_Tech_TPU_Air_95A_240C_90A_P1S_0.4mm_20260818.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "TPU-GF",
+    "variant": "Siraya Tech TPU-GF X1C 0.4mm 20260709",
+    "drive_id": "13-oDg-ky2HNU6LtjADmhXjGe3dUJspZB",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_TPU-GF_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_TPU-GF_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "Roamr TPU Air HR 80A",
+    "variant": "Siraya Tech Roamr TPU Air HR 80A 250\u00b0C  X1C 0.4mm 20260709",
+    "drive_id": "1K4vcOSU5IEc0SnH_lr88xeM3sCufVI7D",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_Roamr_TPU_Air_HR_80A_250C_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_Roamr_TPU_Air_HR_80A_250C_X1C_0.4mm_20260709.json"
+  },
+  {
+    "printer_tag": "Bambu_X1C_0.4mm",
+    "material": "Roamr TPU Air HR 85A",
+    "variant": "Siraya Tech Roamr TPU Air HR 85A 250\u00b0C  X1C 0.4mm 20260709",
+    "drive_id": "1vD7dftXYcnE2nvNGBK0qnLFjNFIGx4-2",
+    "threemf_file": "vendor_profiles/siraya_tech/3mf/Bambu_X1C_0.4mm__Siraya_Tech_Roamr_TPU_Air_HR_85A_250C_X1C_0.4mm_20260709.3mf",
+    "json_file": "vendor_profiles/siraya_tech/extracted_json/Bambu_X1C_0.4mm__Siraya_Tech_Roamr_TPU_Air_HR_85A_250C_X1C_0.4mm_20260709.json"
+  }
+]

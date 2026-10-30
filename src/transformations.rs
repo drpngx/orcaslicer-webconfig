@@ -298,6 +298,17 @@ impl TransformationEngine {
         priority: 52,
       },
       TransformationRule {
+        id: "tpu_foaming_shore".to_string(),
+        name: "Active-Foaming TPU Shore Hardness & Expansion Tuner (60A–92A)".to_string(),
+        description: "Tunes variable-density active-foaming TPU (colorFabb varioShore TPU, eSUN eTPU-LW, Siraya Tech Flex TPU Air) by Target Shore A Hardness (92A solid @ 195°C / 0.98 flow → 75A midsole @ 220°C / 0.75 flow → 60A max foam @ 245°C / 0.60 flow), MVS residence-time ceiling, and 0mm Z-hop.".to_string(),
+        category: "Filament Tuning Rule".to_string(),
+        icon: "🧽".to_string(),
+        enabled: false,
+        condition_expr: "filament:TPU".to_string(),
+        lua_code: include_str!("../transformations/parametric/cal_tpu_foaming_shore.lua").to_string(),
+        priority: 53,
+      },
+      TransformationRule {
         id: "weather_climate_adjustment".to_string(),
         name: "Weather & Ambient Climate Adjustment (Tropical / Hot & Dry / Cold & Dry / Cold & Humid)".to_string(),
         description: "Tunes nozzle/bed temps, +5°C 1st-layer bed & 35 mm/s speed (cold), Max Volumetric Speed (-15–20% hot), part & chamber exhaust fans (80–100% hot, 0% cold), no-fan first layers (3–5 cold), Spiral Z-Hop (0.20mm / Top Only PETG / 0mm TPU), Wipe (1.5mm), Avoid Crossing Walls, and Brim using Ambient Temp (°C) and Relative Humidity (% RH) dials.".to_string(),
@@ -314,6 +325,17 @@ impl TransformationEngine {
   /// Curated rule templates for the interactive "Create / Add New Lua Rule" builder in `WizardTab`.
   pub fn get_rule_templates() -> Vec<TransformationRule> {
     vec![
+      TransformationRule {
+        id: "tpu_foaming_shore".to_string(),
+        name: "Active-Foaming TPU Shore Hardness & Expansion Tuner (60A–92A)".to_string(),
+        description: "Dial Target Shore A Hardness (55A–92A) or pick 92A Solid, 85A Firm, 75A Midsole, 65A Soft Cushion, or 60A Max Foam presets to synchronize nozzle temperature, foaming expansion flow ratio, MVS residence time, and single-wall caliper trim.".to_string(),
+        category: "Filament Tuning Rule".to_string(),
+        icon: "🧽".to_string(),
+        enabled: true,
+        condition_expr: "filament:TPU".to_string(),
+        lua_code: include_str!("../transformations/parametric/cal_tpu_foaming_shore.lua").to_string(),
+        priority: 53,
+      },
       TransformationRule {
         id: "weather_climate_adjustment".to_string(),
         name: "Weather & Ambient Climate Adjustment (Tropical / Hot & Dry / Cold & Dry / Cold & Humid)".to_string(),
@@ -1173,26 +1195,6 @@ end
 
       // Check raw disk JSON for Carbon Fiber HRC mismatch, Brass < range_low, and inverted initial-layer temperatures
       if let Some(raw_str) = &spool.raw_disk_json {
-        if (spool.material_type.contains("-CF")
-          || spool.material_type.contains("-GF")
-          || spool.finish_type.contains("Carbon"))
-          && raw_str.contains("\"required_nozzle_HRC\"")
-          && raw_str.contains("\"3\"")
-        {
-          push_warn(SafetyWarning {
-            id: format!("spool_raw_hrc:{}", spool.id),
-            severity: SafetySeverity::Warning,
-            scope_label: format!("Filament Disk JSON: {}", spool.name),
-            param_key: "required_nozzle_HRC (On Disk)".to_string(),
-            current_value: "3 HRC on disk (Auto-healed to 55 HRC on Save)".to_string(),
-            safe_range: "≥55 HRC (Hardened Steel / Ruby / DiamondBack)".to_string(),
-            explanation: format!(
-              "Raw disk file for abrasive {} had `required_nozzle_HRC = 3` (soft Brass allowed) and lacked `nozzle_temperature_HS`. WebConfig upgrades this to 55 HRC and {}°C HS upon save.",
-              spool.name, spool.print_temp
-            ),
-          });
-        }
-
         if let Ok(raw_val) = serde_json::from_str::<serde_json::Value>(raw_str) {
           let extract_i32 = |k: &str| -> Option<i32> {
             raw_val
@@ -1207,6 +1209,25 @@ end
               })
               .and_then(|s| s.parse::<i32>().ok())
           };
+
+          if (spool.material_type.contains("-CF")
+            || spool.material_type.contains("-GF")
+            || spool.finish_type.contains("Carbon"))
+            && extract_i32("required_nozzle_HRC") == Some(3)
+          {
+            push_warn(SafetyWarning {
+              id: format!("spool_raw_hrc:{}", spool.id),
+              severity: SafetySeverity::Warning,
+              scope_label: format!("Filament Disk JSON: {}", spool.name),
+              param_key: "required_nozzle_HRC (On Disk)".to_string(),
+              current_value: "3 HRC on disk (Auto-healed to 55 HRC on Save)".to_string(),
+              safe_range: "≥55 HRC (Hardened Steel / Ruby / DiamondBack)".to_string(),
+              explanation: format!(
+                "Raw disk file for abrasive {} had `required_nozzle_HRC = 3` (soft Brass allowed) and lacked `nozzle_temperature_HS`. WebConfig upgrades this to 55 HRC and {}°C HS upon save.",
+                spool.name, spool.print_temp
+              ),
+            });
+          }
 
           if let (Some(brass_t), Some(range_low)) = (
             extract_i32("nozzle_temperature_BRASS").or_else(|| extract_i32("nozzle_temperature")),
@@ -1292,41 +1313,73 @@ end
 
       // Check polymer temperature bounds on the spool
       let mat = spool.material_type.as_str();
-      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = if mat.contains("PEEK") {
-        (320, 360, 355, 135)
-      } else if mat.starts_with("PPS") {
-        (295, 345, 335, 125)
-      } else if mat.starts_with("PA")
-        || mat.starts_with("PPA")
-        || mat.starts_with("UltraPA")
-        || mat.starts_with("PC")
-        || mat.starts_with("PET-")
-        || mat.starts_with("Support for PA")
-        || mat == "PETG-ESD"
+      let mat_up = mat.to_uppercase();
+      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = if mat_up.contains("PCL") {
+        (70, 180, 175, 65)
+      } else if mat_up.contains("PEEK") {
+        (320, 420, 410, 160)
+      } else if mat_up.contains("PPS") {
+        (295, 365, 360, 125)
+      } else if mat_up.contains("PPA")
+        || mat_up.contains("PAHT")
+        || mat_up.contains("PA6")
+        || mat_up.contains("PA12")
+        || mat_up.contains("PA612")
+        || mat_up.contains("EASY PA")
+        || mat_up == "PA"
+        || mat_up == "PA-CF"
+        || mat_up == "PA-GF"
+        || mat_up.starts_with("PA ")
+        || mat_up.contains("ULTRAPA")
+        || (mat_up.contains("PC") && !mat_up.contains("PCTG"))
+        || mat_up.contains("PET-")
+        || mat_up.starts_with("SUPPORT FOR PA")
+        || mat_up.contains("FOR PA12")
+        || mat_up == "PETG-ESD"
       {
-        (255, 315, 308, 120)
-      } else if mat.starts_with("PCTG") {
+        (230, 325, 320, 120)
+      } else if mat_up.contains("PCTG") {
         (240, 280, 272, 95)
-      } else if (mat.starts_with("PETG") || mat == "PET") && spool.finish_type == "Conductive" {
+      } else if mat_up.contains("COPE") {
+        (205, 255, 250, 80)
+      } else if (mat_up.contains("PETG") || mat_up == "PET") && spool.finish_type == "Conductive" {
         (220, 290, 285, 95)
-      } else if mat.starts_with("PETG") || mat == "PET" {
-        (220, 265, 255, 90)
-      } else if mat.starts_with("ABS") || mat.starts_with("ASA") || mat == "SBS" || mat == "HIPS" {
-        (230, 290, 282, 115)
-      } else if mat.starts_with("PEBA")
-        || mat.contains("Foaming")
-        || spool.finish_type == "Foaming"
-        || mat == "TPU-CF"
-        || mat == "TPU-GF"
-        || mat == "TPU-AERO"
+      } else if mat_up.contains("PETG") || mat_up == "PET" {
+        (215, 275, 270, 90)
+      } else if mat_up.contains("ABS")
+        || mat_up.contains("ASA")
+        || mat_up == "SBS"
+        || mat_up == "HIPS"
       {
-        (195, 260, 255, 75)
-      } else if mat.contains("TPU") || mat == "FLEX" || mat == "EVA" {
-        (195, 245, 238, 65)
-      } else if mat.starts_with("PLA") || mat == "PHA" {
-        (190, 240, 228, 70)
+        (230, 315, 310, 115)
+      } else if mat_up.contains("PEBA")
+        || mat_up.contains("FOAMING")
+        || mat_up.contains("AIR")
+        || spool.finish_type == "Foaming"
+        || mat_up.contains("TPU-CF")
+        || mat_up.contains("TPU-GF")
+        || mat_up.contains("TPU-AERO")
+      {
+        (180, 280, 276, 105)
+      } else if mat_up.contains("TPU")
+        || mat_up.contains("POLYFC")
+        || mat_up.contains("POLYFLEX")
+        || mat_up == "FLEX"
+        || mat_up == "EVA"
+      {
+        (190, 260, 255, 70)
+      } else if mat_up.contains("PCL") {
+        (70, 180, 175, 65)
+      } else if mat_up.contains("PLA")
+        || mat_up.contains("PANCHROMA")
+        || mat_up.contains("POLYTERRA")
+        || mat_up.contains("POLYLITE")
+        || mat_up.contains("POLYMAX")
+        || mat_up == "PHA"
+      {
+        (180, 245, 240, 75)
       } else {
-        (185, 300, 285, 115)
+        (180, 305, 295, 115)
       };
 
       if spool.print_temp < min_nozzle || spool.print_temp > max_nozzle {
@@ -1518,6 +1571,10 @@ end
       (
         "cal_scarf_arachne",
         include_str!("../transformations/parametric/cal_scarf_arachne.lua"),
+      ),
+      (
+        "cal_tpu_foaming_shore",
+        include_str!("../transformations/parametric/cal_tpu_foaming_shore.lua"),
       ),
       (
         "sym_stringing",
@@ -1886,7 +1943,7 @@ mod tests {
   #[test]
   fn test_parameterized_calibration_templates_build_and_execute() {
     let templates = TransformationEngine::get_parameterized_calibration_templates();
-    assert_eq!(templates.len(), 35);
+    assert_eq!(templates.len(), 36);
 
     // Verify transparent glass wizard generates and executes cleanly on both filament and process JSON
     let glass = templates
@@ -2507,5 +2564,100 @@ end
       Some("custom")
     );
     assert!(weather.validate_answers(&ans, "all").is_ok());
+  }
+
+  #[test]
+  fn test_tpu_foaming_shore_hardness_curve_and_microswiss_diameters() {
+    // 1. Test `cal_tpu_foaming_shore.lua` presets, dials, nozzle thermal offsets, and validation
+    let templates = TransformationEngine::get_parameterized_calibration_templates();
+    let foaming = templates
+      .iter()
+      .find(|t| t.id == "cal_tpu_foaming_shore")
+      .expect("cal_tpu_foaming_shore exists");
+
+    let mut ans = foaming.default_answers();
+    assert_eq!(
+      ans.get("shore_preset").map(|s| s.as_str()),
+      Some("75a_midsole")
+    );
+    assert_eq!(ans.get("target_shore_a").map(|s| s.as_str()), Some("75"));
+
+    // Selecting "65a_soft" snaps target_shore_a to 65 and mvs_ceiling to 3.0
+    foaming.apply_answer_change(&mut ans, "shore_preset", "65a_soft".to_string());
+    assert_eq!(ans.get("target_shore_a").map(|s| s.as_str()), Some("65"));
+    assert_eq!(ans.get("mvs_ceiling").map(|s| s.as_str()), Some("3.0"));
+
+    // Execute on Hardened Steel nozzle (+5°C offset -> 235 + 5 = 240°C, 0.650 flow)
+    let (_, _, badge, lua_65a) = foaming.generate_from_answers(&ans, "filament:TPU");
+    assert!(badge.contains("65A"), "badge: {}", badge);
+    let (cfg_hs, _, _) = execute_transformation_lua(
+      &lua_65a,
+      &json!({
+        "nozzle_temperature": "220",
+        "filament_flow_ratio": "0.98"
+      }),
+      &json!({
+        "filament_type": "TPU Foaming",
+        "nozzle_type": "hardened_steel",
+        "nozzle_material": "Hardened Steel"
+      }),
+    )
+    .expect("foaming TPU 65A on Hardened Steel executes");
+    assert_eq!(cfg_hs["nozzle_temperature"], "240");
+    assert_eq!(cfg_hs["filament_flow_ratio"], "0.650");
+    assert_eq!(cfg_hs["filament_max_volumetric_speed"], "3.0");
+    assert_eq!(cfg_hs["filament_z_hop"], "0.00");
+
+    // Execute on Diamondback PCD nozzle (-10°C offset -> 235 - 10 = 225°C)
+    let (cfg_db, _, _) = execute_transformation_lua(
+      &lua_65a,
+      &json!({
+        "nozzle_temperature": "220",
+        "filament_flow_ratio": "0.98"
+      }),
+      &json!({
+        "filament_type": "TPU Foaming",
+        "nozzle_type": "diamondback",
+        "nozzle_material": "Diamondback PCD"
+      }),
+    )
+    .expect("foaming TPU 65A on Diamondback executes");
+    assert_eq!(cfg_db["nozzle_temperature"], "225");
+    assert_eq!(cfg_db["filament_flow_ratio"], "0.650");
+
+    // 2. Test FilamentSpool::apply_foaming_shore_hardness
+    let catalog = crate::catalog::load_merged_catalog();
+    let tpu_foam_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "TPU Foaming")
+      .expect("TPU Foaming in catalog");
+    let mut spool = FilamentSpool::from_catalog_entry(5, tpu_foam_entry, "hardened_steel");
+    assert!(spool.is_foaming_tpu());
+    spool.apply_foaming_shore_hardness(65, "hardened_steel");
+    assert_eq!(spool.effective_foaming_shore_a(), 65);
+    assert!(
+      spool.name.contains("TPU Foaming 65A"),
+      "spool name: {}",
+      spool.name
+    );
+    assert_eq!(spool.print_temp, 240);
+    assert!((spool.flow_ratio - 0.65).abs() < 0.001);
+
+    // 3. Test MicroSwiss nozzle size filtering (`supported_nozzle_diameters_for_type`)
+    let diams_for = |nt: &str| -> Vec<&'static str> {
+      MachineRig::supported_nozzle_diameters_for_type(nt)
+        .iter()
+        .map(|(d, _)| *d)
+        .collect()
+    };
+    assert_eq!(diams_for("diamondback"), vec!["0.25", "0.4", "0.6", "0.8"]);
+    assert_eq!(diams_for("cm2"), vec!["0.4", "0.6", "0.8"]);
+    assert_eq!(diams_for("cht_cm2"), vec!["0.4", "0.6", "0.8"]);
+    assert_eq!(diams_for("cht"), vec!["0.4", "0.6", "0.8", "1.0"]);
+    assert_eq!(
+      diams_for("microswiss_brass"),
+      vec!["0.2", "0.3", "0.4", "0.6", "0.8", "1.0"]
+    );
   }
 }

@@ -424,13 +424,14 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
               </label>
               <div class="flex flex-col gap-space-xs">
                 {for vec![
-                  ("brass", "🟡 Standard Brass (OrcaSlicer Default)", "0°C Factory Baseline Conductivity • 0.2/0.25/0.4/0.6/0.8mm"),
-                  ("microswiss_brass", "🟡 MicroSwiss Plated Brass (TwinClad XT™)", "0°C Offset • Low-Friction 0.99 Flow • 0.2/0.25/0.4/0.6/0.8mm"),
-                  ("ruby_brass", "🔴 Brass-Body Ruby Tip (Olsson / Gemstone)", "0°C Brass Thermal Conductivity + Handles -CF & -GF Composites"),
-                  ("hardened_steel", "🛡️ Hardened Steel", "+5°C Thermal Compensation (230°C → 235°C PETG) • 0.2–0.8mm"),
-                  ("cm2", "⚙️ MicroSwiss CM2™ (Copper Core + M2 HSS Tip)", "0°C Copper Conductivity + HRC 68 Hardened Tip • 0.60mm Retract"),
-                  ("diamondback", "💎 MicroSwiss Diamondback™ PCD", "-10°C Temp, 0.94 Flow, 0.60mm Retract (PCD Solid Diamond Tip)"),
-                  ("cht", "🔥 MicroSwiss / Bi-Metal CHT High-Flow", "+25% High-Flow Volumetric Capacity • 0.4/0.6/0.8mm"),
+                  ("brass", "🟡 Standard Brass (OrcaSlicer Default)", "0°C Factory Baseline Conductivity • Sizes: 0.2, 0.25, 0.3, 0.4, 0.6, 0.8, 1.0mm"),
+                  ("microswiss_brass", "🟡 MicroSwiss Plated Brass (TwinClad XT™)", "0°C Offset • Low-Friction 0.99 Flow • Sizes: 0.2, 0.3, 0.4, 0.6, 0.8, 1.0mm"),
+                  ("ruby_brass", "🔴 Brass-Body Ruby Tip (Olsson / Gemstone)", "0°C Brass Conductivity + CF/GF Ready • Sizes: 0.4, 0.6, 0.8mm"),
+                  ("hardened_steel", "🛡️ Hardened Steel", "+5°C Thermal Compensation (230°C → 235°C PETG) • Sizes: 0.2–1.0mm"),
+                  ("cm2", "⚙️ MicroSwiss CM2™ (Copper Core + M2 HSS Tip)", "0°C Copper Conductivity + HRC 68 Hardened Tip • Sizes: 0.4, 0.6, 0.8mm"),
+                  ("cht_cm2", "🔥⚙️ MicroSwiss CHT CM2™ (High-Flow Copper + M2 HSS Tip)", "+40% High-Flow CHT Splitter + Hardened M2 Tip • Sizes: 0.4, 0.6, 0.8mm"),
+                  ("diamondback", "💎 MicroSwiss Diamondback™ PCD", "-10°C Temp, 0.94 Flow, 0.60mm Retract • Sizes: 0.25, 0.4, 0.6, 0.8mm"),
+                  ("cht", "🔥 MicroSwiss FlowTech™ CHT High-Flow", "+50% High-Flow 3-Bore Melt Splitter • Sizes: 0.4, 0.6, 0.8, 1.0mm"),
                 ].into_iter().map(|(noz_id, noz_label, sub)| {
                   let is_sel = active_rig.nozzle_type == noz_id;
                   let nid = noz_id.to_string();
@@ -456,36 +457,56 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
               </div>
             </div>
 
-            // Nozzle Diameter Selector (0.2, 0.25, 0.4, 0.6, 0.8)
+            // Nozzle Size / Orifice Diameter Selector (filtered dynamically by chosen Nozzle Type!)
             <div class="flex flex-col gap-space-xs pt-space-xs border-t border-surface-container-high">
-              <label class="text-xs text-on-surface-variant font-semibold">
-                {"Nozzle Orifice Diameter (mm):"}
-              </label>
-              <div class="grid grid-cols-5 gap-space-xs">
-                {for vec![
-                  ("0.2", "0.20 mm"),
-                  ("0.25", "0.25 mm"),
-                  ("0.4", "0.40 mm"),
-                  ("0.6", "0.60 mm"),
-                  ("0.8", "0.80 mm"),
-                ].into_iter().map(|(d_val, d_label)| {
-                  let is_sel = active_rig.nozzle_diameter == d_val;
+              <div class="flex items-center justify-between gap-2 flex-wrap">
+                <label class="text-xs text-on-surface-variant font-semibold">
+                  {"Nozzle Size / Orifice Diameter (mm):"}
+                </label>
+                <span class="text-[10px] font-mono text-secondary bg-secondary/10 border border-secondary/30 px-1.5 py-0.5 rounded">
+                  {{
+                    let valid = MachineRig::supported_nozzle_diameters_for_type(&active_rig.nozzle_type)
+                      .iter()
+                      .map(|(v, _)| *v)
+                      .collect::<Vec<_>>()
+                      .join(", ");
+                    format!("Valid for {}: {} mm", active_rig.short_nozzle_tag(), valid)
+                  }}
+                </span>
+              </div>
+              <div class="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
+                {for MachineRig::all_candidate_nozzle_diameters().iter().map(|(d_val, d_label)| {
+                  let is_supported = MachineRig::is_diameter_supported_for_nozzle(&active_rig.nozzle_type, d_val);
+                  let is_sel = active_rig.nozzle_diameter == *d_val;
                   let dv = d_val.to_string();
                   let cb_d = on_change_diam.clone();
+                  let noz_mat = active_rig.nozzle_material.clone();
 
                   html! {
                     <button
+                      disabled={!is_supported}
+                      title={if is_supported {
+                        format!("Select {} orifice for {}", d_label, noz_mat)
+                      } else {
+                        format!("{} is not manufactured in {}", noz_mat, d_label)
+                      }}
                       class={format!(
-                        "p-space-sm rounded-lg border text-xs font-mono text-center transition-all {}",
-                        if is_sel {
-                          "bg-secondary/20 border-secondary text-secondary font-bold"
+                        "p-1.5 rounded-lg border text-[11px] font-mono text-center transition-all {}",
+                        if is_sel && is_supported {
+                          "bg-secondary/20 border-secondary text-secondary font-bold shadow-sm"
+                        } else if is_supported {
+                          "bg-surface-container-lowest border-outline-variant text-on-surface-variant hover:text-on-surface cursor-pointer"
                         } else {
-                          "bg-surface-container-lowest border-outline-variant text-on-surface-variant hover:text-on-surface"
+                          "bg-surface-container-lowest/40 border-outline-variant/25 text-on-surface-variant/35 line-through cursor-not-allowed"
                         }
                       )}
-                      onclick={Callback::from(move |_| cb_d.emit(dv.clone()))}
+                      onclick={Callback::from(move |_| {
+                        if is_supported {
+                          cb_d.emit(dv.clone());
+                        }
+                      })}
                     >
-                      {d_label}
+                      {format!("{}mm", d_val)}
                     </button>
                   }
                 })}

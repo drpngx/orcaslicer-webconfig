@@ -316,6 +316,46 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
               {"🌦️ Weather & Climate Dials (Tropical / Cold / Humid)"}
             </button>
             <button
+              class="flex items-center gap-1.5 bg-primary/20 text-primary border border-primary/50 hover:bg-primary/30 px-space-md py-1.5 rounded-lg text-xs font-mono font-bold shadow transition-colors cursor-pointer"
+              onclick={{
+                let src = show_rule_creator.clone();
+                let cm = creator_mode.clone();
+                let sci = selected_cal_idx.clone();
+                let ca = cal_answers.clone();
+                let d_name = draft_name.clone();
+                let d_desc = draft_desc.clone();
+                let d_cat = draft_category.clone();
+                let d_icon = draft_icon.clone();
+                let d_cond = draft_condition.clone();
+                let d_lua = draft_lua.clone();
+                let cal_list_c = (*cal_templates).clone();
+                Callback::from(move |_| {
+                  if let Some((f_idx, f_tpl)) = cal_list_c
+                    .iter()
+                    .enumerate()
+                    .find(|(_, t)| t.id == "cal_tpu_foaming_shore")
+                  {
+                    let def_ans = f_tpl.default_answers();
+                    let def_scope = f_tpl.default_condition_expr.clone();
+                    let (t, d, _, l) = f_tpl.generate_from_answers(&def_ans, &def_scope);
+                    sci.set(f_idx);
+                    ca.set(def_ans);
+                    d_name.set(t);
+                    d_desc.set(d);
+                    d_cat.set(f_tpl.category.clone());
+                    d_icon.set(f_tpl.icon.clone());
+                    d_cond.set(def_scope);
+                    d_lua.set(l);
+                  }
+                  cm.set("calibration_qa".to_string());
+                  src.set(true);
+                })
+              }}
+            >
+              <span>{"🧽"}</span>
+              {"Foaming TPU Shore (60A–92A)"}
+            </button>
+            <button
               class="flex items-center gap-1.5 bg-secondary text-on-secondary hover:opacity-90 px-space-md py-1.5 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer"
               onclick={{
                 let src = show_rule_creator.clone();
@@ -3457,6 +3497,24 @@ pub fn render_issue_illustration(issue_id: &str, compact: bool) -> Html {
         <text x="342" y="51" fill="#8be9fd" font-size="8" font-family="monospace" text-anchor="middle">❄️ Cold: 0% Exhaust • +5°C Bed • Brim</text>
         <text x="342" y="64" fill="#f1fa8c" font-size="7.5" font-family="monospace" text-anchor="middle">🎛️ Ambient °C &amp; % RH Dials</text>
         <text x="342" y="88" fill="#50fa7b" font-size="8.5" font-family="monospace" text-anchor="middle">Auto-Tunes PLA, Silk, PETG, TPU, ABS/ASA &amp; PA/PC</text>
+      "##,
+    ),
+    "cal_tpu_foaming_shore" => (
+      "PHYSICS: Active Micro-Cellular Foaming (190°C → 250°C)",
+      r##"
+        <rect x="34" y="20" width="132" height="52" rx="4" fill="#2c354d" stroke="#8be9fd" stroke-width="1.5"/>
+        <text x="100" y="36" fill="#f1fa8c" font-size="7.5" font-family="monospace" text-anchor="middle">195°C = 92A Solid (1.0x • 0.98 Flow)</text>
+        <text x="100" y="50" fill="#8be9fd" font-size="7.5" font-family="monospace" text-anchor="middle">220°C = 75A Midsole (1.3x • 0.75 Flow)</text>
+        <text x="100" y="64" fill="#50fa7b" font-size="7.5" font-family="monospace" text-anchor="middle">245°C = 60A Max Foam (1.6x • 0.60 Flow)</text>
+        <text x="100" y="88" fill="#8be9fd" font-size="8.5" font-family="monospace" text-anchor="middle">Higher Temp Expands Closed-Cell Bubbles</text>
+      "##,
+      "TUNER: Shore A Dial (55A–92A) + Expansion Flow",
+      r##"
+        <rect x="274" y="20" width="136" height="52" rx="4" fill="#1e2738" stroke="#50fa7b" stroke-width="2"/>
+        <text x="342" y="37" fill="#50fa7b" font-size="8" font-family="monospace" text-anchor="middle">🧽 Target Shore A ➔ Nozzle °C &amp; Flow</text>
+        <text x="342" y="51" fill="#8be9fd" font-size="8" font-family="monospace" text-anchor="middle">⏱️ MVS Ceiling Locks Residence Time</text>
+        <text x="342" y="64" fill="#f1fa8c" font-size="7.5" font-family="monospace" text-anchor="middle">🚫 0.00mm Z-Hop • Wipe + Avoid Walls</text>
+        <text x="342" y="88" fill="#50fa7b" font-size="8.5" font-family="monospace" text-anchor="middle">Compensates Nozzle Offset (+5°C HS / -10°C PCD)</text>
       "##,
     ),
     _ => (

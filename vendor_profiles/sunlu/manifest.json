@@ -1,0 +1,182 @@
+[
+  {
+    "material": "PEEK",
+    "file_id": 286,
+    "original_file_name": "SUNLU PEEK @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PEEK.json"
+  },
+  {
+    "material": "PC-ABS",
+    "file_id": 279,
+    "original_file_name": "SUNLU PC-ABS @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PC-ABS.json"
+  },
+  {
+    "material": "PA12-CF",
+    "file_id": 272,
+    "original_file_name": "SUNLU PA12-CF @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PA12-CF.json"
+  },
+  {
+    "material": "PA6-GF",
+    "file_id": 386,
+    "original_file_name": "SUNLU PA6-GF25 @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PA6-GF.json"
+  },
+  {
+    "material": "PA6-CF",
+    "file_id": 379,
+    "original_file_name": "SUNLU PA6-CF20 @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PA6-CF.json"
+  },
+  {
+    "material": "Easy PA",
+    "file_id": 372,
+    "original_file_name": "SUNLU Easy PA @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_Easy_PA.json"
+  },
+  {
+    "material": "PP",
+    "file_id": 365,
+    "original_file_name": "SUNLU PP @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PP.json"
+  },
+  {
+    "material": "High Speed ABS",
+    "file_id": 234,
+    "original_file_name": "SUNLU High Speed ABS @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_High_Speed_ABS.json"
+  },
+  {
+    "material": "High Speed Matte PETG",
+    "file_id": 315,
+    "original_file_name": "SUNLU High Speed Matte PETG @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_High_Speed_Matte_PETG.json"
+  },
+  {
+    "material": "High Speed Matte PLA",
+    "file_id": 311,
+    "original_file_name": "SUNLU High Speed Matte PLA @Bambu Lab P2S 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_High_Speed_Matte_PLA.json"
+  },
+  {
+    "material": "High Speed PLA+2.0",
+    "file_id": 303,
+    "original_file_name": "SUNLU High Speed PLA+2 @Bambu Lab A1 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_High_Speed_PLA_2.0.json"
+  },
+  {
+    "material": "High Speed PLA+",
+    "file_id": 298,
+    "original_file_name": "SUNLU High Speed PLA +@Bambu Lab X1E 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_High_Speed_PLA_.json"
+  },
+  {
+    "material": "High Speed PLA",
+    "file_id": 293,
+    "original_file_name": "SUNLU High Speed PLA @Bambu Lab A1 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_High_Speed_PLA.json"
+  },
+  {
+    "material": "ABS-GF",
+    "file_id": 213,
+    "original_file_name": "SUNLU ABS-FR @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_ABS-GF.json"
+  },
+  {
+    "material": "ABS-FR",
+    "file_id": 206,
+    "original_file_name": "SUNLU ABS-FR @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_ABS-FR.json"
+  },
+  {
+    "material": "Silk TPU",
+    "file_id": 199,
+    "original_file_name": "SUNLU Silk TPU @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_Silk_TPU.json"
+  },
+  {
+    "material": "TPU 95A",
+    "file_id": 328,
+    "original_file_name": "SUNLU TPU 95A @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_TPU_95A.json"
+  },
+  {
+    "material": "TPU 90A",
+    "file_id": 271,
+    "original_file_name": "SUNLU TPU 90A @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_TPU_90A.json"
+  },
+  {
+    "material": "PETG-CF",
+    "file_id": 264,
+    "original_file_name": "SUNLU PETG-CF @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PETG-CF.json"
+  },
+  {
+    "material": "ASA",
+    "file_id": 262,
+    "original_file_name": "SUNLU ASA @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_ASA.json"
+  },
+  {
+    "material": "PVB",
+    "file_id": 255,
+    "original_file_name": "SUNLU PVB @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PVB.json"
+  },
+  {
+    "material": "PLA Meta",
+    "file_id": 248,
+    "original_file_name": "SUNLU PLA Meta @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PLA_Meta.json"
+  },
+  {
+    "material": "LW-PLA",
+    "file_id": 241,
+    "original_file_name": "SUNLU LW-PLA @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_LW-PLA.json"
+  },
+  {
+    "material": "PLA Galaxy",
+    "file_id": 227,
+    "original_file_name": "SUNLU PLA Galaxy @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PLA_Galaxy.json"
+  },
+  {
+    "material": "PLA Glow In The Dark",
+    "file_id": 220,
+    "original_file_name": "SUNLU PLA Glow @Bambu Lab H2D 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PLA_Glow_In_The_Dark.json"
+  },
+  {
+    "material": "APLA",
+    "file_id": 344,
+    "original_file_name": "SUNLU APLA @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_APLA.json"
+  },
+  {
+    "material": "PLA Classic",
+    "file_id": 358,
+    "original_file_name": "SUNLU PLA Classic @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PLA_Classic.json"
+  },
+  {
+    "material": "PLA Lite",
+    "file_id": 351,
+    "original_file_name": "SUNLU PLA Lite @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PLA_Lite.json"
+  },
+  {
+    "material": "PCL",
+    "file_id": 337,
+    "original_file_name": "SUNLU PCL @Bambu Lab H2C 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PCL.json"
+  },
+  {
+    "material": "PETG",
+    "file_id": 335,
+    "original_file_name": "SUNLU PETG @Bambu Lab P2S 0.4 nozzle.json",
+    "json_file": "vendor_profiles/sunlu/SUNLU_PETG.json"
+  }
+]

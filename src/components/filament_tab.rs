@@ -1,4 +1,4 @@
-use crate::catalog::{load_merged_catalog, CatalogFilament};
+use crate::catalog::{load_merged_catalog, CatalogFilament, FILAMENT_BRAND_OPTIONS};
 use crate::components::color_picker::{ColorPicker, ColorSelection};
 use crate::components::wizard_tab::render_issue_illustration;
 use crate::models::FilamentSpool;
@@ -51,6 +51,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
   let added_spools_search = use_state(String::new);
   let filament_catalog_search = use_state(String::new);
   let filament_category_filter = use_state(|| "All".to_string());
+  let filament_brand_filter = use_state(|| "All".to_string());
   // "diff" = Before (Disk) -> After (Lua), "lua" = Lua Output Only, "disk" = Imported Disk Only
   let matrix_view_mode = use_state(|| "diff".to_string());
   let qa_templates = use_memo((), |_| {
@@ -163,17 +164,21 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
 
   let fil_q = (*filament_catalog_search).to_lowercase();
   let cat_filter = (*filament_category_filter).clone();
+  let brand_filter = (*filament_brand_filter).clone();
   let filtered_catalog: Vec<CatalogFilament> = catalog
     .filaments
     .iter()
     .filter(|f| {
       let cat_ok = cat_filter == "All" || f.category == cat_filter;
+      let brand_ok = brand_filter == "All" || f.brand.eq_ignore_ascii_case(&brand_filter);
       let q_ok = fil_q.is_empty()
+        || f.brand.to_lowercase().contains(&fil_q)
         || f.code.to_lowercase().contains(&fil_q)
         || f.label.to_lowercase().contains(&fil_q)
         || f.category.to_lowercase().contains(&fil_q)
-        || f.default_finish.to_lowercase().contains(&fil_q);
-      cat_ok && q_ok
+        || f.default_finish.to_lowercase().contains(&fil_q)
+        || f.source.to_lowercase().contains(&fil_q);
+      cat_ok && brand_ok && q_ok
     })
     .cloned()
     .collect();
@@ -423,6 +428,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                 {for props.filaments.iter().enumerate().filter(|(_, sp)| {
                   spool_search.is_empty()
                     || sp.name.to_lowercase().contains(&spool_search)
+                    || sp.brand.to_lowercase().contains(&spool_search)
                     || sp.material_type.to_lowercase().contains(&spool_search)
                     || sp.finish_type.to_lowercase().contains(&spool_search)
                 }).map(|(idx, spool)| {
@@ -435,10 +441,31 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                   let cb_col = on_update_spool.clone();
                   let sp_name = spool.clone();
                   let cb_name = on_update_spool.clone();
+                  let sp_brand = spool.clone();
+                  let cb_brand_upd = on_update_spool.clone();
+                  let noz_for_brand = active_noz.clone();
                   let sp_mat = spool.clone();
                   let cb_mat_upd = on_update_spool.clone();
                   let noz_for_mat = active_noz.clone();
-                  let mat_options = material_choices.clone();
+                  let cur_brand_norm = FilamentSpool::normalized_brand(&spool.brand).to_string();
+                  let mat_options: Vec<String> = {
+                    let mut opts = Vec::new();
+                    for f in &catalog.filaments {
+                      if f.brand.eq_ignore_ascii_case(&cur_brand_norm) {
+                        let base = f.base_material_code().to_string();
+                        if !opts.iter().any(|c: &String| c.eq_ignore_ascii_case(&base)) {
+                          opts.push(base);
+                        }
+                      }
+                    }
+                    if opts.is_empty() {
+                      opts = material_choices.clone();
+                    }
+                    if !opts.iter().any(|c: &String| c.eq_ignore_ascii_case(&spool.material_type)) {
+                      opts.insert(0, spool.material_type.clone());
+                    }
+                    opts
+                  };
                   let sp_fin = spool.clone();
                   let cb_fin = on_update_spool.clone();
                   let noz_for_fin = active_noz.clone();
@@ -515,6 +542,30 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                           })}
                         />
 
+                        // Brand Selector
+                        <select
+                          title="Filament Brand / Vendor (loads checked-in .3mf or Preset Manager profile)"
+                          onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
+                          class="bg-secondary/15 border border-secondary/40 rounded px-2 py-1 text-xs font-bold text-secondary cursor-pointer shrink-0"
+                          value={cur_brand_norm.clone()}
+                          onchange={Callback::from(move |e: Event| {
+                            e.stop_propagation();
+                            if let Some(new_brand) = extract_event_value(&e) {
+                              let mut updated = sp_brand.clone();
+                              updated.apply_brand_change(&new_brand, &noz_for_brand);
+                              cb_brand_upd.emit(updated);
+                            }
+                          })}
+                        >
+                          {for FILAMENT_BRAND_OPTIONS.iter().filter(|&&b| b != "All").map(|b_opt| {
+                            html! {
+                              <option value={*b_opt} selected={cur_brand_norm.eq_ignore_ascii_case(b_opt)}>
+                                {*b_opt}
+                              </option>
+                            }
+                          })}
+                        </select>
+
                         // Material Type Selector
                         <select
                           onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
@@ -561,6 +612,38 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                             }
                           })}
                         </select>
+
+                        // Inline Shore Hardness Selector for Active-Foaming TPU
+                        {if spool.is_foaming_tpu() {
+                          let sp_sh = spool.clone();
+                          let cb_sh = on_update_spool.clone();
+                          let noz_sh = active_noz.clone();
+                          let cur_sh = spool.effective_foaming_shore_a();
+                          html! {
+                            <select
+                              title="Active-Foaming TPU Target Shore A Hardness (controls Nozzle Temp, Flow Ratio & MVS)"
+                              class="bg-primary/15 border border-primary/60 rounded px-2 py-1 text-xs font-bold text-primary cursor-pointer"
+                              value={cur_sh.to_string()}
+                              onchange={Callback::from(move |e: Event| {
+                                if let Some(val_str) = extract_event_value(&e) {
+                                  if let Ok(sh) = val_str.parse::<u32>() {
+                                    let mut updated = sp_sh.clone();
+                                    updated.apply_foaming_shore_hardness(sh, &noz_sh);
+                                    cb_sh.emit(updated);
+                                  }
+                                }
+                              })}
+                            >
+                              <option value="92" selected={cur_sh >= 90}>{"🧽 92A Solid"}</option>
+                              <option value="85" selected={(81..90).contains(&cur_sh)}>{"🧽 85A Firm"}</option>
+                              <option value="75" selected={(71..81).contains(&cur_sh)}>{"🧽 75A Midsole"}</option>
+                              <option value="65" selected={(63..71).contains(&cur_sh)}>{"🧽 65A Soft"}</option>
+                              <option value="60" selected={cur_sh < 63}>{"🧽 60A Max Foam"}</option>
+                            </select>
+                          }
+                        } else {
+                          html! {}
+                        }}
 
                         <span class="text-xs text-tertiary bg-tertiary-container/20 px-2 py-0.5 rounded shrink-0">
                           {format!("{}°C / {}°C", spool.print_temp, spool.bed_temp)}
@@ -697,8 +780,39 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
             </div>
           </div>
 
+          // Brand Filter Pills (Siraya Tech .3mf, SUNLU, Polymaker, Anycubic, Bambu Lab, eSUN, Overture, Generic)
+          <div class="flex items-center gap-1 flex-wrap">
+            <span class="text-[10px] font-mono text-on-surface-variant uppercase mr-1">{"Brand:"}</span>
+            {for FILAMENT_BRAND_OPTIONS.iter().map(|b_name| {
+              let active = *filament_brand_filter == *b_name;
+              let b_str = b_name.to_string();
+              let fbf = filament_brand_filter.clone();
+              let count = if *b_name == "All" {
+                catalog.filaments.len()
+              } else {
+                catalog.filaments.iter().filter(|f| f.brand.eq_ignore_ascii_case(b_name)).count()
+              };
+              html! {
+                <button
+                  onclick={Callback::from(move |_| fbf.set(b_str.clone()))}
+                  class={format!(
+                    "px-2.5 py-0.5 rounded-full text-[11px] font-mono border transition-colors cursor-pointer {}",
+                    if active {
+                      "bg-secondary text-on-secondary border-secondary font-bold"
+                    } else {
+                      "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
+                    }
+                  )}
+                >
+                  {format!("{} ({})", b_name, count)}
+                </button>
+              }
+            })}
+          </div>
+
           // Category Pills
           <div class="flex items-center gap-1 flex-wrap">
+            <span class="text-[10px] font-mono text-on-surface-variant uppercase mr-1">{"Polymer:"}</span>
             {for categories.iter().map(|cat| {
               let active = *filament_category_filter == *cat;
               let cat_str = cat.to_string();
@@ -743,6 +857,21 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                 <div class="flex items-center justify-between bg-surface-container-lowest p-2.5 rounded-lg border border-outline-variant/60 hover:border-outline gap-2">
                   <div class="flex flex-col min-w-0">
                     <div class="flex items-center gap-1.5 flex-wrap">
+                      <span
+                        title={format!("Brand: {} • Source: {}", mat.brand, mat.source)}
+                        class={format!(
+                          "text-[10px] font-mono px-1.5 py-0.5 rounded font-bold {}",
+                          if mat.brand.eq_ignore_ascii_case("Siraya Tech") {
+                            "bg-primary/20 text-primary border border-primary/40"
+                          } else if mat.brand.eq_ignore_ascii_case("SUNLU") || mat.brand.eq_ignore_ascii_case("Polymaker") {
+                            "bg-secondary/20 text-secondary border border-secondary/40"
+                          } else {
+                            "bg-surface-container-highest text-on-surface-variant"
+                          }
+                        )}
+                      >
+                        {&mat.brand}
+                      </span>
                       <span class="text-xs font-bold text-on-surface font-mono">{mat.base_material_code()}</span>
                       <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-container-high text-on-surface-variant">
                         {&mat.default_finish}
@@ -921,11 +1050,11 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                   {format!("Slot #{} Material Type (Polymer Family)", (*selected_slot_idx) + 1)}
                 </span>
                 <span class="text-primary font-bold">
-                  {format!("{} • {}", spool.material_type, spool.finish_type)}
+                  {format!("{} • {} • {}", FilamentSpool::normalized_brand(&spool.brand), spool.material_type, spool.finish_type)}
                 </span>
               </div>
               <div class="flex flex-wrap items-center gap-1">
-                {for ["PLA", "PLA+", "PETG", "PCTG", "PLA-CF", "TPU", "ASA", "ABS"].into_iter().map(|quick_mat| {
+                {for ["PLA", "PLA+", "PETG", "PCTG", "PLA-CF", "TPU", "TPU Foaming", "ASA", "ABS"].into_iter().map(|quick_mat| {
                   let is_sel = spool.material_type.eq_ignore_ascii_case(quick_mat);
                   let updated = spool.clone();
                   let noz = active_noz.clone();
@@ -979,16 +1108,45 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
             </div>
 
             <div class="flex flex-col justify-between gap-1.5">
-              <div class="flex items-center justify-between">
+              <div class="flex items-center justify-between flex-wrap gap-1">
                 <span class="text-on-surface-variant text-[10px] uppercase font-bold">
-                  {"Spool Display Name & Brand"}
+                  {"Spool Display Name & Filament Brand"}
                 </span>
                 <span class="text-secondary text-[10px]">{format!("Inherits: {}", spool.inherits)}</span>
+              </div>
+              <div class="flex items-center gap-1 flex-wrap">
+                {for FILAMENT_BRAND_OPTIONS.iter().filter(|&&b| b != "All").map(|b_opt| {
+                  let cur_b = FilamentSpool::normalized_brand(&spool.brand);
+                  let is_sel = cur_b.eq_ignore_ascii_case(b_opt);
+                  let updated = spool.clone();
+                  let noz = active_noz.clone();
+                  let b_str = b_opt.to_string();
+                  let cb = on_update_spool.clone();
+                  html! {
+                    <button
+                      class={format!(
+                        "px-2 py-0.5 rounded text-[10px] border transition-colors cursor-pointer {}",
+                        if is_sel {
+                          "bg-secondary text-on-secondary border-secondary font-bold"
+                        } else {
+                          "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
+                        }
+                      )}
+                      onclick={Callback::from(move |_| {
+                        let mut u = updated.clone();
+                        u.apply_brand_change(&b_str, &noz);
+                        cb.emit(u);
+                      })}
+                    >
+                      {*b_opt}
+                    </button>
+                  }
+                })}
               </div>
               <input
                 type="text"
                 value={spool.name.clone()}
-                placeholder="e.g. OC - Anycubic PCTG Clear"
+                placeholder="e.g. OC - Siraya Tech TPU Air 85A"
                 class="w-full bg-surface-container-lowest border border-outline-variant rounded px-2.5 py-1.5 text-xs font-mono text-on-surface focus:border-primary outline-none"
                 oninput={{
                   let u = spool.clone();
@@ -1004,6 +1162,134 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
               />
             </div>
           </div>
+
+          // Active-Foaming TPU Shore Hardness & Temperature Tuner (55A–92A)
+          {if spool.is_foaming_tpu() {
+            let cur_shore = spool.effective_foaming_shore_a();
+            let is_siraya_air = spool.is_siraya_foaming_air();
+            let (brass_temp, flow_comp, mvs_cap, fan_pct) = if is_siraya_air {
+              crate::models::FilamentSpool::compute_siraya_foaming_tpu_curve(cur_shore)
+            } else {
+              crate::models::FilamentSpool::compute_foaming_tpu_curve(cur_shore)
+            };
+            let density_pct = (flow_comp * 100.0).round() as u32;
+            let shore_presets: [(u32, &str, &str); 5] = if is_siraya_air {
+              [
+                (85, "85A Base (.3mf)", "235°C • 0.85 Flow (Unfoamed Base)"),
+                (75, "75A 250°C (.3mf)", "250°C • 0.67 Flow (Siraya 250C .3mf)"),
+                (70, "70A 260°C (.3mf)", "260°C • 0.56 Flow (Siraya 260C .3mf)"),
+                (65, "65A 270°C (.3mf)", "270°C • 0.52 Flow (Siraya 270C .3mf)"),
+                (60, "60A Max Air", "270°C • 0.50 Flow (Ultra-Soft)"),
+              ]
+            } else {
+              [
+                (92, "92A Solid", "195°C • 0.98 Flow (Unfoamed)"),
+                (85, "85A Firm Flex", "210°C • 0.85 Flow (Grips)"),
+                (75, "75A Midsole", "220°C • 0.75 Flow (Tires/Seals)"),
+                (65, "65A Soft Cushion", "235°C • 0.65 Flow (Dampers)"),
+                (60, "60A Max Foam", "245°C • 0.60 Flow (Sponge)"),
+              ]
+            };
+
+            html! {
+              <div class="flex flex-col gap-space-sm bg-surface-container p-space-md rounded-xl border border-primary/50 font-mono text-xs">
+                <div class="flex items-center justify-between flex-wrap gap-2">
+                  <div class="flex items-center gap-2">
+                    <span class="text-base">{"🧽"}</span>
+                    <div class="flex flex-col">
+                      <span class="text-primary font-bold uppercase text-[11px]">
+                        {"Active-Foaming TPU Shore Hardness ↔ Temperature ↔ Expansion Curve (55A–92A)"}
+                      </span>
+                      <span class="text-[10px] text-on-surface-variant">
+                        {"Increasing nozzle temp activates micro-cellular blowing agents, expanding volume up to 1.6× and lowering Shore hardness (92A → 60A)."}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 flex-wrap text-[11px]">
+                    <span class="bg-primary/20 text-primary px-2 py-0.5 rounded font-bold">
+                      {format!("Target: {}A", cur_shore)}
+                    </span>
+                    <span class="bg-tertiary/20 text-tertiary px-2 py-0.5 rounded font-bold">
+                      {format!("Nozzle: {}°C (Brass {}°C)", spool.print_temp, brass_temp)}
+                    </span>
+                    <span class="bg-secondary/20 text-secondary px-2 py-0.5 rounded font-bold">
+                      {format!("Flow: {:.2} (~{}% Density)", flow_comp, density_pct)}
+                    </span>
+                    <span class="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded">
+                      {format!("MVS: {:.1} mm³/s • Fan: {}%", mvs_cap, fan_pct)}
+                    </span>
+                  </div>
+                </div>
+
+                // 5 Shore Hardness Presets
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-1.5">
+                  {for shore_presets.iter().map(|(sh_val, sh_title, sh_sub)| {
+                    let is_sel = cur_shore.abs_diff(*sh_val) <= 2;
+                    let sp_p = spool.clone();
+                    let noz_p = active_noz.clone();
+                    let cb_p = on_update_spool.clone();
+                    let target_sh = *sh_val;
+                    html! {
+                      <button
+                        class={format!(
+                          "flex flex-col items-start px-2.5 py-1.5 rounded-lg border text-left transition-all cursor-pointer {}",
+                          if is_sel {
+                            "bg-primary text-on-primary border-primary font-bold shadow"
+                          } else {
+                            "bg-surface-container-lowest text-on-surface border-outline-variant hover:border-primary/60"
+                          }
+                        )}
+                        onclick={Callback::from(move |_| {
+                          let mut updated = sp_p.clone();
+                          updated.apply_foaming_shore_hardness(target_sh, &noz_p);
+                          cb_p.emit(updated);
+                        })}
+                      >
+                        <span class="text-xs font-bold">{*sh_title}</span>
+                        <span class={if is_sel { "text-[9px] text-on-primary/90" } else { "text-[9px] text-on-surface-variant" }}>
+                          {*sh_sub}
+                        </span>
+                      </button>
+                    }
+                  })}
+                </div>
+
+                // Continuous Shore A Dial (55A - 92A)
+                <div class="flex items-center gap-3 bg-surface-container-lowest px-3 py-2 rounded-lg border border-outline-variant/60">
+                  <span class="text-[10px] text-on-surface-variant uppercase shrink-0">
+                    {"Fine Shore A Dial (55A Softest ➔ 92A Solid):"}
+                  </span>
+                  <input
+                    type="range"
+                    min="55"
+                    max="92"
+                    step="1"
+                    value={cur_shore.to_string()}
+                    class="flex-1 accent-primary cursor-pointer"
+                    oninput={{
+                      let sp_d = spool.clone();
+                      let noz_d = active_noz.clone();
+                      let cb_d = on_update_spool.clone();
+                      Callback::from(move |e: InputEvent| {
+                        if let Some(inp) = e.target_dyn_into::<HtmlInputElement>() {
+                          if let Ok(sh) = inp.value().parse::<u32>() {
+                            let mut updated = sp_d.clone();
+                            updated.apply_foaming_shore_hardness(sh, &noz_d);
+                            cb_d.emit(updated);
+                          }
+                        }
+                      })
+                    }}
+                  />
+                  <span class="text-xs font-bold text-primary w-14 text-right">
+                    {format!("{}A", cur_shore)}
+                  </span>
+                </div>
+              </div>
+            }
+          } else {
+            html! {}
+          }}
 
           // Filament Color Picker (Shortlist, HEX, RGB & HSL)
           <div class="flex items-center justify-between flex-wrap gap-2 bg-surface-container p-space-md rounded-lg">

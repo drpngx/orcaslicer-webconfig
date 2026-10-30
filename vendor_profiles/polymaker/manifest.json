@@ -1,0 +1,499 @@
+[
+  {
+    "product": "Fiberon ASA-CF08",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon ASA-CF08/BBL/H2C/BambuStudio/Fiberon ASA-CF08 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_ASA-CF08.json"
+  },
+  {
+    "product": "Fiberon PA12-CF10",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PA12-CF10/BBL/H2C/BambuStudio/Fiberon PA12-CF10 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PA12-CF10.json"
+  },
+  {
+    "product": "Fiberon PA6-CF20",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Fiberon PA6-CF20/Anycubic/Kobra S1/OrcaSlicer/Fiberon PA6-CF20 @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PA6-CF20.json"
+  },
+  {
+    "product": "Fiberon PA6-GF25",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PA6-GF25/BBL/H2C/BambuStudio/Fiberon PA6-GF25 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PA6-GF25.json"
+  },
+  {
+    "product": "Fiberon PA612-CF15",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PA612-CF15/BBL/H2C/BambuStudio/Fiberon PA612-CF15 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PA612-CF15.json"
+  },
+  {
+    "product": "Fiberon PA612-ESD",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PA612-ESD/BBL/H2C/BambuStudio/Fiberon PA612-ESD @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PA612-ESD.json"
+  },
+  {
+    "product": "Fiberon PET-CF17",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PET-CF17/BBL/H2C/BambuStudio/Fiberon PET-CF17 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PET-CF17.json"
+  },
+  {
+    "product": "Fiberon PET-GF15",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PET-GF15/BBL/H2C/BambuStudio/Fiberon PET-GF15 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PET-GF15.json"
+  },
+  {
+    "product": "Fiberon PETG-ESD",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PETG-ESD/BBL/A2L/BambuStudio/Fiberon PETG-ESD @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PETG-ESD.json"
+  },
+  {
+    "product": "Fiberon PETG-rCF08",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PETG-rCF08/BBL/A2L/BambuStudio/Fiberon PETG-rCF08 @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PETG-rCF08.json"
+  },
+  {
+    "product": "Fiberon PPS-CF10",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PPS-CF10/BBL/H2C/BambuStudio/Fiberon PPS-CF10 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PPS-CF10.json"
+  },
+  {
+    "product": "Fiberon PPS-GF20",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Fiberon PPS-GF20/BBL/H2C/BambuStudio/Fiberon PPS-GF20 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Fiberon_PPS-GF20.json"
+  },
+  {
+    "product": "Panchroma CoPE",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma CoPE/BBL/A1/BambuStudio/Panchroma CoPE @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_CoPE.json"
+  },
+  {
+    "product": "Panchroma PLA",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Panchroma PLA/Anycubic/Kobra S1/OrcaSlicer/Panchroma PLA @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA.json"
+  },
+  {
+    "product": "Panchroma PLA Celestial",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Celestial/BBL/A1/BambuStudio/Panchroma PLA Celestial @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Celestial.json"
+  },
+  {
+    "product": "Panchroma PLA Galaxy",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Galaxy/BBL/A1/BambuStudio/Panchroma PLA Galaxy @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Galaxy.json"
+  },
+  {
+    "product": "Panchroma PLA Glow",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Glow/BBL/A1/BambuStudio/Panchroma PLA Glow @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Glow.json"
+  },
+  {
+    "product": "Panchroma PLA Luminous",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Luminous/BBL/A1/BambuStudio/Panchroma PLA Luminous @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Luminous.json"
+  },
+  {
+    "product": "Panchroma PLA Marble",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Marble/BBL/A1/BambuStudio/Panchroma PLA Marble @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Marble.json"
+  },
+  {
+    "product": "Panchroma PLA Matte",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Matte/BBL/A1/BambuStudio/Panchroma PLA Matte @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Matte.json"
+  },
+  {
+    "product": "Panchroma PLA Metallic",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Metallic/BBL/A1/BambuStudio/Panchroma PLA Metallic @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Metallic.json"
+  },
+  {
+    "product": "Panchroma PLA Neon",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Neon/BBL/A1/BambuStudio/Panchroma PLA Neon @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Neon.json"
+  },
+  {
+    "product": "Panchroma PLA Satin",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Satin/BBL/A1/BambuStudio/Panchroma PLA Satin @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Satin.json"
+  },
+  {
+    "product": "Panchroma PLA Silk",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Silk/BBL/A1/BambuStudio/Panchroma PLA Silk @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Silk.json"
+  },
+  {
+    "product": "Panchroma PLA Starlight",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA Starlight/BBL/A1/BambuStudio/Panchroma PLA Starlight @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Starlight.json"
+  },
+  {
+    "product": "Panchroma PLA Translucent",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Panchroma PLA Translucent/Anycubic/Kobra S1/OrcaSlicer/Panchroma PLA Translucent @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_Translucent.json"
+  },
+  {
+    "product": "Panchroma PLA UV Shift",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Panchroma PLA UV Shift/BBL/A1/BambuStudio/Panchroma PLA UV Shift @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Panchroma_PLA_UV_Shift.json"
+  },
+  {
+    "product": "PolyCast",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyCast/BBL/A2L/BambuStudio/PolyCast @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyCast.json"
+  },
+  {
+    "product": "PolyFlex TPU95",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyFlex TPU95/BBL/A2L/BambuStudio/PolyFlex TPU95 @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyFlex_TPU95.json"
+  },
+  {
+    "product": "PolyFlex TPU95-HF",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyFlex TPU95-HF/BBL/A2L/BambuStudio/PolyFlex TPU95-HF @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyFlex_TPU95-HF.json"
+  },
+  {
+    "product": "PolyLite ABS",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite ABS/BBL/A1/BambuStudio/PolyLite ABS @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_ABS.json"
+  },
+  {
+    "product": "PolyLite CosPLA",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite CosPLA/BBL/A1/BambuStudio/PolyLite CosPLA @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_CosPLA.json"
+  },
+  {
+    "product": "PolyLite LW-PLA",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite LW-PLA/BBL/A2L/BambuStudio/PolyLite LW-PLA @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_LW-PLA.json"
+  },
+  {
+    "product": "PolyLite PC",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PC/BBL/H2C/BambuStudio/PolyLite PC @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PC.json"
+  },
+  {
+    "product": "PolyLite PETG",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PETG/BBL/A2L/BambuStudio/PolyLite PETG @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PETG.json"
+  },
+  {
+    "product": "PolyLite PETG Translucent",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PETG Translucent/BBL/A2L/BambuStudio/PolyLite PETG Translucent @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PETG_Translucent.json"
+  },
+  {
+    "product": "PolyLite PLA",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA/BBL/A1/BambuStudio/PolyLite PLA @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA.json"
+  },
+  {
+    "product": "PolyLite PLA Galaxy",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Galaxy/BBL/A1/BambuStudio/PolyLite PLA Galaxy @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Galaxy.json"
+  },
+  {
+    "product": "PolyLite PLA Glow",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Glow/BBL/A1/BambuStudio/PolyLite PLA Glow @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Glow.json"
+  },
+  {
+    "product": "PolyLite PLA Luminous",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Luminous/BBL/A1/BambuStudio/PolyLite PLA Luminous @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Luminous.json"
+  },
+  {
+    "product": "PolyLite PLA Neon",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Neon/BBL/A1/BambuStudio/PolyLite PLA Neon @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Neon.json"
+  },
+  {
+    "product": "PolyLite PLA Pro",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Pro/BBL/A2L/BambuStudio/PolyLite PLA Pro @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Pro.json"
+  },
+  {
+    "product": "PolyLite PLA Pro Metallic",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Pro Metallic/BBL/A2L/BambuStudio/PolyLite PLA Pro Metallic @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Pro_Metallic.json"
+  },
+  {
+    "product": "PolyLite PLA Starlight",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Starlight/BBL/A1/BambuStudio/PolyLite PLA Starlight @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Starlight.json"
+  },
+  {
+    "product": "PolyLite PLA Translucent",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA Translucent/BBL/A1/BambuStudio/PolyLite PLA Translucent @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA_Translucent.json"
+  },
+  {
+    "product": "PolyLite PLA-CF",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyLite PLA-CF/BBL/A2L/BambuStudio/PolyLite PLA-CF @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyLite_PLA-CF.json"
+  },
+  {
+    "product": "PolyMax PC",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyMax PC/BBL/H2C/BambuStudio/PolyMax PC @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyMax_PC.json"
+  },
+  {
+    "product": "PolyMax PETG",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyMax PETG/BBL/A2L/BambuStudio/PolyMax PETG @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyMax_PETG.json"
+  },
+  {
+    "product": "PolyMax PLA",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyMax PLA/BBL/A1/BambuStudio/PolyMax PLA @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyMax_PLA.json"
+  },
+  {
+    "product": "PolySmooth",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolySmooth/BBL/A2L/BambuStudio/PolySmooth @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolySmooth.json"
+  },
+  {
+    "product": "PolySupport",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolySupport/BBL/A2L/BambuStudio/PolySupport @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolySupport.json"
+  },
+  {
+    "product": "PolySupport for PA12",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolySupport for PA12/BBL/H2C/BambuStudio/PolySupport for PA12 @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolySupport_for_PA12.json"
+  },
+  {
+    "product": "PolyTerra PLA",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyTerra PLA/BBL/A1/BambuStudio/PolyTerra PLA @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyTerra_PLA.json"
+  },
+  {
+    "product": "PolyTerra PLA Marble",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyTerra PLA Marble/BBL/A1/BambuStudio/PolyTerra PLA Marble @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyTerra_PLA_Marble.json"
+  },
+  {
+    "product": "PolyTerra PLA+",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/PolyTerra PLA+/BBL/A1/BambuStudio/PolyTerra PLA+ @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_PolyTerra_PLA_.json"
+  },
+  {
+    "product": "Polylite ASA for TYC Americas",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polylite ASA for TYC Americas/BBL/H2C/BambuStudio/Polylite ASA for TYC Americas @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polylite_ASA_for_TYC_Americas.json"
+  },
+  {
+    "product": "Polymaker ABS Max",
+    "printer": "BBL H2C",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker ABS Max/BBL/H2C/BambuStudio/Polymaker ABS Max @BBL H2C.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_ABS_Max.json"
+  },
+  {
+    "product": "Polymaker ABS Pro",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Polymaker ABS Pro/Anycubic/Kobra S1/OrcaSlicer/Polymaker ABS Pro @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_ABS_Pro.json"
+  },
+  {
+    "product": "Polymaker ABS Pro Galaxy",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Polymaker ABS Pro Galaxy/Anycubic/Kobra S1/OrcaSlicer/Polymaker ABS Pro Galaxy @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_ABS_Pro_Galaxy.json"
+  },
+  {
+    "product": "Polymaker ASA",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker ASA/BBL/A1/BambuStudio/Polymaker ASA @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_ASA.json"
+  },
+  {
+    "product": "Polymaker G-Flex PETG",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker G-Flex PETG/BBL/A2L/BambuStudio/Polymaker G-Flex PETG @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_G-Flex_PETG.json"
+  },
+  {
+    "product": "Polymaker HT-PLA",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker HT-PLA/BBL/A2L/BambuStudio/Polymaker HT-PLA @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_HT-PLA.json"
+  },
+  {
+    "product": "Polymaker HT-PLA Pro",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Polymaker HT-PLA Pro/Anycubic/Kobra S1/OrcaSlicer/Polymaker HT-PLA Pro @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_HT-PLA_Pro.json"
+  },
+  {
+    "product": "Polymaker HT-PLA-GF",
+    "printer": "BBL A2L",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker HT-PLA-GF/BBL/A2L/BambuStudio/Polymaker HT-PLA-GF @BBL A2L.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_HT-PLA-GF.json"
+  },
+  {
+    "product": "Polymaker PETG",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker PETG/BBL/A1/BambuStudio/Polymaker PETG @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_PETG.json"
+  },
+  {
+    "product": "Polymaker PETG Galaxy",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker PETG Galaxy/BBL/A1/BambuStudio/Polymaker PETG Galaxy @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_PETG_Galaxy.json"
+  },
+  {
+    "product": "Polymaker PETG Translucent",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker PETG Translucent/BBL/A1/BambuStudio/Polymaker PETG Translucent @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_PETG_Translucent.json"
+  },
+  {
+    "product": "Polymaker PLA",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker PLA/BBL/A1/BambuStudio/Polymaker PLA @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_PLA.json"
+  },
+  {
+    "product": "Polymaker PLA Pro",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Polymaker PLA Pro/Anycubic/Kobra S1/OrcaSlicer/Polymaker PLA Pro @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_PLA_Pro.json"
+  },
+  {
+    "product": "Polymaker PLA Pro Metallic",
+    "printer": "Anycubic Kobra S1",
+    "slicer": "OrcaSlicer",
+    "source_path": "preset/Polymaker PLA Pro Metallic/Anycubic/Kobra S1/OrcaSlicer/Polymaker PLA Pro Metallic @Anycubic Kobra S1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_PLA_Pro_Metallic.json"
+  },
+  {
+    "product": "Polymaker TPU95 Matte",
+    "printer": "BBL A1",
+    "slicer": "BambuStudio",
+    "source_path": "preset/Polymaker TPU95 Matte/BBL/A1/BambuStudio/Polymaker TPU95 Matte @BBL A1.json",
+    "json_file": "vendor_profiles/polymaker/Polymaker_Polymaker_TPU95_Matte.json"
+  }
+]
