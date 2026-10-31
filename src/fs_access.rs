@@ -45,6 +45,76 @@ pub struct LocalFsSaveResponse {
   pub message: String,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SpoolmanSyncRequest {
+  pub spoolman_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SpoolmanSyncResponse {
+  pub ok: bool,
+  pub raw_spools_json: String,
+  pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SpoolmanPushRequest {
+  pub spoolman_url: String,
+  pub spool_id: u32,
+  pub filament_id: u32,
+  pub extruder_temp_c: i32,
+  pub bed_temp_c: i32,
+  pub flow_ratio: f32,
+  pub pressure_advance: f32,
+  pub max_volumetric_speed: f32,
+  pub remaining_weight_g: i32,
+  pub location: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SpoolmanPushResponse {
+  pub ok: bool,
+  pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MoonrakerSetActiveSpoolRequest {
+  pub moonraker_url: String,
+  pub spool_id: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MoonrakerSetActiveSpoolResponse {
+  pub ok: bool,
+  pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnycubicAutoDiscoverRequest {
+  pub lan_printer_url: String,
+  pub cloud_token: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnycubicAutoDiscoverResponse {
+  pub ok: bool,
+  pub message: String,
+  pub sniffed_state: crate::models::AnycubicSniffedPrinterState,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnycubicPushSlotsRequest {
+  pub lan_printer_url: String,
+  pub slot_profile_names: Vec<String>,
+  pub slot_colors_hex: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnycubicPushSlotsResponse {
+  pub ok: bool,
+  pub message: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DetectedClientOs {
   Windows,

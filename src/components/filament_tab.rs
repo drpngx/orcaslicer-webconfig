@@ -1,11 +1,17 @@
 use crate::catalog::{load_merged_catalog, CatalogFilament, FILAMENT_BRAND_OPTIONS};
 use crate::components::color_picker::{ColorPicker, ColorSelection};
 use crate::components::wizard_tab::render_issue_illustration;
-use crate::models::FilamentSpool;
+use crate::fs_access::{
+  AnycubicAutoDiscoverRequest, AnycubicAutoDiscoverResponse, AnycubicPushSlotsRequest,
+  AnycubicPushSlotsResponse,
+};
+use crate::models::{AnycubicSniffedPrinterState, FilamentSpool, SpoolmanSpool};
 use crate::transformations::{
   ParameterizedCalibrationTemplate, TransformationEngine, TransformationRule,
 };
 use std::collections::HashMap;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -43,6 +49,21 @@ pub struct FilamentTabProps {
   pub on_export_spool_json: Callback<FilamentSpool>,
   pub on_export_3mf: Callback<()>,
   pub on_open_bind_modal: Callback<()>,
+  pub spoolman_url: String,
+  pub spoolman_inventory: Vec<SpoolmanSpool>,
+  pub moonraker_enabled: bool,
+  pub moonraker_url: String,
+  pub active_moonraker_spool_id: Option<u32>,
+  pub on_change_spoolman_url: Callback<String>,
+  pub on_sync_spoolman_live: Callback<()>,
+  pub on_push_spool_to_spoolman: Callback<(usize, FilamentSpool)>,
+  pub on_import_spoolman_json_file: Callback<Event>,
+  pub on_export_spoolman_json_file: Callback<()>,
+  pub on_assign_spoolman_to_slot: Callback<(Option<usize>, SpoolmanSpool)>,
+  pub on_auto_map_spoolman_locations: Callback<()>,
+  pub on_toggle_moonraker: Callback<bool>,
+  pub on_change_moonraker_url: Callback<String>,
+  pub on_set_moonraker_active_spool: Callback<Option<u32>>,
 }
 
 #[function_component]
@@ -53,6 +74,41 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
   let filament_catalog_search = use_state(String::new);
   let filament_category_filter = use_state(|| "All".to_string());
   let filament_brand_filter = use_state(|| "All".to_string());
+  let spoolman_search = use_state(String::new);
+  let show_spoolman_drawer = use_state(|| true);
+  let show_anycubic_drawer = use_state(|| true);
+  let anycubic_sniffed = use_state(|| None::<AnycubicSniffedPrinterState>);
+  let anycubic_status_msg = use_state(String::new);
+  let anycubic_lan_url = use_state(|| props.moonraker_url.clone());
+  let anycubic_cloud_token = use_state(String::new);
+
+  {
+    let anycubic_sniffed = anycubic_sniffed.clone();
+    let anycubic_status_msg = anycubic_status_msg.clone();
+    let is_tauri = props.is_tauri;
+    let lan_url = (*anycubic_lan_url).clone();
+    use_effect_with(is_tauri, move |&tauri| {
+      if tauri {
+        wasm_bindgen_futures::spawn_local(async move {
+          let req_body = AnycubicAutoDiscoverRequest {
+            lan_printer_url: lan_url,
+            cloud_token: String::new(),
+          };
+          if let Ok(req) = gloo_net::http::Request::post("/api/anycubic/auto-discover").json(&req_body) {
+            if let Ok(resp) = req.send().await {
+              if let Ok(parsed) = resp.json::<AnycubicAutoDiscoverResponse>().await {
+                if parsed.ok {
+                  anycubic_sniffed.set(Some(parsed.sniffed_state));
+                  anycubic_status_msg.set(parsed.message);
+                }
+              }
+            }
+          }
+        });
+      }
+      || ()
+    });
+  }
   // "diff" = Before (Disk) -> After (Lua), "lua" = Lua Output Only, "disk" = Imported Disk Only
   let matrix_view_mode = use_state(|| "diff".to_string());
   let qa_templates = use_memo((), |_| {
@@ -204,6 +260,29 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
       0
     };
 
+  let sm_q = spoolman_search.trim().to_lowercase();
+  let filtered_spoolman_inventory: Vec<SpoolmanSpool> = props
+    .spoolman_inventory
+    .iter()
+    .filter(|s| {
+      if sm_q.is_empty() {
+        return true;
+      }
+      format!("#{}", s.spool_id).contains(&sm_q)
+        || s.vendor_name.to_lowercase().contains(&sm_q)
+        || s.filament_name.to_lowercase().contains(&sm_q)
+        || s.material.to_lowercase().contains(&sm_q)
+        || s.location.to_lowercase().contains(&sm_q)
+        || s.lot_nr.to_lowercase().contains(&sm_q)
+    })
+    .cloned()
+    .collect();
+  let mapped_location_count = props
+    .spoolman_inventory
+    .iter()
+    .filter(|s| s.inferred_slot_index(ams_capacity).is_some())
+    .count();
+
   html! {
     <div class="flex flex-col w-full gap-space-lg">
       // Physical AMS / ACE Pro / Double ACE Pro 2 Bank Header
@@ -349,6 +428,659 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
             {format!("Export {}-Slot .3mf Container", slot_count)}
           </button>
         </div>
+      </div>
+
+      // Spoolman Filament Inventory & Optional Moonraker Active-Spool Integration Card
+      <div class="flex flex-col gap-space-md bg-surface-container-low p-space-lg rounded-xl shadow-md border border-outline-variant">
+        <div class="flex items-center justify-between flex-wrap gap-space-sm">
+          <div
+            class="flex items-center gap-space-sm cursor-pointer"
+            onclick={
+              let ssd = show_spoolman_drawer.clone();
+              Callback::from(move |_| ssd.set(!*ssd))
+            }
+          >
+            <span class="material-symbols-outlined text-primary">{"inventory_2"}</span>
+            <div class="flex flex-col">
+              <div class="flex items-center gap-2 flex-wrap">
+                <h3 class="font-headline-sm text-headline-sm text-on-surface font-semibold">
+                  {"🗄️ Spoolman Filament Inventory & Optional Moonraker Active-Spool Sync"}
+                </h3>
+                if props.is_tauri {
+                  <span class="bg-primary/20 text-primary border border-primary/40 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
+                    {"Tauri Desktop Live LAN Mode"}
+                  </span>
+                } else {
+                  <span class="bg-tertiary/20 text-tertiary border border-tertiary/40 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
+                    {"100% Static Web Mode (Zero Network Calls • File Import/Export)"}
+                  </span>
+                }
+                <span class="bg-surface-container-highest text-on-surface-variant px-2 py-0.5 rounded text-[10px] font-mono">
+                  {format!("{} spool(s) in Spoolman inventory", props.spoolman_inventory.len())}
+                </span>
+              </div>
+              <span class="text-xs text-on-surface-variant">
+                {if props.is_tauri {
+                  "Connect directly to your LAN Spoolman server to pull spools into ACE Pro / AMS slots, push calibrated Flow / PA / MVS back to Spoolman extra fields, and optionally set active spools in Moonraker."
+                } else {
+                  "Static Website Mode makes zero network requests. Import a Spoolman `/api/v1/spool` JSON export file to assign spools into ACE Pro / AMS slots, or export a Spoolman JSON snapshot."
+                }}
+              </span>
+            </div>
+            <span class="material-symbols-outlined text-on-surface-variant text-[18px]">
+              {if *show_spoolman_drawer { "expand_less" } else { "expand_more" }}
+            </span>
+          </div>
+
+          <div class="flex items-center gap-space-xs flex-wrap font-mono text-xs">
+            if mapped_location_count > 0 {
+              <button
+                class="bg-tertiary/20 hover:bg-tertiary/30 text-tertiary border border-tertiary/50 px-2.5 py-1 rounded font-bold transition-colors cursor-pointer flex items-center gap-1"
+                onclick={
+                  let cb = props.on_auto_map_spoolman_locations.clone();
+                  Callback::from(move |_| cb.emit(()))
+                }
+                title="Automatically assign Spoolman spools whose `location` field is set to `ACE 1`..`ACE 8` or `Slot 1`..`Slot 8`"
+              >
+                <span>{"📍"}</span>
+                <span>{format!("Auto-Map {} Location Slot(s)", mapped_location_count)}</span>
+              </button>
+            }
+
+            <label
+              class="bg-surface-container-highest hover:bg-surface-bright text-on-surface border border-outline-variant px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer flex items-center gap-1"
+              title="Import a Spoolman `/api/v1/spool` JSON file or exported Spoolman snapshot"
+            >
+              <span>{"📂 Import Spoolman JSON"}</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                class="hidden"
+                onchange={props.on_import_spoolman_json_file.clone()}
+              />
+            </label>
+
+            <button
+              class="bg-surface-container-highest hover:bg-surface-bright text-secondary border border-secondary/40 px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer flex items-center gap-1"
+              onclick={
+                let cb = props.on_export_spoolman_json_file.clone();
+                Callback::from(move |_| cb.emit(()))
+              }
+              title="Export active slots and inventory as a Spoolman `/api/v1/spool`-compatible JSON file"
+            >
+              <span>{"💾 Export Spoolman JSON"}</span>
+            </button>
+          </div>
+        </div>
+
+        if *show_spoolman_drawer {
+          <div class="flex flex-col gap-space-sm pt-1 border-t border-outline-variant/50">
+            if props.is_tauri {
+              // Tauri Rich Client Live Spoolman & Optional Moonraker Controls
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-space-sm">
+                <div class="bg-surface-container-lowest p-space-sm rounded-lg border border-primary/40 flex flex-col gap-1.5">
+                  <div class="flex items-center justify-between">
+                    <span class="text-[11px] font-mono font-bold text-primary uppercase">
+                      {"1. Spoolman Server Connection (REST API `/api/v1/spool`)"}
+                    </span>
+                    <span class="text-[10px] font-mono text-on-surface-variant">
+                      {"Reads & writes extra: flow_ratio, pressure_advance, max_volumetric_speed"}
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <input
+                      type="text"
+                      placeholder="http://127.0.0.1:7912"
+                      value={props.spoolman_url.clone()}
+                      class="bg-surface-container px-2.5 py-1 rounded border border-outline-variant text-xs font-mono text-on-surface flex-1 min-w-[200px]"
+                      oninput={
+                        let cb = props.on_change_spoolman_url.clone();
+                        Callback::from(move |e: InputEvent| {
+                          if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
+                            cb.emit(input.value());
+                          }
+                        })
+                      }
+                    />
+                    <button
+                      class="bg-primary hover:bg-primary-fixed-dim text-on-primary px-3 py-1 rounded text-xs font-mono font-bold transition-colors cursor-pointer flex items-center gap-1"
+                      onclick={
+                        let cb = props.on_sync_spoolman_live.clone();
+                        Callback::from(move |_| cb.emit(()))
+                      }
+                    >
+                      <span>{"🔄 Fetch / Sync Spoolman"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="bg-surface-container-lowest p-space-sm rounded-lg border border-secondary/40 flex flex-col gap-1.5">
+                  <div class="flex items-center justify-between flex-wrap gap-2">
+                    <label class="flex items-center gap-2 cursor-pointer text-[11px] font-mono font-bold text-secondary uppercase">
+                      <input
+                        type="checkbox"
+                        checked={props.moonraker_enabled}
+                        onchange={
+                          let cb = props.on_toggle_moonraker.clone();
+                          let cur = props.moonraker_enabled;
+                          Callback::from(move |_| cb.emit(!cur))
+                        }
+                      />
+                      <span>{"2. Optional Moonraker Active-Spool Sync (`/server/spoolman/spool_id`)"}</span>
+                    </label>
+                    if let Some(active_sid) = props.active_moonraker_spool_id {
+                      <span class="bg-emerald-950/60 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
+                        {format!("📡 Moonraker Active Spool: #{}", active_sid)}
+                      </span>
+                    }
+                  </div>
+                  if props.moonraker_enabled {
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <input
+                        type="text"
+                        placeholder="http://192.168.1.100:7125"
+                        value={props.moonraker_url.clone()}
+                        class="bg-surface-container px-2.5 py-1 rounded border border-outline-variant text-xs font-mono text-on-surface flex-1 min-w-[200px]"
+                        oninput={
+                          let cb = props.on_change_moonraker_url.clone();
+                          Callback::from(move |e: InputEvent| {
+                            if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
+                              cb.emit(input.value());
+                            }
+                          })
+                        }
+                      />
+                      <button
+                        class="bg-surface-container-high hover:bg-surface-bright text-on-surface-variant border border-outline-variant px-2.5 py-1 rounded text-xs font-mono cursor-pointer"
+                        onclick={
+                          let cb = props.on_set_moonraker_active_spool.clone();
+                          Callback::from(move |_| cb.emit(None))
+                        }
+                        title="Clear active Spoolman spool in Moonraker"
+                      >
+                        {"Clear Active Spool"}
+                      </button>
+                    </div>
+                  } else {
+                    <span class="text-[11px] text-on-surface-variant font-mono">
+                      {"Disabled (Optional). Tick the box above if your printer runs Moonraker/Klipper and you want 1-click active spool reporting."}
+                    </span>
+                  }
+                </div>
+              </div>
+            }
+
+            // Spoolman Inventory Browser & Slot Assignment Grid
+            if !props.spoolman_inventory.is_empty() {
+              <div class="flex flex-col gap-space-xs bg-surface-container-lowest p-space-sm rounded-lg border border-outline-variant">
+                <div class="flex items-center justify-between flex-wrap gap-2">
+                  <span class="text-xs font-mono font-bold text-on-surface">
+                    {format!(
+                      "Spoolman Inventory Browser ({} of {} spools shown) — Assign any spool directly to an ACE Pro / AMS Slot:",
+                      filtered_spoolman_inventory.len(),
+                      props.spoolman_inventory.len()
+                    )}
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Filter Spoolman by #ID, vendor, material, location..."
+                    value={(*spoolman_search).clone()}
+                    class="bg-surface-container px-2.5 py-1 rounded border border-outline-variant text-xs font-mono text-on-surface w-64"
+                    oninput={
+                      let ss = spoolman_search.clone();
+                      Callback::from(move |e: InputEvent| {
+                        if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
+                          ss.set(input.value());
+                        }
+                      })
+                    }
+                  />
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-64 overflow-y-auto pr-1 pt-1">
+                  {for filtered_spoolman_inventory.into_iter().map(|sm_spool| {
+                    let sm_for_slot = sm_spool.clone();
+                    let sm_for_add = sm_spool.clone();
+                    let cb_assign = props.on_assign_spoolman_to_slot.clone();
+                    let cb_add = props.on_assign_spoolman_to_slot.clone();
+                    let cb_mr = props.on_set_moonraker_active_spool.clone();
+                    let sid = sm_spool.spool_id;
+                    let is_low = sm_spool.remaining_weight_g < 100;
+                    let is_mr_active = props.active_moonraker_spool_id == Some(sid);
+                    html! {
+                      <div class="bg-surface-container p-2.5 rounded-lg border border-outline-variant/80 flex flex-col justify-between gap-1.5 font-mono text-xs">
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="flex items-center gap-2 min-w-0">
+                            <span
+                              class="w-4 h-4 rounded border border-white/20 shrink-0"
+                              style={format!("background-color: {};", sm_spool.color_hex)}
+                            />
+                            <span class="bg-primary/20 text-primary px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0">
+                              {format!("#{}", sm_spool.spool_id)}
+                            </span>
+                            <span class="font-bold text-on-surface truncate" title={format!("{} {}", sm_spool.vendor_name, sm_spool.filament_name)}>
+                              {format!("{} {}", sm_spool.vendor_name, sm_spool.filament_name)}
+                            </span>
+                          </div>
+                          <span class={format!(
+                            "px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 {}",
+                            if is_low {
+                              "bg-error/20 text-error border border-error/40"
+                            } else {
+                              "bg-emerald-950/50 text-emerald-300 border border-emerald-500/40"
+                            }
+                          )}>
+                            {format!("{}g{}", sm_spool.remaining_weight_g, if is_low { " ⚠️" } else { "" })}
+                          </span>
+                        </div>
+
+                        <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-on-surface-variant">
+                          <span class="bg-surface-container-highest text-on-surface px-1.5 py-0.2 rounded font-bold">
+                            {&sm_spool.material}
+                          </span>
+                          if !sm_spool.location.is_empty() {
+                            <span class="bg-tertiary/15 text-tertiary px-1.5 py-0.2 rounded">
+                              {format!("📍 {}", sm_spool.location)}
+                            </span>
+                          }
+                          if let Some(fr) = sm_spool.extra_flow_ratio {
+                            <span class="bg-surface-container-lowest px-1.5 py-0.2 rounded">
+                              {format!("Flow {:.3}", fr)}
+                            </span>
+                          }
+                          if let Some(pa) = sm_spool.extra_pressure_advance {
+                            <span class="bg-surface-container-lowest px-1.5 py-0.2 rounded">
+                              {format!("PA {:.3}", pa)}
+                            </span>
+                          }
+                        </div>
+
+                        <div class="flex items-center justify-between gap-1.5 pt-1 border-t border-outline-variant/40">
+                          <select
+                            class="bg-surface-container-lowest border border-outline-variant rounded px-2 py-0.5 text-[11px] text-on-surface cursor-pointer flex-1"
+                            value=""
+                            onchange={Callback::from(move |e: Event| {
+                              if let Some(val) = extract_event_value(&e) {
+                                if let Ok(slot_idx) = val.parse::<usize>() {
+                                  cb_assign.emit((Some(slot_idx), sm_for_slot.clone()));
+                                }
+                              }
+                            })}
+                          >
+                            <option value="" selected=true disabled=true>{"Assign to Slot ▾"}</option>
+                            {for (0..slot_count.max(ams_capacity)).map(|s_idx| {
+                              html! {
+                                <option value={s_idx.to_string()}>
+                                  {format!("Slot #{} (ACE #{})", s_idx + 1, (s_idx / 4) + 1)}
+                                </option>
+                              }
+                            })}
+                          </select>
+
+                          <button
+                            class="bg-primary/20 hover:bg-primary/30 text-primary border border-primary/40 px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer shrink-0"
+                            onclick={Callback::from(move |_| cb_add.emit((None, sm_for_add.clone())))}
+                            title="Append this Spoolman spool to the loadout"
+                          >
+                            {"+ Add"}
+                          </button>
+
+                          if props.is_tauri && props.moonraker_enabled {
+                            <button
+                              class={format!(
+                                "px-2 py-0.5 rounded text-[10px] font-bold border cursor-pointer shrink-0 {}",
+                                if is_mr_active {
+                                  "bg-emerald-950/60 text-emerald-300 border-emerald-500/50"
+                                } else {
+                                  "bg-surface-container-highest text-secondary border-secondary/40 hover:bg-surface-bright"
+                                }
+                              )}
+                              onclick={Callback::from(move |_| cb_mr.emit(Some(sid)))}
+                              title="Report this Spoolman spool as the active spool in Moonraker (`/server/spoolman/spool_id`)"
+                            >
+                              {if is_mr_active { "📡 Active" } else { "📡 Moonraker" }}
+                            </button>
+                          }
+                        </div>
+                      </div>
+                    }
+                  })}
+                </div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+
+      // 🖨️ ANYCUBIC KOBRA S1 & ACE PRO 3-TIER AUTO-SNIFF INTERFACE
+      <div class="flex flex-col gap-space-sm bg-surface-container-low p-space-md rounded-xl border border-primary/30">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-xs font-bold text-primary uppercase tracking-wider font-mono">
+              {"🖨️ Anycubic Kobra S1 & ACE Pro Auto-Sniff Interface (3-Tier Waterfall)"}
+            </span>
+            <span class={format!(
+              "px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border {}",
+              if props.is_tauri {
+                "bg-emerald-950/50 text-emerald-300 border-emerald-500/40"
+              } else {
+                "bg-primary/15 text-primary border-primary/40"
+              }
+            )}>
+              {if props.is_tauri {
+                "🖥️ Tauri 3-Tier Auto-Sniff (Local .conf → Rinkhals LAN :7125 → Cloud)"
+              } else {
+                "🌐 Static Web Mode (Zero Network Calls • Client-Side .conf Sniffer)"
+              }}
+            </span>
+            if let Some(ref st) = *anycubic_sniffed {
+              if !st.device_id.is_empty() {
+                <span class="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded text-[10px] font-mono">
+                  {format!("Device ID: {}… • {} ACE Slot(s)", &st.device_id.chars().take(12).collect::<String>(), st.slots.len())}
+                </span>
+              }
+            }
+          </div>
+
+          <button
+            class="text-[11px] font-mono text-on-surface-variant hover:text-on-surface bg-surface-container-highest px-2.5 py-1 rounded border border-outline-variant cursor-pointer"
+            onclick={{
+              let show_anycubic_drawer = show_anycubic_drawer.clone();
+              Callback::from(move |_| show_anycubic_drawer.set(!*show_anycubic_drawer))
+            }}
+          >
+            {if *show_anycubic_drawer { "Hide Anycubic Sniffer ▲" } else { "Show Anycubic Sniffer ▼" }}
+          </button>
+        </div>
+
+        if *show_anycubic_drawer {
+          <div class="flex flex-col gap-space-sm pt-1 border-t border-outline-variant/60">
+            <div class="flex flex-wrap items-center justify-between gap-2 bg-surface-container p-2.5 rounded-lg border border-outline-variant">
+              if props.is_tauri {
+                <div class="flex flex-wrap items-center gap-2 flex-1">
+                  <button
+                    class="bg-primary text-on-primary px-3 py-1 rounded text-xs font-bold hover:opacity-90 transition-opacity cursor-pointer"
+                    onclick={{
+                      let anycubic_sniffed = anycubic_sniffed.clone();
+                      let anycubic_status_msg = anycubic_status_msg.clone();
+                      let lan_url = (*anycubic_lan_url).clone();
+                      let cloud_tok = (*anycubic_cloud_token).clone();
+                      Callback::from(move |_| {
+                        let anycubic_sniffed = anycubic_sniffed.clone();
+                        let anycubic_status_msg = anycubic_status_msg.clone();
+                        let req_body = AnycubicAutoDiscoverRequest {
+                          lan_printer_url: lan_url.clone(),
+                          cloud_token: cloud_tok.clone(),
+                        };
+                        wasm_bindgen_futures::spawn_local(async move {
+                          if let Ok(req) = gloo_net::http::Request::post("/api/anycubic/auto-discover").json(&req_body) {
+                            if let Ok(resp) = req.send().await {
+                              if let Ok(parsed) = resp.json::<AnycubicAutoDiscoverResponse>().await {
+                                anycubic_sniffed.set(Some(parsed.sniffed_state));
+                                anycubic_status_msg.set(parsed.message);
+                              }
+                            }
+                          }
+                        });
+                      })
+                    }}
+                  >
+                    {"🔍 Auto-Sniff Printer & ACE Pro (3-Tier)"}
+                  </button>
+
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-[11px] font-mono text-on-surface-variant">{"Tier 2 LAN (:7125):"}</span>
+                    <input
+                      type="text"
+                      class="bg-surface-container-lowest border border-outline-variant rounded px-2 py-1 text-xs font-mono text-on-surface w-44"
+                      placeholder="http://192.168.1.x:7125"
+                      value={(*anycubic_lan_url).clone()}
+                      onchange={{
+                        let anycubic_lan_url = anycubic_lan_url.clone();
+                        Callback::from(move |e: Event| {
+                          if let Some(v) = extract_event_value(&e) {
+                            anycubic_lan_url.set(v);
+                          }
+                        })
+                      }}
+                    />
+                  </div>
+
+                  <button
+                    class="bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border border-emerald-500/40 px-2.5 py-1 rounded text-xs font-bold cursor-pointer"
+                    onclick={{
+                      let anycubic_status_msg = anycubic_status_msg.clone();
+                      let anycubic_sniffed = anycubic_sniffed.clone();
+                      let lan_url = (*anycubic_lan_url).clone();
+                      let cloud_tok = (*anycubic_cloud_token).clone();
+                      let active_slots = props.filaments.clone();
+                      let noz = props.active_nozzle_type.clone();
+                      Callback::from(move |_| {
+                        let anycubic_status_msg = anycubic_status_msg.clone();
+                        let anycubic_sniffed = anycubic_sniffed.clone();
+                        let noz_label = match noz.as_str() {
+                          "diamondback" => "0.4 Diamondback",
+                          "cht" => "0.4 CHT",
+                          "cm2" => "0.4 CM2",
+                          "orca_brass" => "0.4 Brass",
+                          _ => "0.4 Hardened",
+                        };
+                        let slot_profile_names: Vec<String> = active_slots
+                          .iter()
+                          .take(8)
+                          .map(|s| format!("OC - {} • {}", s.name, noz_label))
+                          .collect();
+                        let slot_colors_hex: Vec<String> = active_slots
+                          .iter()
+                          .take(8)
+                          .map(|s| s.color_hex.clone())
+                          .collect();
+                        let req_body = AnycubicPushSlotsRequest {
+                          lan_printer_url: lan_url.clone(),
+                          slot_profile_names,
+                          slot_colors_hex,
+                        };
+                        let lan_for_refresh = lan_url.clone();
+                        let tok_for_refresh = cloud_tok.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                          if let Ok(req) = gloo_net::http::Request::post("/api/anycubic/push-slots").json(&req_body) {
+                            if let Ok(resp) = req.send().await {
+                              if let Ok(parsed) = resp.json::<AnycubicPushSlotsResponse>().await {
+                                anycubic_status_msg.set(parsed.message);
+                                let disc_req = AnycubicAutoDiscoverRequest {
+                                  lan_printer_url: lan_for_refresh,
+                                  cloud_token: tok_for_refresh,
+                                };
+                                if let Ok(r2) = gloo_net::http::Request::post("/api/anycubic/auto-discover").json(&disc_req) {
+                                  if let Ok(resp2) = r2.send().await {
+                                    if let Ok(p2) = resp2.json::<AnycubicAutoDiscoverResponse>().await {
+                                      anycubic_sniffed.set(Some(p2.sniffed_state));
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        });
+                      })
+                    }}
+                    title="Write your active WebConfig slot profiles and RGB colors directly into AnycubicSlicerNext.conf (`anycubic_presets`)"
+                  >
+                    {"⬆️ Push WebConfig Slots → AnycubicSlicerNext.conf"}
+                  </button>
+                </div>
+              } else {
+                <div class="flex flex-wrap items-center gap-2 flex-1">
+                  <label class="bg-primary text-on-primary px-3 py-1 rounded text-xs font-bold hover:opacity-90 transition-opacity cursor-pointer">
+                    {"📥 Sniff AnycubicSlicerNext.conf File"}
+                    <input
+                      type="file"
+                      accept=".conf,.json"
+                      class="hidden"
+                      onchange={{
+                        let anycubic_sniffed = anycubic_sniffed.clone();
+                        let anycubic_status_msg = anycubic_status_msg.clone();
+                        Callback::from(move |e: Event| {
+                          let Some(input) = e.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) else {
+                            return;
+                          };
+                          let Some(file) = input.files().and_then(|fl| fl.get(0)) else {
+                            return;
+                          };
+                          let Ok(reader) = web_sys::FileReader::new() else {
+                            return;
+                          };
+                          let reader_clone = reader.clone();
+                          let anycubic_sniffed = anycubic_sniffed.clone();
+                          let anycubic_status_msg = anycubic_status_msg.clone();
+                          let onload = Closure::wrap(Box::new(move |_ev: web_sys::ProgressEvent| {
+                            if let Ok(res) = reader_clone.result() {
+                              if let Some(txt) = res.as_string() {
+                                match AnycubicSniffedPrinterState::sniff_from_conf_str(&txt) {
+                                  Ok(st) => {
+                                    anycubic_status_msg.set(format!(
+                                      "Decoded AnycubicSlicerNext.conf in browser: device_id='{}', {} ACE Pro slot(s)!",
+                                      st.device_id,
+                                      st.slots.len()
+                                    ));
+                                    anycubic_sniffed.set(Some(st));
+                                  }
+                                  Err(err) => {
+                                    anycubic_status_msg.set(err);
+                                  }
+                                }
+                              }
+                            }
+                          }) as Box<dyn FnMut(_)>);
+                          reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+                          onload.forget();
+                          let _ = reader.read_as_text(&file);
+                          input.set_value("");
+                        })
+                      }}
+                    />
+                  </label>
+                  <span class="text-[11px] text-on-surface-variant">
+                    {"Decodes `current_device_id` (2-pass base64+shift cipher), `ams_filament_ids`, and `anycubic_presets` ACE Pro slots & RGB colors 100% locally in WebAssembly."}
+                  </span>
+                </div>
+              }
+            </div>
+
+            if !anycubic_status_msg.is_empty() {
+              <div class="bg-surface-container-highest/70 border border-outline-variant px-3 py-1.5 rounded text-[11px] font-mono text-on-surface">
+                {&*anycubic_status_msg}
+              </div>
+            }
+
+            if let Some(ref st) = *anycubic_sniffed {
+              <div class="flex flex-col gap-2 bg-surface-container p-3 rounded-lg border border-outline-variant">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+                    <span class="bg-primary/20 text-primary px-2 py-0.5 rounded font-bold">
+                      {&st.discovery_tier}
+                    </span>
+                    <span class="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded">
+                      {format!("Model: {}", st.printer_model)}
+                    </span>
+                    if !st.device_id.is_empty() {
+                      <span class="bg-surface-container-highest text-secondary px-2 py-0.5 rounded" title="Decoded from anycubic_remote_printing.current_device_id">
+                        {format!("Hardware ID: {}", st.device_id)}
+                      </span>
+                    }
+                    if !st.ams_filament_ids.is_empty() {
+                      <span class="bg-surface-container-highest text-tertiary px-2 py-0.5 rounded">
+                        {format!("AMS IDs: [{}]", st.ams_filament_ids)}
+                      </span>
+                    }
+                    <span class={format!(
+                      "px-2 py-0.5 rounded {}",
+                      if st.cloud_session_detected {
+                        "bg-emerald-950/60 text-emerald-300 border border-emerald-500/40"
+                      } else {
+                        "bg-surface-container-highest text-on-surface-variant"
+                      }
+                    )}>
+                      {if st.cloud_session_detected {
+                        format!(
+                          "☁️ Cloud Session Cached in .conf (MQTT 8883 {})",
+                          if st.mqtt_connected_in_logs { "Connected ✓" } else { "Ready" }
+                        )
+                      } else {
+                        "☁️ No Cloud Session in .conf".to_string()
+                      }}
+                    </span>
+                  </div>
+
+                  if !st.slots.is_empty() {
+                    <button
+                      class="bg-secondary/20 hover:bg-secondary/30 text-secondary border border-secondary/40 px-2.5 py-1 rounded text-xs font-bold cursor-pointer"
+                      onclick={{
+                        let sniffed_slots = st.slots.clone();
+                        let current_filaments = props.filaments.clone();
+                        let on_update_spool = props.on_update_spool.clone();
+                        let on_change_ace = props.on_change_ace_units.clone();
+                        let anycubic_status_msg = anycubic_status_msg.clone();
+                        Callback::from(move |_| {
+                          if sniffed_slots.len() > 4 {
+                            on_change_ace.emit(2);
+                          }
+                          let mut updated_count = 0usize;
+                          for sn_slot in &sniffed_slots {
+                            let idx = sn_slot.slot_index.saturating_sub(1);
+                            if let Some(existing) = current_filaments.get(idx) {
+                              let mut modified = existing.clone();
+                              modified.color_hex = sn_slot.color_hex.clone();
+                              on_update_spool.emit(modified);
+                              updated_count += 1;
+                            }
+                          }
+                          anycubic_status_msg.set(format!(
+                            "Applied RGB colors from {} sniffed Anycubic ACE Pro slot(s) to WebConfig!",
+                            updated_count
+                          ));
+                        })
+                      }}
+                    >
+                      {"⬇️ Apply Sniffed ACE Colors to WebConfig Slots"}
+                    </button>
+                  }
+                </div>
+
+                if !st.slots.is_empty() {
+                  <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 pt-1">
+                    {for st.slots.iter().map(|slot| {
+                      html! {
+                        <div class="flex flex-col gap-1 bg-surface-container-low p-2 rounded border border-outline-variant">
+                          <div class="flex items-center justify-between gap-1">
+                            <span class="text-[10px] font-mono font-bold text-on-surface-variant">
+                              {format!("ACE #{}", slot.slot_index)}
+                            </span>
+                            <span class="text-[9px] font-mono bg-primary/15 text-primary px-1.5 py-0.2 rounded font-bold">
+                              {&slot.material_type}
+                            </span>
+                          </div>
+                          <div class="flex items-center gap-1.5">
+                            <span
+                              class="w-3.5 h-3.5 rounded-full border border-white/30 shrink-0"
+                              style={format!("background-color: {};", slot.color_hex)}
+                            />
+                            <span class="text-[10px] font-mono text-on-surface truncate" title={slot.profile_name.clone()}>
+                              {&slot.profile_name}
+                            </span>
+                          </div>
+                          <span class="text-[9px] font-mono text-on-surface-variant">
+                            {format!("{} • {}", slot.color_hex, slot.status)}
+                          </span>
+                        </div>
+                      }
+                    })}
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
       </div>
 
       // UNIFIED SPOOL LOADOUT & POLYMER CATALOG (Consistent across Import and Start-From-Scratch!)
@@ -656,6 +1388,65 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                         <span class="text-xs text-tertiary bg-tertiary-container/20 px-2 py-0.5 rounded shrink-0">
                           {format!("{}°C / {}°C", spool.print_temp, spool.bed_temp)}
                         </span>
+
+                        {if let Some((sm_sid, _)) = spool.spoolman_ids() {
+                          let is_low = spool.remaining_grams < 100;
+                          let sp_push = spool.clone();
+                          let cb_push = props.on_push_spool_to_spoolman.clone();
+                          let cb_mr = props.on_set_moonraker_active_spool.clone();
+                          let is_mr_active = props.active_moonraker_spool_id == Some(sm_sid);
+                          html! {
+                            <>
+                              <span
+                                class={format!(
+                                  "text-[10px] px-1.5 py-0.5 rounded font-bold border shrink-0 {}",
+                                  if is_low {
+                                    "bg-error/20 text-error border-error/40"
+                                  } else {
+                                    "bg-emerald-950/50 text-emerald-300 border-emerald-500/40"
+                                  }
+                                )}
+                                title={format!("Linked to Spoolman Spool #{} ({}g remaining)", sm_sid, spool.remaining_grams)}
+                              >
+                                {format!("🗄️ #{} • {}g", sm_sid, spool.remaining_grams)}
+                              </span>
+                              if props.is_tauri {
+                                <button
+                                  title="Push calibrated Flow Ratio, Pressure Advance, Max Volumetric Speed, Temperatures & Slot Location back to Spoolman"
+                                  onclick={Callback::from(move |_| cb_push.emit((idx, sp_push.clone())))}
+                                  class="px-2 py-0.5 rounded border border-primary/50 bg-primary/15 hover:bg-primary/25 text-primary text-[10px] font-bold cursor-pointer shrink-0"
+                                >
+                                  {"⬆️ Spoolman"}
+                                </button>
+                              }
+                              if props.is_tauri && props.moonraker_enabled {
+                                <button
+                                  title="Set this Spoolman spool as active in Moonraker (`/server/spoolman/spool_id`)"
+                                  onclick={Callback::from(move |_| cb_mr.emit(Some(sm_sid)))}
+                                  class={format!(
+                                    "px-2 py-0.5 rounded border text-[10px] font-bold cursor-pointer shrink-0 {}",
+                                    if is_mr_active {
+                                      "bg-emerald-950/60 text-emerald-300 border-emerald-500/50"
+                                    } else {
+                                      "border-secondary/50 bg-secondary/15 hover:bg-secondary/25 text-secondary"
+                                    }
+                                  )}
+                                >
+                                  {if is_mr_active { "📡 Active" } else { "📡 Moonraker" }}
+                                </button>
+                              }
+                            </>
+                          }
+                        } else {
+                          html! {
+                            <span
+                              class="text-[10px] bg-surface-container-high text-on-surface-variant px-1.5 py-0.5 rounded shrink-0"
+                              title="Remaining filament weight (grams)"
+                            >
+                              {format!("{}g", spool.remaining_grams)}
+                            </span>
+                          }
+                        }}
 
                         <span
                           class="text-[10px] bg-surface-container-high text-on-surface-variant px-1.5 py-0.5 rounded shrink-0"

@@ -28,9 +28,12 @@ use crate::dir_import::{
 };
 use crate::fs_access::{
   FsManager, LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload, LocalFsScanProgress,
-  ScannedFileEntry,
+  MoonrakerSetActiveSpoolRequest, MoonrakerSetActiveSpoolResponse, ScannedFileEntry,
+  SpoolmanPushRequest, SpoolmanPushResponse, SpoolmanSyncRequest, SpoolmanSyncResponse,
 };
-use crate::models::{FilamentSpool, MachineRig, ProcessProfile, WebConfigStateSnapshot};
+use crate::models::{
+  FilamentSpool, MachineRig, ProcessProfile, SpoolmanSpool, WebConfigStateSnapshot,
+};
 use crate::orca_profile::OrcaProfile;
 use crate::threemf::{
   build_3mf_project_container, export_standalone_filament_json_with_overrides,
@@ -221,6 +224,37 @@ pub fn App() -> Html {
       .map(|s| s.conf_relative_path.clone())
       .unwrap_or_else(|| "AnycubicSlicerNext.conf".to_string())
   });
+  let spoolman_url = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.spoolman_url.clone())
+      .filter(|u| !u.trim().is_empty())
+      .unwrap_or_else(|| "http://127.0.0.1:7912".to_string())
+  });
+  let spoolman_inventory = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.spoolman_inventory.clone())
+      .unwrap_or_default()
+  });
+  let moonraker_enabled = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.moonraker_enabled)
+      .unwrap_or(false)
+  });
+  let moonraker_url = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .map(|s| s.moonraker_url.clone())
+      .filter(|u| !u.trim().is_empty())
+      .unwrap_or_else(|| "http://192.168.1.100:7125".to_string())
+  });
+  let active_moonraker_spool_id = use_state(|| {
+    (*saved_state)
+      .as_ref()
+      .and_then(|s| s.active_moonraker_spool_id)
+  });
 
   // Automatically persist full site state to browser localStorage whenever a config is loaded
   {
@@ -248,6 +282,11 @@ pub fn App() -> Html {
       disk_flush_matrix: (*disk_flush_matrix).clone(),
       disk_flush_slot_count: *disk_flush_slot_count,
       conf_relative_path: (*conf_relative_path).clone(),
+      spoolman_url: (*spoolman_url).clone(),
+      spoolman_inventory: (*spoolman_inventory).clone(),
+      moonraker_enabled: *moonraker_enabled,
+      moonraker_url: (*moonraker_url).clone(),
+      active_moonraker_spool_id: *active_moonraker_spool_id,
     };
     use_effect_with((is_loaded, snap), move |(loaded, snapshot)| {
       if *loaded {
@@ -836,6 +875,11 @@ pub fn App() -> Html {
     let disk_flush_matrix = disk_flush_matrix.clone();
     let disk_flush_slot_count = disk_flush_slot_count.clone();
     let conf_relative_path = conf_relative_path.clone();
+    let spoolman_url = spoolman_url.clone();
+    let spoolman_inventory = spoolman_inventory.clone();
+    let moonraker_enabled = moonraker_enabled.clone();
+    let moonraker_url = moonraker_url.clone();
+    let active_moonraker_spool_id = active_moonraker_spool_id.clone();
     let config_version = config_version.clone();
     let toast = toast_message.clone();
 
@@ -865,6 +909,11 @@ pub fn App() -> Html {
         disk_flush_matrix: (*disk_flush_matrix).clone(),
         disk_flush_slot_count: *disk_flush_slot_count,
         conf_relative_path: (*conf_relative_path).clone(),
+        spoolman_url: (*spoolman_url).clone(),
+        spoolman_inventory: (*spoolman_inventory).clone(),
+        moonraker_enabled: *moonraker_enabled,
+        moonraker_url: (*moonraker_url).clone(),
+        active_moonraker_spool_id: *active_moonraker_spool_id,
       };
       match serde_json::to_string_pretty(&snapshot) {
         Ok(json_str) => {
@@ -914,6 +963,11 @@ pub fn App() -> Html {
     let disk_flush_matrix = disk_flush_matrix.clone();
     let disk_flush_slot_count = disk_flush_slot_count.clone();
     let conf_relative_path = conf_relative_path.clone();
+    let spoolman_url = spoolman_url.clone();
+    let spoolman_inventory = spoolman_inventory.clone();
+    let moonraker_enabled = moonraker_enabled.clone();
+    let moonraker_url = moonraker_url.clone();
+    let active_moonraker_spool_id = active_moonraker_spool_id.clone();
     let last_saved_time = last_saved_time.clone();
     let toast = toast_message.clone();
 
@@ -941,6 +995,11 @@ pub fn App() -> Html {
       let disk_flush_matrix = disk_flush_matrix.clone();
       let disk_flush_slot_count = disk_flush_slot_count.clone();
       let conf_relative_path = conf_relative_path.clone();
+      let spoolman_url = spoolman_url.clone();
+      let spoolman_inventory = spoolman_inventory.clone();
+      let moonraker_enabled = moonraker_enabled.clone();
+      let moonraker_url = moonraker_url.clone();
+      let active_moonraker_spool_id = active_moonraker_spool_id.clone();
       let last_saved_time = last_saved_time.clone();
       let toast = toast.clone();
 
@@ -969,6 +1028,11 @@ pub fn App() -> Html {
               disk_flush_matrix.set(snap.disk_flush_matrix.clone());
               disk_flush_slot_count.set(snap.disk_flush_slot_count);
               conf_relative_path.set(snap.conf_relative_path.clone());
+              spoolman_url.set(snap.spoolman_url.clone());
+              spoolman_inventory.set(snap.spoolman_inventory.clone());
+              moonraker_enabled.set(snap.moonraker_enabled);
+              moonraker_url.set(snap.moonraker_url.clone());
+              active_moonraker_spool_id.set(snap.active_moonraker_spool_id);
               last_saved_time.set(format!("Loaded from {}", fname));
               is_config_loaded.set(true);
               show_bind_modal.set(false);
@@ -3007,6 +3071,313 @@ pub fn App() -> Html {
               on_export_spool_json={on_export_spool_json}
               on_export_3mf={on_export_3mf_guarded}
               on_open_bind_modal={on_open_bind_modal}
+              spoolman_url={(*spoolman_url).clone()}
+              spoolman_inventory={(*spoolman_inventory).clone()}
+              moonraker_enabled={*moonraker_enabled}
+              moonraker_url={(*moonraker_url).clone()}
+              active_moonraker_spool_id={*active_moonraker_spool_id}
+              on_change_spoolman_url={{
+                let sm_url = spoolman_url.clone();
+                Callback::from(move |new_url: String| sm_url.set(new_url))
+              }}
+              on_sync_spoolman_live={{
+                let sm_url = (*spoolman_url).clone();
+                let sm_inv = spoolman_inventory.clone();
+                let fil_state = filaments.clone();
+                let t = toast_message.clone();
+                Callback::from(move |_| {
+                  let url = sm_url.clone();
+                  let sm_inv = sm_inv.clone();
+                  let fil_state = fil_state.clone();
+                  let t = t.clone();
+                  spawn_local(async move {
+                    let req = SpoolmanSyncRequest {
+                      spoolman_url: url.clone(),
+                    };
+                    if let Ok(req_builder) =
+                      gloo_net::http::Request::post(&FsManager::api_url("/api/spoolman/sync"))
+                        .header("Content-Type", "application/json")
+                        .body(serde_json::to_string(&req).unwrap_or_default())
+                    {
+                      if let Ok(resp) = req_builder.send().await {
+                        if let Ok(sync_res) = resp.json::<SpoolmanSyncResponse>().await {
+                          if sync_res.ok {
+                            match SpoolmanSpool::parse_inventory_json(&sync_res.raw_spools_json) {
+                              Ok(parsed) => {
+                                // Also refresh remaining weight on any already-linked active spools
+                                let mut cur_fils = (*fil_state).clone();
+                                for sp in &mut cur_fils {
+                                  if let Some((sid, _)) = sp.spoolman_ids() {
+                                    if let Some(inv_sp) = parsed.iter().find(|i| i.spool_id == sid) {
+                                      sp.remaining_grams = inv_sp.remaining_weight_g;
+                                    }
+                                  }
+                                }
+                                fil_state.set(cur_fils);
+                                let count = parsed.len();
+                                sm_inv.set(parsed);
+                                t.set(Some(format!(
+                                  "Synced {} spool(s) from Spoolman ({})!",
+                                  count, url
+                                )));
+                              }
+                              Err(e) => {
+                                t.set(Some(format!("Spoolman parse error: {}", e)));
+                              }
+                            }
+                            return;
+                          } else {
+                            t.set(Some(sync_res.message));
+                            return;
+                          }
+                        }
+                      }
+                    }
+                    t.set(Some(format!(
+                      "Could not reach Spoolman proxy for '{}'. Ensure the Tauri desktop backend is running.",
+                      url
+                    )));
+                  });
+                })
+              }}
+              on_push_spool_to_spoolman={{
+                let sm_url = (*spoolman_url).clone();
+                let sm_inv = spoolman_inventory.clone();
+                let t = toast_message.clone();
+                Callback::from(move |(slot_idx, sp): (usize, FilamentSpool)| {
+                  let Some((sid, fid)) = sp.spoolman_ids() else {
+                    return;
+                  };
+                  let url = sm_url.clone();
+                  let sm_inv = sm_inv.clone();
+                  let t = t.clone();
+                  let req = SpoolmanPushRequest {
+                    spoolman_url: url,
+                    spool_id: sid,
+                    filament_id: fid,
+                    extruder_temp_c: sp.brass_base_temp,
+                    bed_temp_c: sp.bed_temp,
+                    flow_ratio: sp.flow_ratio,
+                    pressure_advance: sp.pressure_advance,
+                    max_volumetric_speed: sp.max_volumetric_speed,
+                    remaining_weight_g: sp.remaining_grams,
+                    location: format!("ACE Slot {}", slot_idx + 1),
+                  };
+                  spawn_local(async move {
+                    if let Ok(req_builder) =
+                      gloo_net::http::Request::post(&FsManager::api_url("/api/spoolman/push"))
+                        .header("Content-Type", "application/json")
+                        .body(serde_json::to_string(&req).unwrap_or_default())
+                    {
+                      if let Ok(resp) = req_builder.send().await {
+                        if let Ok(push_res) = resp.json::<SpoolmanPushResponse>().await {
+                          if push_res.ok {
+                            let mut inv_list = (*sm_inv).clone();
+                            if let Some(inv_item) =
+                              inv_list.iter_mut().find(|i| i.spool_id == sid)
+                            {
+                              inv_item.extra_flow_ratio = Some(req.flow_ratio);
+                              inv_item.extra_pressure_advance = Some(req.pressure_advance);
+                              inv_item.extra_max_volumetric_speed =
+                                Some(req.max_volumetric_speed);
+                              inv_item.extruder_temp_c = Some(req.extruder_temp_c);
+                              inv_item.bed_temp_c = Some(req.bed_temp_c);
+                              inv_item.location = req.location.clone();
+                            }
+                            sm_inv.set(inv_list);
+                          }
+                          t.set(Some(push_res.message));
+                          return;
+                        }
+                      }
+                    }
+                    t.set(Some("Failed communicating with Spoolman push endpoint.".to_string()));
+                  });
+                })
+              }}
+              on_import_spoolman_json_file={{
+                let sm_inv = spoolman_inventory.clone();
+                let fil_state = filaments.clone();
+                let t = toast_message.clone();
+                Callback::from(move |e: Event| {
+                  let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+                  let sm_inv = sm_inv.clone();
+                  let fil_state = fil_state.clone();
+                  let t = t.clone();
+                  spawn_local(async move {
+                    match FsManager::read_input_file_bytes(&input).await {
+                      Ok((fname, bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        match SpoolmanSpool::parse_inventory_json(&text) {
+                          Ok(parsed) => {
+                            let mut cur_fils = (*fil_state).clone();
+                            for sp in &mut cur_fils {
+                              if let Some((sid, _)) = sp.spoolman_ids() {
+                                if let Some(inv_sp) = parsed.iter().find(|i| i.spool_id == sid) {
+                                  sp.remaining_grams = inv_sp.remaining_weight_g;
+                                }
+                              }
+                            }
+                            fil_state.set(cur_fils);
+                            let count = parsed.len();
+                            sm_inv.set(parsed);
+                            t.set(Some(format!(
+                              "Imported {} Spoolman spool(s) from '{}' (Static Client-Side Mode)!",
+                              count, fname
+                            )));
+                          }
+                          Err(err) => {
+                            t.set(Some(format!(
+                              "Could not parse Spoolman JSON '{}': {}",
+                              fname, err
+                            )));
+                          }
+                        }
+                      }
+                      Err(err) => {
+                        t.set(Some(format!("Failed reading file: {}", err)));
+                      }
+                    }
+                  });
+                })
+              }}
+              on_export_spoolman_json_file={{
+                let fil_list = (*filaments).clone();
+                let inv_list = (*spoolman_inventory).clone();
+                let t = toast_message.clone();
+                Callback::from(move |_| {
+                  let json_str = SpoolmanSpool::export_as_spoolman_api_json(&fil_list, &inv_list);
+                  let fname = "spoolman_inventory_snapshot.json";
+                  match FsManager::trigger_browser_download(fname, &json_str) {
+                    Ok(()) => {
+                      t.set(Some(format!(
+                        "Exported Spoolman-compatible JSON snapshot '{}' ({} active slots + {} inventory spools)!",
+                        fname,
+                        fil_list.len(),
+                        inv_list.len()
+                      )));
+                    }
+                    Err(e) => {
+                      t.set(Some(format!("Export error: {}", e)));
+                    }
+                  }
+                })
+              }}
+              on_assign_spoolman_to_slot={{
+                let fil_state = filaments.clone();
+                let act_fil_type = active_filament_type.clone();
+                let noz_type = active_rig.nozzle_type.clone();
+                let t = toast_message.clone();
+                Callback::from(move |(slot_opt, sm_spool): (Option<usize>, SpoolmanSpool)| {
+                  let new_spool = sm_spool.to_filament_spool(&noz_type);
+                  let mut list = (*fil_state).clone();
+                  match slot_opt {
+                    Some(slot_idx) if slot_idx < list.len() => {
+                      list[slot_idx] = new_spool.clone();
+                      act_fil_type.set(new_spool.material_type.clone());
+                      fil_state.set(list);
+                      t.set(Some(format!(
+                        "Assigned Spoolman #{} ({} {} • {}g) to Slot #{} & recalculated Flushing Matrix!",
+                        sm_spool.spool_id,
+                        sm_spool.vendor_name,
+                        sm_spool.filament_name,
+                        sm_spool.remaining_weight_g,
+                        slot_idx + 1
+                      )));
+                    }
+                    _ => {
+                      list.push(new_spool.clone());
+                      let new_pos = list.len();
+                      act_fil_type.set(new_spool.material_type.clone());
+                      fil_state.set(list);
+                      t.set(Some(format!(
+                        "Added Spoolman #{} ({} {} • {}g) as Slot #{}!",
+                        sm_spool.spool_id,
+                        sm_spool.vendor_name,
+                        sm_spool.filament_name,
+                        sm_spool.remaining_weight_g,
+                        new_pos
+                      )));
+                    }
+                  }
+                })
+              }}
+              on_auto_map_spoolman_locations={{
+                let fil_state = filaments.clone();
+                let inv_list = (*spoolman_inventory).clone();
+                let ams_cap = (active_rig.ace_pro_units * 4).max(1);
+                let noz_type = active_rig.nozzle_type.clone();
+                let t = toast_message.clone();
+                Callback::from(move |_| {
+                  let mut list = (*fil_state).clone();
+                  let mut mapped_count = 0usize;
+                  for sm in &inv_list {
+                    if let Some(slot_idx) = sm.inferred_slot_index(ams_cap) {
+                      let new_spool = sm.to_filament_spool(&noz_type);
+                      if slot_idx < list.len() {
+                        list[slot_idx] = new_spool;
+                      } else {
+                        list.push(new_spool);
+                      }
+                      mapped_count += 1;
+                    }
+                  }
+                  fil_state.set(list);
+                  t.set(Some(format!(
+                    "Auto-mapped {} Spoolman spool(s) into ACE Pro / AMS slots by location!",
+                    mapped_count
+                  )));
+                })
+              }}
+              on_toggle_moonraker={{
+                let mr_en = moonraker_enabled.clone();
+                let t = toast_message.clone();
+                Callback::from(move |enabled: bool| {
+                  mr_en.set(enabled);
+                  t.set(Some(if enabled {
+                    "Enabled optional Moonraker Active-Spool integration!".to_string()
+                  } else {
+                    "Disabled Moonraker Active-Spool integration.".to_string()
+                  }));
+                })
+              }}
+              on_change_moonraker_url={{
+                let mr_url = moonraker_url.clone();
+                Callback::from(move |new_url: String| mr_url.set(new_url))
+              }}
+              on_set_moonraker_active_spool={{
+                let mr_url = (*moonraker_url).clone();
+                let act_mr_sid = active_moonraker_spool_id.clone();
+                let t = toast_message.clone();
+                Callback::from(move |spool_id_opt: Option<u32>| {
+                  let url = mr_url.clone();
+                  let act_mr_sid = act_mr_sid.clone();
+                  let t = t.clone();
+                  let req = MoonrakerSetActiveSpoolRequest {
+                    moonraker_url: url,
+                    spool_id: spool_id_opt,
+                  };
+                  spawn_local(async move {
+                    if let Ok(req_builder) = gloo_net::http::Request::post(
+                      &FsManager::api_url("/api/moonraker/active-spool"),
+                    )
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::to_string(&req).unwrap_or_default())
+                    {
+                      if let Ok(resp) = req_builder.send().await {
+                        if let Ok(mr_res) = resp.json::<MoonrakerSetActiveSpoolResponse>().await {
+                          if mr_res.ok {
+                            act_mr_sid.set(spool_id_opt);
+                          }
+                          t.set(Some(mr_res.message));
+                          return;
+                        }
+                      }
+                    }
+                    t.set(Some("Failed communicating with Moonraker active-spool endpoint.".to_string()));
+                  });
+                })
+              }}
             />
           },
           ActiveTab::Wizard => html! {

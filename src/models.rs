@@ -1918,6 +1918,853 @@ impl FilamentSpool {
       self.drying_time_hr
     )
   }
+
+  /// If this `FilamentSpool` was created from or linked to Spoolman (`id` starting with `"spoolman_"`),
+  /// returns `Some((spool_id, filament_id))`.
+  pub fn spoolman_ids(&self) -> Option<(u32, u32)> {
+    let rest = self.id.strip_prefix("spoolman_")?;
+    if let Some((s_str, f_str)) = rest.split_once('_') {
+      let sid = s_str.parse::<u32>().ok()?;
+      let fid = f_str
+        .split('_')
+        .next()
+        .and_then(|x| x.parse::<u32>().ok())
+        .unwrap_or(sid);
+      Some((sid, fid))
+    } else {
+      let sid = rest.parse::<u32>().ok()?;
+      Some((sid, sid))
+    }
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpoolmanSpool {
+  pub spool_id: u32,
+  pub filament_id: u32,
+  pub vendor_name: String,
+  pub filament_name: String,
+  pub material: String,
+  pub color_hex: String,
+  pub remaining_weight_g: i32,
+  pub initial_weight_g: i32,
+  pub extruder_temp_c: Option<i32>,
+  pub bed_temp_c: Option<i32>,
+  #[serde(default)]
+  pub location: String,
+  #[serde(default)]
+  pub lot_nr: String,
+  #[serde(default)]
+  pub comment: String,
+  #[serde(default)]
+  pub extra_flow_ratio: Option<f32>,
+  #[serde(default)]
+  pub extra_pressure_advance: Option<f32>,
+  #[serde(default)]
+  pub extra_max_volumetric_speed: Option<f32>,
+}
+
+fn extract_extra_f32(extra: Option<&serde_json::Value>, keys: &[&str]) -> Option<f32> {
+  let obj = extra?.as_object()?;
+  for k in keys {
+    if let Some(v) = obj.get(*k) {
+      if let Some(f) = v.as_f64() {
+        return Some(f as f32);
+      }
+      if let Some(s) = v.as_str() {
+        let cleaned = s.trim().trim_matches('"').trim_matches('\'').trim();
+        if let Ok(f) = cleaned.parse::<f32>() {
+          return Some(f);
+        }
+      }
+    }
+  }
+  None
+}
+
+impl SpoolmanSpool {
+  /// Parses a Spoolman inventory JSON payload. Supports:
+  /// 1. Raw Spoolman `GET /api/v1/spool` JSON array (`[ { "id": 1, "filament": { ... }, ... } ]`)
+  /// 2. Wrapped object `{ "spools": [...] }` or `{ "items": [...] }`
+  /// 3. Direct `Vec<SpoolmanSpool>` array
+  pub fn parse_inventory_json(json_str: &str) -> Result<Vec<Self>, String> {
+    let trimmed = json_str.trim();
+    if trimmed.is_empty() {
+      return Err("Empty Spoolman JSON payload".to_string());
+    }
+    if let Ok(direct) = serde_json::from_str::<Vec<SpoolmanSpool>>(trimmed) {
+      if !direct.is_empty() {
+        return Ok(direct);
+      }
+    }
+
+    let root: serde_json::Value =
+      serde_json::from_str(trimmed).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let arr = if let Some(a) = root.as_array() {
+      a
+    } else if let Some(a) = root.get("spools").and_then(|v| v.as_array()) {
+      a
+    } else if let Some(a) = root.get("items").and_then(|v| v.as_array()) {
+      a
+    } else if root.get("id").is_some() && root.get("filament").is_some() {
+      return Self::from_api_spool_value(&root).map(|s| vec![s]);
+    } else {
+      return Err(
+        "Expected a Spoolman `/api/v1/spool` JSON array or object containing `spools`".to_string(),
+      );
+    };
+
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+      if let Ok(s) = serde_json::from_value::<SpoolmanSpool>(item.clone()) {
+        out.push(s);
+      } else if let Ok(s) = Self::from_api_spool_value(item) {
+        out.push(s);
+      }
+    }
+    Ok(out)
+  }
+
+  pub fn from_api_spool_value(v: &serde_json::Value) -> Result<Self, String> {
+    let archived = v.get("archived").and_then(|b| b.as_bool()).unwrap_or(false);
+    if archived {
+      return Err("Archived spool".to_string());
+    }
+    let spool_id = v
+      .get("id")
+      .and_then(|x| x.as_u64())
+      .ok_or_else(|| "Missing spool id".to_string())? as u32;
+    let fil = v.get("filament").unwrap_or(v);
+    let filament_id = fil
+      .get("id")
+      .and_then(|x| x.as_u64())
+      .map(|x| x as u32)
+      .unwrap_or(spool_id);
+    let vendor_name = fil
+      .get("vendor")
+      .and_then(|vnd| vnd.get("name"))
+      .and_then(|x| x.as_str())
+      .or_else(|| v.get("vendor_name").and_then(|x| x.as_str()))
+      .unwrap_or("Generic")
+      .trim()
+      .to_string();
+    let filament_name = fil
+      .get("name")
+      .and_then(|x| x.as_str())
+      .unwrap_or("Filament")
+      .trim()
+      .to_string();
+    let material = fil
+      .get("material")
+      .and_then(|x| x.as_str())
+      .unwrap_or("PLA")
+      .trim()
+      .to_string();
+    let raw_hex = fil
+      .get("color_hex")
+      .and_then(|x| x.as_str())
+      .or_else(|| {
+        fil
+          .get("multi_color_hexes")
+          .and_then(|x| x.as_str())
+          .and_then(|s| s.split(',').next())
+      })
+      .unwrap_or("06B6D4")
+      .trim()
+      .trim_start_matches('#');
+    let clean_hex = if raw_hex.len() >= 6 {
+      format!("#{}", &raw_hex[..6].to_uppercase())
+    } else {
+      "#06B6D4".to_string()
+    };
+
+    let initial_weight_g = v
+      .get("initial_weight")
+      .and_then(|x| x.as_f64())
+      .or_else(|| fil.get("weight").and_then(|x| x.as_f64()))
+      .unwrap_or(1000.0)
+      .round() as i32;
+    let remaining_weight_g = v
+      .get("remaining_weight")
+      .and_then(|x| x.as_f64())
+      .map(|w| w.round() as i32)
+      .unwrap_or(initial_weight_g)
+      .max(0);
+
+    let extruder_temp_c = fil
+      .get("settings_extruder_temp")
+      .and_then(|x| x.as_i64())
+      .map(|x| x as i32)
+      .filter(|&t| (140..=420).contains(&t));
+    let bed_temp_c = fil
+      .get("settings_bed_temp")
+      .and_then(|x| x.as_i64())
+      .map(|x| x as i32)
+      .filter(|&t| (0..=150).contains(&t));
+
+    let location = v
+      .get("location")
+      .and_then(|x| x.as_str())
+      .unwrap_or("")
+      .trim()
+      .to_string();
+    let lot_nr = v
+      .get("lot_nr")
+      .and_then(|x| x.as_str())
+      .unwrap_or("")
+      .trim()
+      .to_string();
+    let comment = v
+      .get("comment")
+      .and_then(|x| x.as_str())
+      .unwrap_or("")
+      .trim()
+      .to_string();
+
+    let spool_extra = v.get("extra");
+    let fil_extra = fil.get("extra");
+    let extra_flow_ratio = extract_extra_f32(
+      spool_extra,
+      &["flow_ratio", "filament_flow_ratio", "flow"],
+    )
+    .or_else(|| {
+      extract_extra_f32(
+        fil_extra,
+        &["flow_ratio", "filament_flow_ratio", "flow"],
+      )
+    });
+    let extra_pressure_advance = extract_extra_f32(
+      spool_extra,
+      &["pressure_advance", "pa", "k_value"],
+    )
+    .or_else(|| {
+      extract_extra_f32(
+        fil_extra,
+        &["pressure_advance", "pa", "k_value"],
+      )
+    });
+    let extra_max_volumetric_speed = extract_extra_f32(
+      spool_extra,
+      &["max_volumetric_speed", "filament_max_volumetric_speed", "mvs"],
+    )
+    .or_else(|| {
+      extract_extra_f32(
+        fil_extra,
+        &["max_volumetric_speed", "filament_max_volumetric_speed", "mvs"],
+      )
+    });
+
+    Ok(SpoolmanSpool {
+      spool_id,
+      filament_id,
+      vendor_name,
+      filament_name,
+      material,
+      color_hex: clean_hex,
+      remaining_weight_g,
+      initial_weight_g,
+      extruder_temp_c,
+      bed_temp_c,
+      location,
+      lot_nr,
+      comment,
+      extra_flow_ratio,
+      extra_pressure_advance,
+      extra_max_volumetric_speed,
+    })
+  }
+
+  /// Infers a 0-based ACE Pro / AMS slot index (`0..max_slots`) from `self.location`,
+  /// supporting e.g. `"ACE 1"`, `"ACE Slot 3"`, `"Slot 2"`, `"AMS 4"`, `"#1"`, or `"T0"`..`"T7"`.
+  pub fn inferred_slot_index(&self, max_slots: usize) -> Option<usize> {
+    let loc = self.location.trim().to_lowercase();
+    if loc.is_empty() || max_slots == 0 {
+      return None;
+    }
+    for tok in loc.split(|c: char| !c.is_alphanumeric()) {
+      if let Some(t_idx) = tok.strip_prefix('t').and_then(|n| n.parse::<usize>().ok()) {
+        if t_idx < max_slots {
+          return Some(t_idx);
+        }
+      }
+    }
+    let has_slot_keyword = loc.contains("ace")
+      || loc.contains("slot")
+      || loc.contains("ams")
+      || loc.contains("unit")
+      || loc.starts_with('#');
+    if has_slot_keyword {
+      // Handle "ACE 2-1" or "AMS 2 Slot 1" -> unit 2, slot 1 -> index 4
+      let nums: Vec<usize> = loc
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|s| s.parse::<usize>().ok())
+        .collect();
+      if nums.len() >= 2 && (1..=2).contains(&nums[0]) && (1..=4).contains(&nums[1]) {
+        let idx = (nums[0] - 1) * 4 + (nums[1] - 1);
+        if idx < max_slots {
+          return Some(idx);
+        }
+      }
+      if let Some(&n) = nums.last() {
+        if (1..=max_slots).contains(&n) {
+          return Some(n - 1);
+        }
+      }
+    }
+    None
+  }
+
+  /// Converts this `SpoolmanSpool` into a configured `FilamentSpool` for the active nozzle type.
+  pub fn to_filament_spool(&self, active_nozzle_type: &str) -> FilamentSpool {
+    let c = crate::constants::constants();
+    let catalog = crate::catalog::load_merged_catalog();
+    let combined_text = format!("{} {} {}", self.vendor_name, self.material, self.filament_name);
+    let raw_poly = c.detect_polymer_from_profile_texts(
+      &combined_text,
+      Some(self.material.as_str()),
+      None,
+    );
+    let base_mat = c.base_material_code(&raw_poly).to_string();
+    let fc = c.detect_finish_from_texts(
+      &self.filament_name,
+      &self.material,
+      &raw_poly,
+      &base_mat,
+    );
+    let finish_code = fc.code.clone();
+    let norm_brand = FilamentSpool::normalized_brand(&self.vendor_name);
+
+    let mut spool = if let Some(cat_entry) = catalog
+      .filaments
+      .iter()
+      .find(|f| {
+        f.brand.eq_ignore_ascii_case(&norm_brand) && f.code.eq_ignore_ascii_case(&base_mat)
+      })
+      .or_else(|| {
+        catalog
+          .filaments
+          .iter()
+          .find(|f| f.code.eq_ignore_ascii_case(&base_mat))
+      })
+      .or_else(|| catalog.filaments.first())
+    {
+      FilamentSpool::from_catalog_entry(self.spool_id as usize, cat_entry, active_nozzle_type)
+    } else {
+      let fallback = &catalog.filaments[0];
+      FilamentSpool::from_catalog_entry(self.spool_id as usize, fallback, active_nozzle_type)
+    };
+
+    spool.id = format!("spoolman_{}_{}", self.spool_id, self.filament_id);
+    spool.brand = norm_brand.clone();
+    spool.apply_material_change(&base_mat, active_nozzle_type);
+    spool.apply_finish_change(&finish_code, active_nozzle_type);
+    spool.color_hex = self.color_hex.clone();
+    spool.color_name = if !self.filament_name.is_empty() {
+      format!("{} (#{})", self.filament_name, self.spool_id)
+    } else {
+      format!("Spool #{}", self.spool_id)
+    };
+    spool.remaining_grams = self.remaining_weight_g;
+    spool.is_rfid_synced = true;
+
+    if let Some(ext_c) = self.extruder_temp_c {
+      spool.brass_base_temp = ext_c;
+      spool.hs_base_temp = (ext_c + 5).clamp(80, 420);
+      spool.recompute_for_nozzle(active_nozzle_type);
+    }
+    if let Some(bed_c) = self.bed_temp_c {
+      let (min_b, max_b) = FilamentSpool::polymer_safe_bed_bounds(&spool.material_type);
+      let clamped_b = bed_c.clamp(min_b, max_b);
+      spool.base_bed_temp = clamped_b;
+      spool.bed_temp = clamped_b;
+    }
+    if let Some(fr) = self.extra_flow_ratio {
+      if (0.40..=1.25).contains(&fr) {
+        spool.flow_ratio = fr;
+      }
+    }
+    if let Some(pa) = self.extra_pressure_advance {
+      if (0.0..=0.25).contains(&pa) {
+        spool.pressure_advance = pa;
+      }
+    }
+    if let Some(mvs) = self.extra_max_volumetric_speed {
+      if (1.0..=50.0).contains(&mvs) {
+        spool.max_volumetric_speed = mvs;
+      }
+    }
+
+    spool.name = FilamentSpool::default_oc_profile_name_with_brand(
+      &spool.brand,
+      &spool.material_type,
+      &spool.finish_type,
+      active_nozzle_type,
+    );
+    spool.rebuild_synthetic_disk_json(active_nozzle_type);
+    spool
+  }
+
+  /// Exports the active filament loadout and Spoolman inventory as a standard Spoolman `/api/v1/spool`-compatible JSON array
+  /// so Static Website users can save, share, or re-import their Spoolman inventory + calibrated Flow/PA/MVS values.
+  pub fn export_as_spoolman_api_json(
+    active_spools: &[FilamentSpool],
+    inventory: &[SpoolmanSpool],
+  ) -> String {
+    let mut items = Vec::new();
+    for (idx, sp) in active_spools.iter().enumerate() {
+      let (sid, fid) = sp
+        .spoolman_ids()
+        .unwrap_or(((idx + 1) as u32, (idx + 1) as u32));
+      let inv_match = inventory.iter().find(|i| i.spool_id == sid);
+      let loc = inv_match
+        .map(|i| i.location.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("ACE Slot {}", idx + 1));
+      let lot = inv_match.map(|i| i.lot_nr.clone()).unwrap_or_default();
+      items.push(serde_json::json!({
+        "id": sid,
+        "remaining_weight": sp.remaining_grams,
+        "initial_weight": 1000,
+        "location": loc,
+        "lot_nr": lot,
+        "archived": false,
+        "extra": {
+          "flow_ratio": format!("\"{:.3}\"", sp.flow_ratio),
+          "pressure_advance": format!("\"{:.3}\"", sp.pressure_advance),
+          "max_volumetric_speed": format!("\"{:.1}\"", sp.max_volumetric_speed),
+        },
+        "filament": {
+          "id": fid,
+          "name": sp.color_name,
+          "material": sp.material_type,
+          "color_hex": sp.color_hex.trim_start_matches('#'),
+          "settings_extruder_temp": sp.brass_base_temp,
+          "settings_bed_temp": sp.bed_temp,
+          "vendor": {
+            "name": sp.brand
+          },
+          "extra": {
+            "flow_ratio": format!("\"{:.3}\"", sp.flow_ratio),
+            "pressure_advance": format!("\"{:.3}\"", sp.pressure_advance),
+            "max_volumetric_speed": format!("\"{:.1}\"", sp.max_volumetric_speed),
+          }
+        }
+      }));
+    }
+    for inv in inventory {
+      if !active_spools
+        .iter()
+        .any(|sp| sp.spoolman_ids().map(|(s, _)| s) == Some(inv.spool_id))
+      {
+        items.push(serde_json::json!({
+          "id": inv.spool_id,
+          "remaining_weight": inv.remaining_weight_g,
+          "initial_weight": inv.initial_weight_g,
+          "location": inv.location,
+          "lot_nr": inv.lot_nr,
+          "comment": inv.comment,
+          "archived": false,
+          "extra": {
+            "flow_ratio": inv.extra_flow_ratio.map(|v| format!("\"{:.3}\"", v)).unwrap_or_default(),
+            "pressure_advance": inv.extra_pressure_advance.map(|v| format!("\"{:.3}\"", v)).unwrap_or_default(),
+            "max_volumetric_speed": inv.extra_max_volumetric_speed.map(|v| format!("\"{:.1}\"", v)).unwrap_or_default(),
+          },
+          "filament": {
+            "id": inv.filament_id,
+            "name": inv.filament_name,
+            "material": inv.material,
+            "color_hex": inv.color_hex.trim_start_matches('#'),
+            "settings_extruder_temp": inv.extruder_temp_c,
+            "settings_bed_temp": inv.bed_temp_c,
+            "vendor": {
+              "name": inv.vendor_name
+            }
+          }
+        }));
+      }
+    }
+    serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())
+  }
+}
+
+fn base64_decode_bytes(input: &str) -> Option<Vec<u8>> {
+  const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let mut lut = [255u8; 256];
+  for (i, &b) in TABLE.iter().enumerate() {
+    lut[b as usize] = i as u8;
+  }
+  let clean: Vec<u8> = input
+    .bytes()
+    .filter(|b| !b.is_ascii_whitespace())
+    .collect();
+  if clean.is_empty() || clean.len() % 4 != 0 {
+    return None;
+  }
+  let mut out = Vec::with_capacity((clean.len() / 4) * 3);
+  for chunk in clean.chunks(4) {
+    let a = lut[chunk[0] as usize];
+    let b = lut[chunk[1] as usize];
+    if a == 255 || b == 255 {
+      return None;
+    }
+    let c = if chunk[2] == b'=' {
+      0
+    } else {
+      let v = lut[chunk[2] as usize];
+      if v == 255 {
+        return None;
+      }
+      v
+    };
+    let d = if chunk[3] == b'=' {
+      0
+    } else {
+      let v = lut[chunk[3] as usize];
+      if v == 255 {
+        return None;
+      }
+      v
+    };
+    out.push((a << 2) | (b >> 4));
+    if chunk[2] != b'=' {
+      out.push((b << 4) | (c >> 2));
+    }
+    if chunk[3] != b'=' {
+      out.push((c << 6) | d);
+    }
+  }
+  Some(out)
+}
+
+fn base64_encode_bytes(input: &[u8]) -> String {
+  const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let mut out = String::with_capacity(((input.len() + 2) / 3) * 4);
+  for chunk in input.chunks(3) {
+    let b0 = chunk[0];
+    let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+    let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+    out.push(TABLE[(b0 >> 2) as usize] as char);
+    out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+    if chunk.len() > 1 {
+      out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+    } else {
+      out.push('=');
+    }
+    if chunk.len() > 2 {
+      out.push(TABLE[(b2 & 0x3f) as usize] as char);
+    } else {
+      out.push('=');
+    }
+  }
+  out
+}
+
+/// Decodes AnycubicSlicerNext's 2-pass `(base64_decode -> byte - 5)` obfuscated string
+/// used in `anycubic_remote_printing` (e.g. `current_device_id`).
+pub fn decode_anycubic_obfuscated_str(encoded: &str) -> Option<String> {
+  let pass1_raw = base64_decode_bytes(encoded.trim())?;
+  let pass1_shifted: Vec<u8> = pass1_raw.into_iter().map(|b| b.wrapping_sub(5)).collect();
+  let pass1_str = std::str::from_utf8(&pass1_shifted).ok()?;
+  let pass2_raw = base64_decode_bytes(pass1_str)?;
+  let pass2_shifted: Vec<u8> = pass2_raw.into_iter().map(|b| b.wrapping_sub(5)).collect();
+  let plain = String::from_utf8(pass2_shifted).ok()?;
+  Some(plain.trim().trim_matches('"').trim_matches('\'').to_string())
+}
+
+/// Encodes a string using AnycubicSlicerNext's 2-pass `(byte + 5 -> base64_encode)` obfuscation.
+pub fn encode_anycubic_obfuscated_str(plain: &str) -> String {
+  let pass1: Vec<u8> = plain.bytes().map(|b| b.wrapping_add(5)).collect();
+  let b64_1 = base64_encode_bytes(&pass1);
+  let pass2: Vec<u8> = b64_1.bytes().map(|b| b.wrapping_add(5)).collect();
+  base64_encode_bytes(&pass2)
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AnycubicAceSlotInfo {
+  pub slot_index: usize,
+  pub profile_name: String,
+  pub material_type: String,
+  pub color_hex: String,
+  pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct AnycubicSniffedPrinterState {
+  pub discovery_tier: String,
+  pub device_id: String,
+  pub printer_model: String,
+  pub active_machine_preset: String,
+  pub active_process_preset: String,
+  pub ams_filament_ids: String,
+  pub cloud_session_detected: bool,
+  pub mqtt_broker_url: String,
+  pub mqtt_connected_in_logs: bool,
+  pub lan_rinkhals_reachable: bool,
+  pub lan_endpoint: String,
+  pub dryer_status: String,
+  pub slots: Vec<AnycubicAceSlotInfo>,
+}
+
+impl AnycubicSniffedPrinterState {
+  pub fn infer_material_from_profile_name(profile_name: &str) -> String {
+    let up = profile_name.to_uppercase();
+    for mat in [
+      "PETG-CF", "PLA-CF", "ABS-CF", "PA-CF", "PET-CF", "PCTG", "PETG", "TPU", "ASA", "ABS", "PC",
+      "PHA", "PVA", "PLA+", "PLA",
+    ] {
+      if up.contains(mat) {
+        return mat.to_string();
+      }
+    }
+    "PLA".to_string()
+  }
+
+  /// Tier 1 Auto-Sniff: Parses `AnycubicSlicerNext.conf` (stripping any trailing `# MD5 checksum` line)
+  /// to extract the decoded hardware `current_device_id`, `ams_filament_ids`, `anycubic_cloud` session status,
+  /// and active `anycubic_presets` ACE Pro slots & RGB hex colors.
+  pub fn sniff_from_conf_str(conf_text: &str) -> Result<Self, String> {
+    let cleaned: String = conf_text
+      .lines()
+      .filter(|l| !l.trim_start().starts_with('#'))
+      .collect::<Vec<_>>()
+      .join("\n");
+    let val: serde_json::Value = serde_json::from_str(&cleaned)
+      .map_err(|e| format!("Failed to parse AnycubicSlicerNext.conf JSON: {}", e))?;
+
+    let encoded_dev_id = val
+      .get("anycubic_remote_printing")
+      .and_then(|rp| rp.get("current_device_id"))
+      .and_then(|v| v.as_str())
+      .unwrap_or("");
+    let device_id = decode_anycubic_obfuscated_str(encoded_dev_id).unwrap_or_default();
+
+    let mut ams_filament_ids = String::new();
+    if let Some(ams_obj) = val.get("ams_filament_ids").and_then(|v| v.as_object()) {
+      for (k, v) in ams_obj {
+        let clean_k = k.trim_matches('"');
+        if (!device_id.is_empty() && clean_k == device_id) || ams_filament_ids.is_empty() {
+          if let Some(s) = v.as_str() {
+            ams_filament_ids = s.to_string();
+          }
+        }
+      }
+    }
+
+    let mut cloud_session_detected = false;
+    if let Some(cloud_obj) = val.get("anycubic_cloud").and_then(|v| v.as_object()) {
+      for (_k, v) in cloud_obj {
+        if let Some(s) = v.as_str() {
+          if s.len() > 64 {
+            cloud_session_detected = true;
+          }
+        }
+      }
+    }
+
+    let printer_model = val
+      .get("firstguide")
+      .and_then(|fg| fg.get("model"))
+      .and_then(|v| v.as_str())
+      .unwrap_or("Anycubic Kobra S1")
+      .to_string();
+
+    let mut active_machine_preset = val
+      .get("presets")
+      .and_then(|p| p.get("machine"))
+      .and_then(|v| v.as_str())
+      .unwrap_or("")
+      .to_string();
+
+    let mut active_process_preset = String::new();
+    let mut slot_names: Vec<String> = Vec::new();
+    let mut slot_colors: Vec<String> = Vec::new();
+
+    if let Some(arr) = val.get("anycubic_presets").and_then(|a| a.as_array()) {
+      let mut best_priority = 0usize;
+      for preset in arr {
+        let mach = preset.get("machine").and_then(|m| m.as_str()).unwrap_or("");
+        if mach.contains(".3mf)") {
+          continue;
+        }
+        let mut f_names = Vec::new();
+        for key in [
+          "filament",
+          "filament_01",
+          "filament_02",
+          "filament_03",
+          "filament_04",
+          "filament_05",
+          "filament_06",
+          "filament_07",
+        ] {
+          if let Some(fnm) = preset.get(key).and_then(|v| v.as_str()) {
+            let trimmed = fnm.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('(') {
+              let clean_fnm = trimmed
+                .split_once(".3mf)")
+                .map(|(head, _)| head.rsplit_once('(').map(|(h, _)| h).unwrap_or(head))
+                .unwrap_or(trimmed);
+              f_names.push(clean_fnm.trim().to_string());
+            }
+          }
+        }
+        let oc_fil_count = f_names
+          .iter()
+          .filter(|n| n.starts_with("OC -") || n.starts_with("OC:"))
+          .count();
+        let is_exact_active =
+          !active_machine_preset.is_empty() && mach == active_machine_preset;
+        let priority =
+          if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC")) {
+            40 + oc_fil_count
+          } else if is_exact_active && oc_fil_count > 0 {
+            30 + oc_fil_count
+          } else if is_exact_active {
+            20
+          } else if (mach.contains("Kobra S1") || mach.starts_with("OC")) && oc_fil_count > 0 {
+            15 + oc_fil_count
+          } else if mach.contains("Kobra S1") {
+            10
+          } else {
+            0
+          };
+        if priority > best_priority && !f_names.is_empty() {
+          best_priority = priority;
+          if active_machine_preset.is_empty() {
+            active_machine_preset = mach.to_string();
+          }
+          if let Some(proc_str) = preset.get("process").and_then(|p| p.as_str()) {
+            active_process_preset = proc_str.to_string();
+          }
+          slot_names = f_names;
+          if let Some(cols) = preset.get("filament_colors").and_then(|fc| fc.as_str()) {
+            slot_colors = cols
+              .split(',')
+              .map(|s| s.trim().to_string())
+              .filter(|s| !s.is_empty())
+              .collect();
+          }
+        }
+      }
+    }
+
+    let default_colors = [
+      "#BC4033", "#658946", "#E10600", "#4B5563", "#8E9299", "#1A1A1A", "#8E9299", "#D4AF37",
+    ];
+    let mut slots = Vec::new();
+    for (idx, prof_name) in slot_names.iter().enumerate() {
+      let color_hex = slot_colors
+        .get(idx)
+        .cloned()
+        .unwrap_or_else(|| default_colors.get(idx).copied().unwrap_or("#3B82F6").to_string());
+      slots.push(AnycubicAceSlotInfo {
+        slot_index: idx + 1,
+        profile_name: prof_name.clone(),
+        material_type: Self::infer_material_from_profile_name(prof_name),
+        color_hex,
+        status: "Sniffed (.conf)".to_string(),
+      });
+    }
+
+    Ok(Self {
+      discovery_tier: "Tier 1: Local AnycubicSlicerNext.conf".to_string(),
+      device_id,
+      printer_model,
+      active_machine_preset,
+      active_process_preset,
+      ams_filament_ids,
+      cloud_session_detected,
+      mqtt_broker_url: "mqtts://mqtt-universe.anycubic.com:8883".to_string(),
+      mqtt_connected_in_logs: false,
+      lan_rinkhals_reachable: false,
+      lan_endpoint: String::new(),
+      dryer_status: "Idle / Not Queried".to_string(),
+      slots,
+    })
+  }
+
+  /// Patches an `AnycubicSlicerNext.conf` string with updated slot filament names and RGB colors
+  /// from the active WebConfig slots, preserving any trailing `# MD5 checksum` line.
+  pub fn patch_conf_str(
+    conf_text: &str,
+    slot_profile_names: &[String],
+    slot_colors_hex: &[String],
+  ) -> Result<String, String> {
+    let mut checksum_line = String::new();
+    let mut body_lines = Vec::new();
+    for line in conf_text.lines() {
+      if line.trim_start().starts_with('#') {
+        checksum_line = line.to_string();
+      } else {
+        body_lines.push(line);
+      }
+    }
+    let cleaned = body_lines.join("\n");
+    let mut val: serde_json::Value = serde_json::from_str(&cleaned)
+      .map_err(|e| format!("Failed to parse AnycubicSlicerNext.conf JSON: {}", e))?;
+
+    let colors_csv = slot_colors_hex
+      .iter()
+      .map(|c| {
+        if c.starts_with('#') {
+          c.to_uppercase()
+        } else {
+          format!("#{}", c.to_uppercase())
+        }
+      })
+      .collect::<Vec<_>>()
+      .join(",");
+
+    let keys = [
+      "filament",
+      "filament_01",
+      "filament_02",
+      "filament_03",
+      "filament_04",
+      "filament_05",
+      "filament_06",
+      "filament_07",
+    ];
+
+    if let Some(arr) = val.get_mut("anycubic_presets").and_then(|a| a.as_array_mut()) {
+      for preset in arr.iter_mut() {
+        let mach = preset
+          .get("machine")
+          .and_then(|m| m.as_str())
+          .unwrap_or("")
+          .to_string();
+        if mach.contains(".3mf)") {
+          continue;
+        }
+        if mach.contains("Kobra S1") || mach.starts_with("OC") {
+          if let Some(obj) = preset.as_object_mut() {
+            for (i, key) in keys.iter().enumerate() {
+              if let Some(p_name) = slot_profile_names.get(i) {
+                obj.insert((*key).to_string(), serde_json::Value::String(p_name.clone()));
+              } else {
+                obj.remove(*key);
+              }
+            }
+            if !colors_csv.is_empty() {
+              obj.insert(
+                "filament_colors".to_string(),
+                serde_json::Value::String(colors_csv.clone()),
+              );
+            }
+          }
+        }
+      }
+    }
+
+    let mut out = serde_json::to_string_pretty(&val)
+      .map_err(|e| format!("Failed to serialize AnycubicSlicerNext.conf: {}", e))?;
+    if !checksum_line.is_empty() {
+      out.push('\n');
+      out.push_str(&checksum_line);
+    }
+    out.push('\n');
+    Ok(out)
+  }
 }
 
 fn default_config_version() -> u32 {
@@ -1930,6 +2777,14 @@ fn default_orca_slicer_version() -> String {
 
 fn default_webconfig_app_version() -> String {
   WEBCONFIG_APP_VERSION.to_string()
+}
+
+fn default_spoolman_url() -> String {
+  "http://127.0.0.1:7912".to_string()
+}
+
+fn default_moonraker_url() -> String {
+  "http://192.168.1.100:7125".to_string()
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1959,6 +2814,16 @@ pub struct WebConfigStateSnapshot {
   pub disk_flush_matrix: Vec<String>,
   pub disk_flush_slot_count: usize,
   pub conf_relative_path: String,
+  #[serde(default = "default_spoolman_url")]
+  pub spoolman_url: String,
+  #[serde(default)]
+  pub spoolman_inventory: Vec<SpoolmanSpool>,
+  #[serde(default)]
+  pub moonraker_enabled: bool,
+  #[serde(default = "default_moonraker_url")]
+  pub moonraker_url: String,
+  #[serde(default)]
+  pub active_moonraker_spool_id: Option<u32>,
 }
 
 impl WebConfigStateSnapshot {
@@ -2603,5 +3468,148 @@ mod tests {
       "src-tauri/tauri.conf.json version must match version.bzl ({})",
       WEBCONFIG_APP_VERSION
     );
+  }
+
+  #[test]
+  fn test_spoolman_inventory_parse_and_slot_mapping_roundtrip() {
+    let raw_api_json = r##"[
+      {
+        "id": 14,
+        "remaining_weight": 742.4,
+        "initial_weight": 1000.0,
+        "location": "ACE Slot 2",
+        "lot_nr": "LOT-2026-09",
+        "archived": false,
+        "extra": {
+          "flow_ratio": "\"0.945\"",
+          "pressure_advance": "\"0.032\"",
+          "max_volumetric_speed": "\"19.0\""
+        },
+        "filament": {
+          "id": 105,
+          "name": "Rapid PETG Cyan",
+          "material": "PETG",
+          "color_hex": "06b6d4",
+          "settings_extruder_temp": 235,
+          "settings_bed_temp": 75,
+          "vendor": {
+            "name": "eSUN"
+          }
+        }
+      },
+      {
+        "id": 22,
+        "remaining_weight": 85.0,
+        "initial_weight": 1000.0,
+        "location": "ACE 2-1",
+        "archived": false,
+        "filament": {
+          "id": 208,
+          "name": "Carbon PLA-CF",
+          "material": "PLA-CF",
+          "color_hex": "#1E293B",
+          "settings_extruder_temp": 220,
+          "settings_bed_temp": 60,
+          "vendor": {
+            "name": "Bambu Lab"
+          }
+        }
+      }
+    ]"##;
+
+    let parsed = SpoolmanSpool::parse_inventory_json(raw_api_json).expect("parses Spoolman JSON");
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].spool_id, 14);
+    assert_eq!(parsed[0].filament_id, 105);
+    assert_eq!(parsed[0].vendor_name, "eSUN");
+    assert_eq!(parsed[0].color_hex, "#06B6D4");
+    assert_eq!(parsed[0].remaining_weight_g, 742);
+    assert_eq!(parsed[0].inferred_slot_index(8), Some(1)); // ACE Slot 2 -> 0-based index 1
+    assert_eq!(parsed[1].inferred_slot_index(8), Some(4)); // ACE 2-1 -> unit 2, slot 1 -> index 4
+
+    let spool = parsed[0].to_filament_spool("hardened_steel");
+    assert_eq!(spool.spoolman_ids(), Some((14, 105)));
+    assert_eq!(spool.material_type, "PETG");
+    assert_eq!(spool.remaining_grams, 742);
+    assert_eq!(spool.brass_base_temp, 235);
+    assert_eq!(spool.print_temp, 240); // +5°C Hardened Steel offset
+    assert_eq!(spool.bed_temp, 75);
+    assert!((spool.flow_ratio - 0.945).abs() < 1e-4);
+    assert!((spool.pressure_advance - 0.032).abs() < 1e-4);
+    assert!((spool.max_volumetric_speed - 19.0).abs() < 1e-4);
+
+    let exported = SpoolmanSpool::export_as_spoolman_api_json(&[spool], &parsed);
+    let reparsed =
+      SpoolmanSpool::parse_inventory_json(&exported).expect("reparses exported Spoolman JSON");
+    assert_eq!(reparsed.len(), 2);
+    assert_eq!(reparsed[0].spool_id, 14);
+  }
+
+  #[test]
+  fn test_anycubic_obfuscation_and_conf_auto_sniff_roundtrip() {
+    let encoded_dev_id = "T390PFNZXjdmb2lzZlx4MGZ/eXZTbzpzZjdeO2ZJOndVSV48X290PmZcXjdPfEJC";
+    let decoded = decode_anycubic_obfuscated_str(encoded_dev_id).expect("decodes device_id");
+    assert_eq!(decoded, "56011e2bdf9f6e19bfa5c9f716a58da1");
+
+    let re_encoded = encode_anycubic_obfuscated_str("\"56011e2bdf9f6e19bfa5c9f716a58da1\"");
+    assert_eq!(re_encoded, encoded_dev_id);
+
+    let sample_conf = r##"{
+  "ams_filament_ids": {
+    "\"56011e2bdf9f6e19bfa5c9f716a58da1\"": "1,2,3,4,1,2,4"
+  },
+  "anycubic_cloud": {
+    "l1qde7GcMLvhaKcXOcWRLA==": "QfEMBe5x6jnnsY9cu5cFGS3qcz8aOxKzqWqKJicpotZtWQu4wAz5NoXuUH/rkvf9fJvXIA7ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  },
+  "anycubic_presets": [
+    {
+      "filament": "OC - PETG-CF • 0.4 Hardened",
+      "filament_01": "OC - PCTG • 0.4 Hardened",
+      "filament_02": "OC - TPU for AMS • 0.4 Hardened",
+      "filament_03": "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
+      "filament_colors": "#BC4033,#658946,#E10600,#4B5563",
+      "machine": "OC - Kobra S1 • 0.4 Hardened",
+      "process": "OC - 0.20mm Standard @Kobra S1"
+    }
+  ],
+  "anycubic_remote_printing": {
+    "current_device_id": "T390PFNZXjdmb2lzZlx4MGZ/eXZTbzpzZjdeO2ZJOndVSV48X290PmZcXjdPfEJC"
+  },
+  "firstguide": {
+    "model": "Anycubic Kobra S1"
+  },
+  "presets": {
+    "machine": "OC - Kobra S1 • 0.4 Hardened"
+  }
+}
+# MD5 checksum 78EEA34537C082A7933147457EA67CA5
+"##;
+
+    let sniffed = AnycubicSniffedPrinterState::sniff_from_conf_str(sample_conf)
+      .expect("sniffs AnycubicSlicerNext.conf");
+    assert_eq!(sniffed.device_id, "56011e2bdf9f6e19bfa5c9f716a58da1");
+    assert_eq!(sniffed.ams_filament_ids, "1,2,3,4,1,2,4");
+    assert!(sniffed.cloud_session_detected);
+    assert_eq!(sniffed.printer_model, "Anycubic Kobra S1");
+    assert_eq!(sniffed.slots.len(), 4);
+    assert_eq!(sniffed.slots[0].material_type, "PETG-CF");
+    assert_eq!(sniffed.slots[0].color_hex, "#BC4033");
+    assert_eq!(sniffed.slots[1].material_type, "PCTG");
+
+    let patched = AnycubicSniffedPrinterState::patch_conf_str(
+      sample_conf,
+      &[
+        "OC - ASA • 0.4 Hardened".to_string(),
+        "OC - PLA+ • 0.4 Hardened".to_string(),
+      ],
+      &["#112233".to_string(), "#445566".to_string()],
+    )
+    .expect("patches conf");
+    assert!(patched.contains("# MD5 checksum 78EEA34537C082A7933147457EA67CA5"));
+    let resniffed = AnycubicSniffedPrinterState::sniff_from_conf_str(&patched)
+      .expect("re-sniffs patched conf");
+    assert_eq!(resniffed.slots.len(), 2);
+    assert_eq!(resniffed.slots[0].material_type, "ASA");
+    assert_eq!(resniffed.slots[0].color_hex, "#112233");
   }
 }

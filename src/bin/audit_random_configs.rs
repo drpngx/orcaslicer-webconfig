@@ -489,6 +489,11 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       disk_flush_matrix: flush_matrix,
       disk_flush_slot_count: n,
       conf_relative_path: "AnycubicSlicerNext.conf".to_string(),
+      spoolman_url: "http://127.0.0.1:7912".to_string(),
+      spoolman_inventory: Vec::new(),
+      moonraker_enabled: false,
+      moonraker_url: "http://192.168.1.100:7125".to_string(),
+      active_moonraker_spool_id: None,
     };
     fs::write(
       cfg_dir.join("orcaslicer_webconfig.json"),

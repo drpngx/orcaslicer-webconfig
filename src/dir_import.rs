@@ -1528,6 +1528,11 @@ pub fn import_scanned_directory(
     disk_flush_matrix: disk_flush_matrix.clone(),
     disk_flush_slot_count,
     conf_relative_path: conf_relative_path.clone(),
+    spoolman_url: "http://127.0.0.1:7912".to_string(),
+    spoolman_inventory: Vec::new(),
+    moonraker_enabled: false,
+    moonraker_url: "http://192.168.1.100:7125".to_string(),
+    active_moonraker_spool_id: None,
   };
   snap.sanitize();
 
