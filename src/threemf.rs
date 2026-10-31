@@ -229,12 +229,20 @@ fn first_str_from_map(
 pub fn resolve_spool_orca_filament_map(
   spool: &FilamentSpool,
 ) -> serde_json::Map<String, serde_json::Value> {
-  resolve_spool_orca_filament_map_with_rig(spool, None)
+  resolve_spool_orca_filament_map_with_rig_and_overrides(spool, None, None)
 }
 
 pub fn resolve_spool_orca_filament_map_with_rig(
   spool: &FilamentSpool,
   rig_opt: Option<&MachineRig>,
+) -> serde_json::Map<String, serde_json::Value> {
+  resolve_spool_orca_filament_map_with_rig_and_overrides(spool, rig_opt, None)
+}
+
+pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
+  spool: &FilamentSpool,
+  rig_opt: Option<&MachineRig>,
+  derived_overrides: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> serde_json::Map<String, serde_json::Value> {
   let c = crate::constants::constants();
   let cat = crate::catalog::load_merged_catalog();
@@ -282,6 +290,57 @@ pub fn resolve_spool_orca_filament_map_with_rig(
       (0, 0, 0, 0.0)
     };
 
+  let wet_rh = derived_overrides
+    .and_then(|m| m.get("_wet_filament_rh"))
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<i32>().ok())
+    .unwrap_or(0);
+  let wet_active = wet_rh > 20 && !is_foaming_tpu;
+  let wet_temp_drop = if wet_active {
+    derived_overrides
+      .and_then(|m| m.get("_wet_filament_temp_drop_c"))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<i32>().ok())
+      .unwrap_or(0)
+  } else {
+    0
+  };
+  let wet_init_bed_boost = if wet_active {
+    derived_overrides
+      .and_then(|m| m.get("_wet_filament_init_bed_boost_c"))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<i32>().ok())
+      .unwrap_or(0)
+  } else {
+    0
+  };
+  let wet_flow_trim = if wet_active {
+    derived_overrides
+      .and_then(|m| m.get("_wet_filament_flow_trim"))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<f64>().ok())
+      .unwrap_or(0.0)
+  } else {
+    0.0
+  };
+  let wet_retract_add = if wet_active {
+    derived_overrides
+      .and_then(|m| m.get("_wet_filament_retract_add_mm"))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<f64>().ok())
+      .unwrap_or(0.0)
+  } else {
+    0.0
+  };
+  let wet_retract_before_wipe = if wet_active {
+    derived_overrides
+      .and_then(|m| m.get("_wet_filament_retract_before_wipe_pct"))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<i32>().ok())
+  } else {
+    None
+  };
+
   let base_noz = first_str_from_map(&base_map, "nozzle_temperature")
     .and_then(|s| s.parse::<i32>().ok())
     .unwrap_or(spool.print_temp);
@@ -311,10 +370,17 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   } else {
     min_safe_bed
   };
-  let effective_temp = (spool.print_temp + climate_noz_delta).clamp(min_safe_noz, max_safe_noz);
-  let initial_temp = (effective_temp + init_delta).clamp(min_safe_noz, max_safe_noz);
+  let pre_wet_temp = (spool.print_temp + climate_noz_delta).clamp(min_safe_noz, max_safe_noz);
+  let effective_temp = (pre_wet_temp + wet_temp_drop).clamp(min_safe_noz, max_safe_noz);
+  let initial_temp = (pre_wet_temp + init_delta).clamp(min_safe_noz, max_safe_noz);
   let effective_bed = (spool.bed_temp + climate_bed_delta).clamp(climate_min_bed, max_safe_bed);
-  let initial_bed = (effective_bed + climate_init_bed_extra).clamp(climate_min_bed, max_safe_bed);
+  let initial_bed = (effective_bed + climate_init_bed_extra + wet_init_bed_boost)
+    .clamp(climate_min_bed, max_safe_bed);
+  let effective_flow_ratio = if wet_flow_trim.abs() > 1e-6 {
+    (spool.flow_ratio as f64 + wet_flow_trim).clamp(0.85, 1.05) as f32
+  } else {
+    spool.flow_ratio
+  };
   let export_name = spool.format_concise_title();
   let inherits = resolve_filament_inherits_for_rig(spool, rig_opt);
 
@@ -338,7 +404,7 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   let effective_ret_len = if spool.is_siraya_foaming_air() {
     0.0
   } else {
-    (base_ret_len + climate_retract_delta).clamp(0.30, 1.45)
+    (base_ret_len + climate_retract_delta + wet_retract_add).clamp(0.30, 1.45)
   };
   let ret_len_str = crate::constants::PolymerConstants::format_retraction_mm(effective_ret_len);
   let ret_spd_str = if is_external_disk_spool {
@@ -434,7 +500,7 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   }
   base_map.insert(
     "filament_flow_ratio".to_string(),
-    serde_json::json!([format!("{:.2}", spool.flow_ratio)]),
+    serde_json::json!([format!("{:.2}", effective_flow_ratio)]),
   );
   base_map.insert(
     "enable_pressure_advance".to_string(),
@@ -484,8 +550,11 @@ pub fn resolve_spool_orca_filament_map_with_rig(
     "filament_retraction_speed".to_string(),
     serde_json::json!([ret_spd_str]),
   );
-  let (z_hop_str, z_hop_type_str, retract_before_wipe_str) =
+  let (z_hop_str, z_hop_type_str, mut retract_before_wipe_str) =
     poly_cfg.resolve_z_hop_and_retract_before_wipe(&spool.finish_type, is_foaming_tpu);
+  if let Some(rbw_pct) = wet_retract_before_wipe {
+    retract_before_wipe_str = format!("{}%", rbw_pct);
+  }
 
   if !is_external_disk_spool {
     base_map.insert(
@@ -523,6 +592,12 @@ pub fn resolve_spool_orca_filament_map_with_rig(
         );
       }
     }
+    if wet_retract_before_wipe.is_some() {
+      base_map.insert(
+        "filament_retract_before_wipe".to_string(),
+        serde_json::json!([retract_before_wipe_str]),
+      );
+    }
   }
   if !base_map.contains_key("filament_diameter") {
     base_map.insert(
@@ -546,9 +621,11 @@ pub fn resolve_spool_orca_filament_map_with_rig(
 fn build_filament_preset_json_with_source(
   spool: &FilamentSpool,
   rig: &MachineRig,
+  derived_overrides: Option<&serde_json::Map<String, serde_json::Value>>,
   from_src: &str,
 ) -> String {
-  let resolved = resolve_spool_orca_filament_map_with_rig(spool, Some(rig));
+  let resolved =
+    resolve_spool_orca_filament_map_with_rig_and_overrides(spool, Some(rig), derived_overrides);
   let mut out = serde_json::Map::new();
   out.insert("type".to_string(), serde_json::json!("filament"));
   out.insert("from".to_string(), serde_json::json!(from_src));
@@ -573,7 +650,18 @@ fn build_filament_preset_json_with_source(
 
 /// Export a standalone OrcaSlicer Filament `.json` delta preset (Section 4.A)
 pub fn export_standalone_filament_json(spool: &FilamentSpool, rig: &MachineRig) -> String {
-  build_filament_preset_json_with_source(spool, rig, "User")
+  build_filament_preset_json_with_source(spool, rig, None, "User")
+}
+
+/// Export a standalone OrcaSlicer Filament `.json` delta preset with active Lua `derived_overrides`
+/// (such as `_wet_filament_*` humidity adjustments), guaranteeing 100% key-for-key parity with
+/// `.3mf` `Metadata/project_settings.config`.
+pub fn export_standalone_filament_json_with_overrides(
+  spool: &FilamentSpool,
+  rig: &MachineRig,
+  derived_overrides: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+  build_filament_preset_json_with_source(spool, rig, Some(derived_overrides), "User")
 }
 
 /// Evaluates the effective OrcaSlicer profile parameters by starting from the imported OrcaSlicer
@@ -943,7 +1031,13 @@ pub fn build_project_settings_config_json(
 
   let raw_slot_maps: Vec<serde_json::Map<String, serde_json::Value>> = active_slots
     .iter()
-    .map(|sp| resolve_spool_orca_filament_map_with_rig(sp, Some(rig)))
+    .map(|sp| {
+      resolve_spool_orca_filament_map_with_rig_and_overrides(
+        sp,
+        Some(rig),
+        Some(derived_overrides),
+      )
+    })
     .collect();
   // When multiple slots share the same `filament_settings_id` (`OC - *.json`), the file on disk
   // corresponds to the last slot with that `filament_settings_id`. Ensure all preset-level keys
@@ -1190,7 +1284,328 @@ pub fn build_project_settings_config_json(
     out.insert("version".to_string(), serde_json::json!("02.03.00.03"));
   }
 
-  serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_else(|_| "{}".to_string())
+  let rendered =
+    serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_else(|_| "{}".to_string());
+
+  #[cfg(debug_assertions)]
+  {
+    let mach_json = build_machine_preset_json(rig);
+    let proc_json = build_process_preset_json(process, rig, derived_overrides);
+    let mut disk_filaments_by_id: std::collections::HashMap<String, String> =
+      std::collections::HashMap::new();
+    for sp in active_slots {
+      let fjson = export_standalone_filament_json_with_overrides(sp, rig, derived_overrides);
+      let fid = sp.format_concise_title();
+      disk_filaments_by_id.insert(fid, fjson.clone());
+      if !sp.name.trim().is_empty() {
+        disk_filaments_by_id.insert(sp.name.clone(), fjson);
+      }
+    }
+    if let Err(errs) = verify_project_settings_matches_standalone_presets(
+      &rendered,
+      &mach_json,
+      &proc_json,
+      &disk_filaments_by_id,
+    ) {
+      panic!(
+        "3MF project_settings.config diverged from standalone .json presets (would cause AnycubicSlicerNext profile_print_params_same == false and reset slots on New Project!):\n  - {}",
+        errs.join("\n  - ")
+      );
+    }
+  }
+
+  rendered
+}
+
+/// Verifies that `Metadata/project_settings.config` matches the standalone Machine, Process, and
+/// Filament `.json` files key-for-key under OrcaSlicer / AnycubicSlicerNext's
+/// `PresetCollection::load_external_preset` (`update_non_diff_values_to_base_config` +
+/// `profile_print_params_same`).
+///
+/// If even a single parameter differs between `project_settings.config` and the disk `.json` files:
+/// - Slot 1 (`i == 0`, `LoadAndSelect::Always`) gets marked dirty (`is_dirty = true`) and triggers
+///   the "Save / Discard modifications" dialog.
+/// - Slots 2..N (`i = 1..N-1`, `LoadAndSelect::OnlyIfModified`) get loaded as temporary
+///   `is_project_embedded = true` presets (`OC - ... (Loadout.3mf)`), which are erased by
+///   `reset_project_embedded_presets()` when clicking "New Project" -> "Discard", resetting Slots 2..N
+///   to `Anycubic PLA @Anycubic Kobra S1 0.4 nozzle`!
+pub fn verify_project_settings_matches_standalone_presets(
+  project_settings_json: &str,
+  machine_json: &str,
+  process_json: &str,
+  filament_jsons_by_id: &std::collections::HashMap<String, String>,
+) -> Result<(), Vec<String>> {
+  let mut errors = Vec::new();
+
+  let proj_obj = match serde_json::from_str::<serde_json::Value>(project_settings_json)
+    .ok()
+    .and_then(|v| v.as_object().cloned())
+  {
+    Some(o) => o,
+    None => {
+      errors.push("project_settings_json is not a valid JSON object".to_string());
+      return Err(errors);
+    }
+  };
+  let mach_obj = match serde_json::from_str::<serde_json::Value>(machine_json)
+    .ok()
+    .and_then(|v| v.as_object().cloned())
+  {
+    Some(o) => o,
+    None => {
+      errors.push("machine_json is not a valid JSON object".to_string());
+      return Err(errors);
+    }
+  };
+  let proc_obj = match serde_json::from_str::<serde_json::Value>(process_json)
+    .ok()
+    .and_then(|v| v.as_object().cloned())
+  {
+    Some(o) => o,
+    None => {
+      errors.push("process_json is not a valid JSON object".to_string());
+      return Err(errors);
+    }
+  };
+
+  let slot_ids: Vec<String> = proj_obj
+    .get("filament_settings_id")
+    .and_then(|v| v.as_array())
+    .map(|arr| {
+      arr
+        .iter()
+        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+        .collect()
+    })
+    .unwrap_or_default();
+  if slot_ids.is_empty() {
+    errors.push("project_settings.config has empty filament_settings_id".to_string());
+    return Err(errors);
+  }
+
+  let diff_groups: Vec<std::collections::BTreeSet<String>> = proj_obj
+    .get("different_settings_to_system")
+    .and_then(|v| v.as_array())
+    .map(|arr| {
+      arr
+        .iter()
+        .map(|x| {
+          x.as_str()
+            .unwrap_or("")
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+        })
+        .collect()
+    })
+    .unwrap_or_default();
+
+  if diff_groups.len() != slot_ids.len() + 2 {
+    errors.push(format!(
+      "different_settings_to_system length ({}) != slot_ids.len() + 2 ({})",
+      diff_groups.len(),
+      slot_ids.len() + 2
+    ));
+    return Err(errors);
+  }
+
+  let is_ignored_meta_key = |k: &str| -> bool {
+    matches!(
+      k,
+      "type"
+        | "from"
+        | "is_custom_defined"
+        | "name"
+        | "version"
+        | "inherits"
+        | "compatible_prints"
+        | "compatible_prints_condition"
+        | "compatible_printers"
+        | "compatible_printers_condition"
+        | "print_settings_id"
+        | "filament_settings_id"
+        | "sla_print_settings_id"
+        | "sla_material_settings_id"
+        | "printer_settings_id"
+        | "printer_model"
+        | "printer_variant"
+        | "default_print_profile"
+        | "default_filament_profile"
+        | "default_sla_print_profile"
+        | "default_sla_material_profile"
+        | "printer_timestamp"
+        | "print_timestamp"
+        | "filament_timestamp"
+    )
+  };
+
+  // 1. Verify Process preset (diff_groups[0])
+  let proc_diff = &diff_groups[0];
+  for (k, v) in &proc_obj {
+    if is_ignored_meta_key(k) {
+      continue;
+    }
+    if !proc_diff.contains(k) {
+      errors.push(format!(
+        "Process key '{}' is in standalone process .json ({:?}) but missing from different_settings_to_system[0]",
+        k, v
+      ));
+    }
+    match proj_obj.get(k) {
+      Some(pv) if pv == v => {}
+      other => errors.push(format!(
+        "Process key '{}' mismatch: standalone .json={:?} vs 3mf project_settings={:?}",
+        k, v, other
+      )),
+    }
+  }
+  for k in proc_diff {
+    if is_ignored_meta_key(k) {
+      continue;
+    }
+    match (proc_obj.get(k), proj_obj.get(k)) {
+      (Some(dv), Some(pv)) if dv == pv => {}
+      (dv, pv) => errors.push(format!(
+        "Process diff key '{}' mismatch: standalone .json={:?} vs 3mf project_settings={:?}",
+        k, dv, pv
+      )),
+    }
+  }
+
+  // 2. Verify Machine preset (diff_groups[slot_ids.len() + 1])
+  let mach_diff = &diff_groups[slot_ids.len() + 1];
+  for (k, v) in &mach_obj {
+    if is_ignored_meta_key(k) {
+      continue;
+    }
+    if !mach_diff.contains(k) {
+      errors.push(format!(
+        "Machine key '{}' is in standalone machine .json ({:?}) but missing from different_settings_to_system[{}]",
+        k,
+        v,
+        slot_ids.len() + 1
+      ));
+    }
+    match proj_obj.get(k) {
+      Some(pv) if pv == v => {}
+      other => errors.push(format!(
+        "Machine key '{}' mismatch: standalone .json={:?} vs 3mf project_settings={:?}",
+        k, v, other
+      )),
+    }
+  }
+  for k in mach_diff {
+    if is_ignored_meta_key(k) {
+      continue;
+    }
+    match (mach_obj.get(k), proj_obj.get(k)) {
+      (Some(dv), Some(pv)) if dv == pv => {}
+      (dv, pv) => errors.push(format!(
+        "Machine diff key '{}' mismatch: standalone .json={:?} vs 3mf project_settings={:?}",
+        k, dv, pv
+      )),
+    }
+  }
+
+  // 3. Verify every Filament slot (diff_groups[1..=slot_ids.len()])
+  for (slot_idx, fid) in slot_ids.iter().enumerate() {
+    let fil_str = match filament_jsons_by_id.get(fid) {
+      Some(s) => s,
+      None => {
+        errors.push(format!(
+          "Slot {} filament '{}' missing from filament_jsons_by_id",
+          slot_idx + 1,
+          fid
+        ));
+        continue;
+      }
+    };
+    let fil_obj = match serde_json::from_str::<serde_json::Value>(fil_str)
+      .ok()
+      .and_then(|v| v.as_object().cloned())
+    {
+      Some(o) => o,
+      None => {
+        errors.push(format!(
+          "Slot {} filament '{}' is not a valid JSON object",
+          slot_idx + 1,
+          fid
+        ));
+        continue;
+      }
+    };
+    let fil_diff = &diff_groups[slot_idx + 1];
+    for (k, v) in &fil_obj {
+      if is_ignored_meta_key(k) {
+        continue;
+      }
+      if !fil_diff.contains(k) {
+        errors.push(format!(
+          "Slot {} ({}) filament key '{}' is in standalone .json ({:?}) but missing from different_settings_to_system[{}]",
+          slot_idx + 1,
+          fid,
+          k,
+          v,
+          slot_idx + 1
+        ));
+      }
+      let disk_scalar = v
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|x| x.as_str())
+        .or_else(|| v.as_str());
+      let proj_scalar = proj_obj
+        .get(k)
+        .and_then(|pv| pv.as_array())
+        .and_then(|a| a.get(slot_idx))
+        .and_then(|x| x.as_str());
+      if disk_scalar != proj_scalar || disk_scalar.is_none() {
+        errors.push(format!(
+          "Slot {} ({}) filament key '{}' mismatch: standalone .json={:?} vs 3mf project_settings[{}]={:?}",
+          slot_idx + 1,
+          fid,
+          k,
+          disk_scalar,
+          slot_idx,
+          proj_scalar
+        ));
+      }
+    }
+    for k in fil_diff {
+      if is_ignored_meta_key(k) {
+        continue;
+      }
+      let disk_scalar = fil_obj
+        .get(k)
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .and_then(|x| x.as_str())
+        .or_else(|| fil_obj.get(k).and_then(|v| v.as_str()));
+      let proj_scalar = proj_obj
+        .get(k)
+        .and_then(|pv| pv.as_array())
+        .and_then(|a| a.get(slot_idx))
+        .and_then(|x| x.as_str());
+      if disk_scalar != proj_scalar || disk_scalar.is_none() {
+        errors.push(format!(
+          "Slot {} ({}) filament diff key '{}' mismatch: standalone .json={:?} vs 3mf project_settings[{}]={:?}",
+          slot_idx + 1,
+          fid,
+          k,
+          disk_scalar,
+          slot_idx,
+          proj_scalar
+        ));
+      }
+    }
+  }
+
+  if errors.is_empty() {
+    Ok(())
+  } else {
+    Err(errors)
+  }
 }
 
 /// Build a complete `.3mf` Project Container (ZIP archive) with `Metadata/project_settings.config`

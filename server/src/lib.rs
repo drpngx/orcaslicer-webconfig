@@ -485,6 +485,27 @@ async fn api_local_slicer_save(Json(req): Json<LocalFsSaveRequest>) -> impl Into
     return with_cors(res);
   };
 
+  // Discover all existing `user/<id>/` subdirectories on disk (e.g. `434139` and `default`)
+  // so that even if the client session started from scratch (`user/default/...`), every
+  // saved `machine/`, `process/`, and `filament/` `.json` preset is mirrored into all active
+  // user account folders on disk.
+  let mut existing_user_folders: Vec<String> = Vec::new();
+  if let Ok(user_dir) = cap_dir.open_dir("user") {
+    if let Ok(entries_iter) = user_dir.entries() {
+      for entry_res in entries_iter.flatten() {
+        if let Ok(ft) = entry_res.file_type() {
+          if ft.is_dir() {
+            if let Ok(name) = entry_res.file_name().into_string() {
+              if !name.is_empty() && !name.starts_with('.') {
+                existing_user_folders.push(name);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   let mut files_saved = 0usize;
   for file_item in &req.files {
     let rel = file_item.relative_path.replace('\\', "/");
@@ -493,20 +514,106 @@ async fn api_local_slicer_save(Json(req): Json<LocalFsSaveRequest>) -> impl Into
     if rel.contains("..") || !is_allowed_target {
       continue;
     }
-    if let Some(parent) = Path::new(&rel).parent() {
-      if !parent.as_os_str().is_empty() {
-        let _ = cap_dir.create_dir_all(parent);
+
+    // If writing `AnycubicSlicerNext.conf` and the incoming payload was synthesized without
+    // an initial directory scan (missing `app.slicer_uuid`), merge its `presets`,
+    // `anycubic_presets`, `models`, `filament_presets`, and `app.flush_multiplier` into the
+    // existing on-disk `AnycubicSlicerNext.conf` so `app.preset_folder` (e.g. `"434139"`)
+    // and cloud/window settings are never clobbered.
+    let content_to_write = if rel.ends_with(".conf") {
+      if let Ok(existing_text) = cap_dir.read_to_string(&rel) {
+        let ex_json_part = existing_text
+          .split("# MD5")
+          .next()
+          .unwrap_or(&existing_text)
+          .trim();
+        let in_json_part = file_item
+          .content
+          .split("# MD5")
+          .next()
+          .unwrap_or(&file_item.content)
+          .trim();
+        if let (
+          Ok(serde_json::Value::Object(mut ex_map)),
+          Ok(serde_json::Value::Object(in_map)),
+        ) = (
+          serde_json::from_str::<serde_json::Value>(ex_json_part),
+          serde_json::from_str::<serde_json::Value>(in_json_part),
+        ) {
+          let incoming_is_synthetic = in_map
+            .get("app")
+            .and_then(|a| a.get("slicer_uuid"))
+            .is_none();
+          if incoming_is_synthetic {
+            for copy_key in ["presets", "anycubic_presets", "models", "filament_presets"] {
+              if let Some(v) = in_map.get(copy_key) {
+                ex_map.insert(copy_key.to_string(), v.clone());
+              }
+            }
+            if let Some(fm) = in_map
+              .get("app")
+              .and_then(|a| a.get("flush_multiplier"))
+              .cloned()
+            {
+              if let Some(serde_json::Value::Object(ex_app)) = ex_map.get_mut("app") {
+                ex_app.insert("flush_multiplier".to_string(), fm);
+              }
+            }
+            serde_json::to_string_pretty(&serde_json::Value::Object(ex_map))
+              .unwrap_or_else(|_| file_item.content.clone())
+          } else {
+            file_item.content.clone()
+          }
+        } else {
+          file_item.content.clone()
+        }
+      } else {
+        file_item.content.clone()
       }
-    }
-    if cap_dir.write(&rel, file_item.content.as_bytes()).is_ok() {
-      if let Ok(mut guard) = state.lock() {
-        if let Some(ref mut payload) = guard.result {
-          if let Some(entry) = payload.entries.iter_mut().find(|e| e.relative_path == rel) {
-            entry.bytes = file_item.content.as_bytes().to_vec();
+    } else {
+      file_item.content.clone()
+    };
+
+    let mut target_rels = vec![rel.clone()];
+    if let Some(after_user) = rel.strip_prefix("user/") {
+      if let Some((_src_folder, subpath)) = after_user.split_once('/') {
+        if subpath.starts_with("machine/")
+          || subpath.starts_with("process/")
+          || subpath.starts_with("filament/")
+        {
+          for folder in &existing_user_folders {
+            let mirror_rel = format!("user/{}/{}", folder, subpath);
+            if !target_rels.contains(&mirror_rel) {
+              target_rels.push(mirror_rel);
+            }
           }
         }
       }
-      files_saved += 1;
+    }
+
+    for target_rel in target_rels {
+      if let Some(parent) = Path::new(&target_rel).parent() {
+        if !parent.as_os_str().is_empty() {
+          let _ = cap_dir.create_dir_all(parent);
+        }
+      }
+      if cap_dir
+        .write(&target_rel, content_to_write.as_bytes())
+        .is_ok()
+      {
+        if let Ok(mut guard) = state.lock() {
+          if let Some(ref mut payload) = guard.result {
+            if let Some(entry) = payload
+              .entries
+              .iter_mut()
+              .find(|e| e.relative_path == target_rel)
+            {
+              entry.bytes = content_to_write.as_bytes().to_vec();
+            }
+          }
+        }
+        files_saved += 1;
+      }
     }
   }
 

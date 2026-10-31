@@ -32,7 +32,9 @@ use crate::fs_access::{
 };
 use crate::models::{FilamentSpool, MachineRig, ProcessProfile, WebConfigStateSnapshot};
 use crate::orca_profile::OrcaProfile;
-use crate::threemf::{build_3mf_project_container, export_standalone_filament_json};
+use crate::threemf::{
+  build_3mf_project_container, export_standalone_filament_json_with_overrides,
+};
 use crate::transformations::{
   PendingDiskUpdate, SafetySeverity, SafetyWarning, StackEvaluationResult, StackReorderAction,
   TransformationEngine, TransformationRule,
@@ -1613,6 +1615,7 @@ pub fn App() -> Html {
   let on_export_standalone_json = {
     let active_rig = active_rig.clone();
     let active_slots = active_slots.clone();
+    let derived_overrides = eval_result.resulting_profile.values.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1623,8 +1626,9 @@ pub fn App() -> Html {
           .filaments
           .remove(0)
       });
-      let json_content = export_standalone_filament_json(&spool, &active_rig);
-      let safe_name = crate::models::sanitize_profile_filename(&spool.name);
+      let json_content =
+        export_standalone_filament_json_with_overrides(&spool, &active_rig, &derived_overrides);
+      let safe_name = crate::models::sanitize_profile_filename(&spool.format_concise_title());
       if let Err(e) = FsManager::trigger_browser_download(&safe_name, &json_content) {
         toast.set(Some(format!("Download error: {}", e)));
       } else {
@@ -1638,11 +1642,13 @@ pub fn App() -> Html {
 
   let on_export_spool_json = {
     let active_rig = active_rig.clone();
+    let derived_overrides = eval_result.resulting_profile.values.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |spool: FilamentSpool| {
-      let json_content = export_standalone_filament_json(&spool, &active_rig);
-      let safe_name = crate::models::sanitize_profile_filename(&spool.name);
+      let json_content =
+        export_standalone_filament_json_with_overrides(&spool, &active_rig, &derived_overrides);
+      let safe_name = crate::models::sanitize_profile_filename(&spool.format_concise_title());
       let _ = FsManager::trigger_browser_download(&safe_name, &json_content);
       toast.set(Some(format!(
         "Exported standalone OrcaSlicer filament preset '{}'!",
@@ -1652,12 +1658,25 @@ pub fn App() -> Html {
   };
 
   // Export .3mf Project Container (Artifact #2)
+  // Automatically synchronizes and saves all standalone `.json` presets (`machine`, `process`,
+  // `filament`) and `AnycubicSlicerNext.conf` to disk at the same time so the `.3mf` and local
+  // slicer directory can never drift out of sync even if the user exports `.3mf` directly.
   let on_export_3mf = {
     let active_rig = active_rig.clone();
     let active_proc = active_proc.clone();
     let active_slots = active_slots.clone();
     let flush_matrix = eval_result.flush_matrix.clone();
+    let flush_multiplier = *flush_multiplier;
     let derived_overrides = eval_result.resulting_profile.values.clone();
+    let scanned_entries = scanned_entries.clone();
+    let machines = machines.clone();
+    let active_machine_id = active_machine_id.clone();
+    let filaments = filaments.clone();
+    let processes = processes.clone();
+    let active_process_id = active_process_id.clone();
+    let conf_relative_path = conf_relative_path.clone();
+    let pending_updates = pending_updates.clone();
+    let last_saved_time = last_saved_time.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1680,24 +1699,77 @@ pub fn App() -> Html {
         &derived_overrides,
       );
       let filename = format!("Kobra_ACEPro_{}Slot_Loadout.3mf", slots.len());
-      match FsManager::trigger_binary_download(
+      let download_res = FsManager::trigger_binary_download(
         &filename,
         &zip_bytes,
         "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-      ) {
-        Ok(()) => {
-          toast.set(Some(format!(
-            "Exported '{}' with {}-slot ACE Pro arrays & {}×{} flush_volumes_matrix!",
-            filename,
-            slots.len(),
-            slots.len(),
-            slots.len()
-          )));
+      );
+
+      let mut entries_copy = (*scanned_entries).clone();
+      let staged_list = (*pending_updates).clone();
+      let modified_files = sync_live_state_to_entries(
+        &mut entries_copy,
+        &machines,
+        &active_machine_id,
+        &filaments,
+        &processes,
+        &active_process_id,
+        &flush_matrix,
+        flush_multiplier,
+        &conf_relative_path,
+        &staged_list,
+        &derived_overrides,
+      );
+      let se_state = scanned_entries.clone();
+      let pu_state = pending_updates.clone();
+      let lst = last_saved_time.clone();
+      let t = toast.clone();
+      let slots_len = slots.len();
+
+      spawn_local(async move {
+        let req_payload = LocalFsSaveRequest {
+          files: modified_files.clone(),
+        };
+        let mut saved_via_api = false;
+        if let Ok(req_builder) =
+          gloo_net::http::Request::post(&FsManager::api_url("/api/local-slicer-save"))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&req_payload).unwrap_or_default())
+        {
+          if let Ok(resp) = req_builder.send().await {
+            if resp.ok() {
+              if let Ok(save_res) = resp.json::<LocalFsSaveResponse>().await {
+                saved_via_api = save_res.ok;
+              }
+            }
+          }
         }
-        Err(e) => {
-          toast.set(Some(format!("3MF export error: {}", e)));
+        se_state.set(entries_copy);
+        pu_state.set(Vec::new());
+        if saved_via_api {
+          lst.set("Saved to Local Disk".to_string());
         }
-      }
+        match download_res {
+          Ok(()) => {
+            if saved_via_api {
+              t.set(Some(format!(
+                "Exported '{}' ({}-slot ACE Pro) & synced {} preset file(s) to local disk!",
+                filename,
+                slots_len,
+                modified_files.len()
+              )));
+            } else {
+              t.set(Some(format!(
+                "Exported '{}' with {}-slot ACE Pro arrays & {}×{} flush_volumes_matrix!",
+                filename, slots_len, slots_len, slots_len
+              )));
+            }
+          }
+          Err(e) => {
+            t.set(Some(format!("3MF export error: {}", e)));
+          }
+        }
+      });
     })
   };
 

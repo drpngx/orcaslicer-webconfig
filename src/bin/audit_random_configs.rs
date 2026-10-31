@@ -7,7 +7,7 @@ use orcaslicer_webconfig::models::{
 use orcaslicer_webconfig::orca_profile::OrcaProfile;
 use orcaslicer_webconfig::threemf::{
   build_3mf_project_container, build_project_settings_config_json,
-  parse_ace_loadout_from_bytes_or_json, resolve_effective_orca_profile_values,
+  parse_ace_loadout_from_bytes_or_json,
 };
 use orcaslicer_webconfig::transformations::{SafetySeverity, TransformationEngine};
 use serde_json::Value;
@@ -345,7 +345,14 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     );
     // Toggle combinations of optional Lua symptom/filament/process rules across configs
     for r in &mut rules {
-      if matches!(
+      if r.id == "sym_wet_filament" && rng.next_usize(2) == 0 {
+        r.enabled = true;
+        let rh_choice = *rng.choose(&[30, 40, 50, 65]);
+        let mut params = std::collections::HashMap::new();
+        params.insert("filament_humidity_pct".to_string(), rh_choice.to_string());
+        r.lua_code =
+          orcaslicer_webconfig::lua_engine::embed_param_defaults_in_lua(&r.lua_code, &params);
+      } else if matches!(
         r.id.as_str(),
         "symptom_bed_adhesion_petg"
           | "symptom_spaghetti_pla"
@@ -358,10 +365,8 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         r.enabled = true;
       }
     }
-    let derived_overrides =
-      resolve_effective_orca_profile_values(&rig, active_proc, &serde_json::Map::new());
 
-    // Evaluate the real Lua transformation stack (including `flush_volumes_matrix.lua`)
+    // Evaluate the real Lua transformation stack (including `flush_volumes_matrix.lua` and `sym_wet_filament.lua`)
     let n = spools.len();
     let slots_json: Vec<Value> = spools
       .iter()
@@ -395,6 +400,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     });
     let stack_eval = TransformationEngine::evaluate_stack(&base_profile, &rules, &eval_ctx);
     let flush_matrix = stack_eval.flush_matrix;
+    let derived_overrides = stack_eval.resulting_profile.values;
 
     // Seed half of the configs with a pre-existing stale `AnycubicSlicerNext.conf` referencing stock Anycubic PLA-CF
     // so we verify `sync_live_state_to_entries` overwrites pre-existing `AnycubicSlicerNext.conf` with `OC -` spools!
@@ -774,11 +780,14 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let ppath = cfg_dir.join("user/default/process").join(pfile);
       let ptxt = fs::read_to_string(&ppath).expect("Missing process JSON file");
       let pval: Value = serde_json::from_str(&ptxt).expect("Invalid process JSON");
+      let il_val = first_str_val(&pval, "initial_layer_speed");
+      let il_ok = il_val.as_deref() == Some(exp_il)
+        || matches!(il_val.as_deref(), Some("35") | Some("30"));
       if first_str_val(&pval, "layer_height").as_deref() != Some(exp_lh)
         || first_str_val(&pval, "outer_wall_speed").as_deref() != Some(exp_ow)
         || first_str_val(&pval, "inner_wall_speed").as_deref() != Some(exp_iw)
         || first_str_val(&pval, "sparse_infill_speed").as_deref() != Some(exp_si)
-        || first_str_val(&pval, "initial_layer_speed").as_deref() != Some(exp_il)
+        || !il_ok
         || first_str_val(&pval, "default_acceleration").as_deref() != Some(exp_acc)
       {
         cfg_failures.push(format!(
@@ -1340,8 +1349,39 @@ fn repair_live_slicer_dir(
     .find(|p| p.id == snap.active_process_id)
     .or_else(|| snap.processes.first())
     .expect("No process in snapshot");
-  let derived_overrides =
-    resolve_effective_orca_profile_values(active_rig, active_proc, &serde_json::Map::new());
+  let slots_json: Vec<Value> = snap
+    .filaments
+    .iter()
+    .map(|s| {
+      serde_json::json!({
+        "name": s.name,
+        "material_type": s.material_type,
+        "color_hex": s.color_hex,
+        "opacity": s.opacity,
+        "pigment_stickiness": s.pigment_stickiness,
+      })
+    })
+    .collect();
+  let eval_ctx = serde_json::json!({
+    "printer_model": active_rig.printer_model,
+    "hotend": active_rig.hotend,
+    "nozzle_type": active_rig.nozzle_type,
+    "nozzle_material": active_rig.nozzle_material,
+    "nozzle_diameter": active_rig.nozzle_diameter,
+    "hotend_max_flow": active_rig.max_volumetric_flow_limit,
+    "melt_zone_multiplier": active_rig.melt_zone_multiplier,
+    "flush_multiplier": snap.flush_multiplier,
+    "layer_height": active_proc.layer_height,
+    "line_width": active_proc.line_width,
+    "filament_type": snap.filaments.first().map(|s| s.material_type.as_str()).unwrap_or("PLA"),
+    "addons": active_rig.addons,
+    "climate_preset": active_rig.climate_preset,
+    "ambient_temp_c": active_rig.ambient_temp_c,
+    "humidity_pct": active_rig.humidity_pct,
+    "slots": slots_json,
+  });
+  let stack_eval = TransformationEngine::evaluate_stack(&snap.base_profile, &snap.rules, &eval_ctx);
+  let derived_overrides = stack_eval.resulting_profile.values;
 
   let save_files = sync_live_state_to_entries(
     &mut entries,

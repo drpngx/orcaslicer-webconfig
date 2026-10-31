@@ -1762,15 +1762,39 @@ pub fn sync_live_state_to_entries(
 ) -> Vec<LocalFsSaveFileEntry> {
   let mut modified_map: HashMap<String, String> = HashMap::new();
 
-  // 1. Detect user_folder_id from existing `user/<id>/...` entries, defaulting to "default"
+  // 1. Detect user_folder_id from `AnycubicSlicerNext.conf` (`app.preset_folder`) or existing
+  // `user/<id>/...` directory entries, preferring non-"default" account folders (e.g. "434139").
   let mut user_folder_id = "default".to_string();
   for entry in entries.iter() {
-    let rel = entry.relative_path.replace('\\', "/");
-    if let Some(after_user) = rel.strip_prefix("user/") {
-      if let Some(seg) = after_user.split('/').next() {
-        if !seg.is_empty() {
-          user_folder_id = seg.to_string();
-          break;
+    if entry.filename.ends_with(".conf") {
+      let text = String::from_utf8_lossy(&entry.bytes);
+      let json_part = text.split("# MD5").next().unwrap_or(&text).trim();
+      if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_part) {
+        if let Some(pf) = val
+          .get("app")
+          .and_then(|a| a.get("preset_folder"))
+          .and_then(|v| v.as_str())
+          .map(|s| s.trim())
+        {
+          if !pf.is_empty() && pf != "default" {
+            user_folder_id = pf.to_string();
+            break;
+          }
+        }
+      }
+    }
+  }
+  if user_folder_id == "default" {
+    for entry in entries.iter() {
+      let rel = entry.relative_path.replace('\\', "/");
+      if let Some(after_user) = rel.strip_prefix("user/") {
+        if let Some((seg, _rest)) = after_user.split_once('/') {
+          if !seg.is_empty() {
+            user_folder_id = seg.to_string();
+            if seg != "default" {
+              break;
+            }
+          }
         }
       }
     }
@@ -1797,6 +1821,8 @@ pub fn sync_live_state_to_entries(
   }
 
   // 2. Ensure every MachineRig in `machines` has an up-to-date file in `user/<user_folder_id>/machine/`
+  // Always use `build_machine_preset_json(rig)` so the standalone machine `.json` file on disk
+  // is 100% identical to the machine parameters embedded in `.3mf` `Metadata/project_settings.config`.
   for rig in machines {
     let fname = crate::models::sanitize_profile_filename(&rig.name);
     let rel_path = format!("user/{}/machine/{}", user_folder_id, fname);
@@ -1804,44 +1830,12 @@ pub fn sync_live_state_to_entries(
 
     if let Some(existing) = entries.iter_mut().find(|e| {
       e.relative_path == rel_path
-        || e.filename == fname
-        || rig
-          .source_disk_profile
-          .as_deref()
-          .map(|sp| sp == e.relative_path)
-          .unwrap_or(false)
+        || (e.relative_path.starts_with("user/") && e.filename == fname)
     }) {
-      if rig.source_disk_profile.is_none() || rig.name.starts_with("OC -") {
-        existing.relative_path = rel_path.clone();
-        existing.filename = fname;
-        existing.bytes = machine_json.as_bytes().to_vec();
-        modified_map.insert(existing.relative_path.clone(), machine_json);
-      } else if let Ok(serde_json::Value::Object(mut map)) =
-        serde_json::from_slice::<serde_json::Value>(&existing.bytes)
-      {
-        let (orca_noz, hrc) = rig.orca_machine_nozzle_type_and_hrc();
-        let noz_diam_str = rig.formatted_nozzle_diameter();
-        let notes_str = if rig.notes.trim().is_empty() {
-          rig.generate_descriptive_notes()
-        } else {
-          rig.notes.clone()
-        };
-        map.insert("printer_notes".to_string(), serde_json::json!(notes_str));
-        map.insert("nozzle_type".to_string(), serde_json::json!(orca_noz));
-        map.insert("nozzle_hrc".to_string(), serde_json::json!(hrc.to_string()));
-        map.insert(
-          "nozzle_diameter".to_string(),
-          serde_json::json!([noz_diam_str]),
-        );
-        map.insert(
-          "version".to_string(),
-          serde_json::json!(crate::models::WEBCONFIG_ORCA_PRESET_VERSION),
-        );
-        if let Ok(pretty) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
-          existing.bytes = pretty.as_bytes().to_vec();
-          modified_map.insert(existing.relative_path.clone(), pretty);
-        }
-      }
+      existing.relative_path = rel_path.clone();
+      existing.filename = fname;
+      existing.bytes = machine_json.as_bytes().to_vec();
+      modified_map.insert(existing.relative_path.clone(), machine_json);
     } else {
       entries.push(ScannedFileEntry {
         relative_path: rel_path.clone(),
@@ -1870,10 +1864,10 @@ pub fn sync_live_state_to_entries(
     let rel_path = format!("user/{}/process/{}", user_folder_id, fname);
     let proc_json = crate::threemf::build_process_preset_json(proc, &active_rig, derived_overrides);
 
-    if let Some(existing) = entries
-      .iter_mut()
-      .find(|e| e.relative_path == rel_path || e.filename == fname)
-    {
+    if let Some(existing) = entries.iter_mut().find(|e| {
+      e.relative_path == rel_path
+        || (e.relative_path.starts_with("user/") && e.filename == fname)
+    }) {
       if !proc.id.starts_with("disk_") || existing.bytes != proc_json.as_bytes() {
         existing.bytes = proc_json.as_bytes().to_vec();
         modified_map.insert(existing.relative_path.clone(), proc_json);
@@ -1889,146 +1883,41 @@ pub fn sync_live_state_to_entries(
   }
 
   // 4. Synchronize all `filaments` (including newly added `OC:` spools and edited spools)
-  // into `user/<user_folder_id>/filament/<sanitized_name>.json`
-  let wet_rh = derived_overrides
-    .get("_wet_filament_rh")
-    .and_then(|v| v.as_str())
-    .and_then(|s| s.parse::<i32>().ok())
-    .unwrap_or(0);
-  let wet_temp_drop = derived_overrides
-    .get("_wet_filament_temp_drop_c")
-    .and_then(|v| v.as_str())
-    .and_then(|s| s.parse::<i32>().ok())
-    .unwrap_or(0);
-  let wet_init_bed_boost = derived_overrides
-    .get("_wet_filament_init_bed_boost_c")
-    .and_then(|v| v.as_str())
-    .and_then(|s| s.parse::<i32>().ok())
-    .unwrap_or(0);
-  let wet_flow_trim = derived_overrides
-    .get("_wet_filament_flow_trim")
-    .and_then(|v| v.as_str())
-    .and_then(|s| s.parse::<f64>().ok())
-    .unwrap_or(0.0);
-  let wet_retract_add = derived_overrides
-    .get("_wet_filament_retract_add_mm")
-    .and_then(|v| v.as_str())
-    .and_then(|s| s.parse::<f64>().ok())
-    .unwrap_or(0.0);
-  let wet_retract_before_wipe = derived_overrides
-    .get("_wet_filament_retract_before_wipe_pct")
-    .and_then(|v| v.as_str())
-    .and_then(|s| s.parse::<i32>().ok());
-
+  // into `user/<user_folder_id>/filament/<sanitized_name>.json`.
+  // Crucially, this delegates directly to `export_standalone_filament_json_with_overrides`
+  // (which shares `resolve_spool_orca_filament_map_with_rig_and_overrides` with `.3mf` export)
+  // and iterates in slot order so the last slot with a given `format_concise_title()` ID wins,
+  // matching `canonical_by_id` in `build_project_settings_config_json` so
+  // `profile_print_params_same(it->config, cfg)` in OrcaSlicer/AnycubicSlicerNext is guaranteed true.
   for spool in filaments {
     let export_title = spool.format_concise_title();
     let fname = crate::models::sanitize_profile_filename(&export_title);
-    let raw_fname = crate::models::sanitize_profile_filename(&spool.name);
     let default_rel_path = format!("user/{}/filament/{}", user_folder_id, fname);
-    let mut fil_json = crate::threemf::export_standalone_filament_json(spool, &active_rig);
-    if wet_rh > 20 && !spool.is_foaming_tpu() {
-      if let Ok(serde_json::Value::Object(mut fmap)) =
-        serde_json::from_str::<serde_json::Value>(&fil_json)
+    let fil_json = crate::threemf::export_standalone_filament_json_with_overrides(
+      spool,
+      &active_rig,
+      derived_overrides,
+    );
+
+    let mut matched_non_base = false;
+    for existing in entries.iter_mut() {
+      if existing.relative_path == default_rel_path
+        || (existing.relative_path.starts_with("user/")
+          && existing.relative_path.contains("/filament/")
+          && existing.filename == fname)
       {
-        let (min_noz, max_noz) =
-          FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type);
-        let (_, max_bed) = FilamentSpool::polymer_safe_bed_bounds(&spool.material_type);
-        for noz_key in [
-          "nozzle_temperature",
-          "nozzle_temperature_BRASS",
-          "nozzle_temperature_HS",
-        ] {
-          if let Some(cur_t) = fmap
-            .get(noz_key)
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|x| x.as_str())
-            .and_then(|s| s.parse::<i32>().ok())
-          {
-            let new_t = (cur_t + wet_temp_drop).clamp(min_noz, max_noz);
-            fmap.insert(noz_key.to_string(), serde_json::json!([new_t.to_string()]));
-          }
+        if !existing.relative_path.contains("/base/") {
+          matched_non_base = true;
+          existing.relative_path = default_rel_path.clone();
         }
-        if wet_init_bed_boost > 0 {
-          for plate_init_key in [
-            "hot_plate_temp_initial_layer",
-            "textured_plate_temp_initial_layer",
-            "cool_plate_temp_initial_layer",
-            "eng_plate_temp_initial_layer",
-            "textured_cool_plate_temp_initial_layer",
-            "supertack_plate_temp_initial_layer",
-          ] {
-            if let Some(cur_b) = fmap
-              .get(plate_init_key)
-              .and_then(|v| v.as_array())
-              .and_then(|a| a.first())
-              .and_then(|x| x.as_str())
-              .and_then(|s| s.parse::<i32>().ok())
-            {
-              let new_b = (cur_b + wet_init_bed_boost).min(max_bed);
-              fmap.insert(
-                plate_init_key.to_string(),
-                serde_json::json!([new_b.to_string()]),
-              );
-            }
-          }
-        }
-        if wet_flow_trim.abs() > 1e-6 {
-          if let Some(cur_f) = fmap
-            .get("filament_flow_ratio")
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|x| x.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-          {
-            let new_f = (cur_f + wet_flow_trim).clamp(0.85, 1.05);
-            fmap.insert(
-              "filament_flow_ratio".to_string(),
-              serde_json::json!([format!("{:.2}", new_f)]),
-            );
-          }
-        }
-        if wet_retract_add > 0.0 {
-          if let Some(cur_r) = fmap
-            .get("filament_retraction_length")
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|x| x.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-          {
-            let new_r = (cur_r + wet_retract_add).clamp(0.30, 1.45);
-            let r_str = crate::constants::PolymerConstants::format_retraction_mm(new_r);
-            fmap.insert(
-              "filament_retraction_length".to_string(),
-              serde_json::json!([r_str]),
-            );
-          }
-        }
-        if let Some(rbw_pct) = wet_retract_before_wipe {
-          fmap.insert(
-            "filament_retract_before_wipe".to_string(),
-            serde_json::json!([format!("{}%", rbw_pct)]),
-          );
-        }
-        if let Ok(pretty) = serde_json::to_string_pretty(&serde_json::Value::Object(fmap)) {
-          fil_json = pretty;
+        if !spool.id.starts_with("disk_") || existing.bytes != fil_json.as_bytes() {
+          existing.filename = fname.clone();
+          existing.bytes = fil_json.as_bytes().to_vec();
+          modified_map.insert(existing.relative_path.clone(), fil_json.clone());
         }
       }
     }
-
-    if let Some(existing) = entries.iter_mut().find(|e| {
-      e.relative_path == default_rel_path
-        || (e.relative_path.contains("/filament/")
-          && (e.filename == fname || e.filename == raw_fname))
-    }) {
-      // If this is a newly added/custom OC: spool or its bytes differ, update it
-      if !spool.id.starts_with("disk_") || existing.bytes != fil_json.as_bytes() {
-        existing.relative_path = default_rel_path.clone();
-        existing.filename = fname;
-        existing.bytes = fil_json.as_bytes().to_vec();
-        modified_map.insert(existing.relative_path.clone(), fil_json);
-      }
-    } else {
+    if !matched_non_base {
       entries.push(ScannedFileEntry {
         relative_path: default_rel_path.clone(),
         filename: fname,
@@ -2987,5 +2876,183 @@ mod tests {
     assert!(conf_saved
       .content
       .contains("OC - Anycubic PLA-CF • 0.4 Hardened"));
+  }
+
+  /// Regression test ensuring that the `.json` files written to disk via `sync_live_state_to_entries`
+  /// and the `.3mf` `Metadata/project_settings.config` generated via `build_project_settings_config_json`
+  /// are 100% identical across all machine, process, and 9-slot filament parameters — including when
+  /// `sym_wet_filament` (40% RH and 65% RH), `env_tropical_climate`, hardened/diamondback nozzles,
+  /// foaming TPU, and duplicate polymer slots are active.
+  ///
+  /// When this invariant holds, `PresetCollection::load_external_preset` in AnycubicSlicerNext / OrcaSlicer
+  /// is guaranteed to take the `if (found && profile_print_params_same(it->config, cfg))` fast-path for all
+  /// slots, never marking Slot 1 dirty (`is_dirty = true`) and never creating temporary `is_project_embedded`
+  /// presets on Slots 2..N that get wiped back to `Anycubic PLA` on `New Project -> Discard`.
+  #[test]
+  fn test_3mf_and_disk_entries_exact_parity_across_all_transforms_and_wet_filament() {
+    use crate::lua_engine::embed_param_defaults_in_lua;
+    use crate::orca_profile::OrcaProfile;
+    use crate::transformations::TransformationEngine;
+    use std::collections::HashMap;
+
+    for rh in [20, 40, 65] {
+      for nozzle_type in ["orca_hardened_steel", "diamondback", "orca_brass"] {
+        let mut entries = build_reference_anycubic_entries();
+        let imported = import_scanned_directory(&entries).unwrap();
+        let mut rig = imported.machines[0].clone();
+        let noz_cfg = crate::constants::constants().lookup_nozzle(nozzle_type);
+        rig.nozzle_type = nozzle_type.to_string();
+        rig.nozzle_material = noz_cfg.material_label.clone();
+        rig.nozzle_name = noz_cfg.default_name.clone();
+        let (_, hrc) = rig.orca_machine_nozzle_type_and_hrc();
+        rig.nozzle_hrc = hrc;
+        rig.climate_preset = "tropical".to_string();
+        rig.ambient_temp_c = 30;
+        rig.humidity_pct = 75;
+        rig.refresh_title_and_notes(true);
+
+        let mut filaments = imported.filaments.clone();
+        // Add a foaming TPU spool and a duplicate polymer slot with different color/id
+        let catalog = crate::catalog::load_merged_catalog();
+        if let Some(tpu_entry) = catalog.filaments.iter().find(|f| f.code == "TPU") {
+          let mut foaming =
+            FilamentSpool::from_catalog_entry(filaments.len() + 1, tpu_entry, &rig.nozzle_type);
+          foaming.apply_finish_change("Foaming", &rig.nozzle_type);
+          filaments.push(foaming);
+        }
+        let mut dup_spool = filaments.last().unwrap().clone();
+        dup_spool.id = "spool_dup_oc".to_string();
+        dup_spool.color_hex = "#FF00FF".to_string();
+        filaments.push(dup_spool);
+
+        for sp in &mut filaments {
+          sp.recompute_for_nozzle(&rig.nozzle_type);
+          sp.rebuild_synthetic_disk_json(&rig.nozzle_type);
+        }
+
+        let procs = ProcessProfile::get_default_processes();
+        let active_proc = &procs[1]; // 0.20mm Standard
+
+        let mut rules = TransformationEngine::get_default_rules();
+        TransformationEngine::sync_rules_for_rig(
+          &mut rules,
+          &rig.nozzle_type,
+          &rig.nozzle_material,
+          rig.ace_pro_units,
+        );
+        TransformationEngine::sync_weather_rule_for_rig(&mut rules, &rig);
+        for rule in &mut rules {
+          if rule.id == "sym_wet_filament" {
+            rule.enabled = rh > 20;
+            let mut params = HashMap::new();
+            params.insert("filament_humidity_pct".to_string(), rh.to_string());
+            rule.lua_code = embed_param_defaults_in_lua(&rule.lua_code, &params);
+          } else if matches!(
+            rule.id.as_str(),
+            "symptom_bed_adhesion_petg" | "filament_pctg_antistringing"
+          ) {
+            rule.enabled = true;
+          }
+        }
+
+        let base_profile = OrcaProfile::get_stock_kobra_s1();
+        let slots_json: Vec<serde_json::Value> = filaments
+          .iter()
+          .map(|s| {
+            serde_json::json!({
+              "name": s.name,
+              "material_type": s.material_type,
+              "color_hex": s.color_hex,
+              "opacity": s.opacity,
+              "pigment_stickiness": s.pigment_stickiness,
+            })
+          })
+          .collect();
+        let eval_ctx = serde_json::json!({
+          "printer_model": rig.printer_model,
+          "hotend": rig.hotend,
+          "nozzle_type": rig.nozzle_type,
+          "nozzle_material": rig.nozzle_material,
+          "nozzle_diameter": rig.nozzle_diameter,
+          "hotend_max_flow": rig.max_volumetric_flow_limit,
+          "melt_zone_multiplier": rig.melt_zone_multiplier,
+          "flush_multiplier": 1.0,
+          "layer_height": active_proc.layer_height,
+          "line_width": active_proc.line_width,
+          "filament_type": filaments[0].material_type,
+          "addons": rig.addons,
+          "climate_preset": rig.climate_preset,
+          "ambient_temp_c": rig.ambient_temp_c,
+          "humidity_pct": rig.humidity_pct,
+          "slots": slots_json,
+        });
+        let eval_res = TransformationEngine::evaluate_stack(&base_profile, &rules, &eval_ctx);
+        let derived_overrides = &eval_res.resulting_profile.values;
+
+        let machines = vec![rig.clone()];
+        let _saved = sync_live_state_to_entries(
+          &mut entries,
+          &machines,
+          &rig.id,
+          &filaments,
+          &procs,
+          &active_proc.id,
+          &eval_res.flush_matrix,
+          1.0,
+          "AnycubicSlicerNext.conf",
+          &[],
+          derived_overrides,
+        );
+
+        let mach_fname = crate::models::sanitize_profile_filename(&rig.name);
+        let proc_fname = crate::models::sanitize_profile_filename(&active_proc.name);
+
+        let machine_disk_json = entries
+          .iter()
+          .find(|e| e.relative_path.contains("/machine/") && e.filename == mach_fname)
+          .map(|e| String::from_utf8_lossy(&e.bytes).to_string())
+          .expect("Machine JSON must exist in entries after sync_live_state_to_entries");
+
+        let process_disk_json = entries
+          .iter()
+          .find(|e| e.relative_path.contains("/process/") && e.filename == proc_fname)
+          .map(|e| String::from_utf8_lossy(&e.bytes).to_string())
+          .expect("Process JSON must exist in entries after sync_live_state_to_entries");
+
+        let mut filament_disk_jsons: HashMap<String, String> = HashMap::new();
+        for sp in &filaments {
+          let f_id = sp.format_concise_title();
+          let f_fname = crate::models::sanitize_profile_filename(&f_id);
+          let f_json = entries
+            .iter()
+            .find(|e| e.relative_path.contains("/filament/") && e.filename == f_fname)
+            .map(|e| String::from_utf8_lossy(&e.bytes).to_string())
+            .unwrap_or_else(|| panic!("Filament JSON '{}' must exist in entries", f_fname));
+          filament_disk_jsons.insert(f_id, f_json);
+        }
+
+        let project_settings_json = crate::threemf::build_project_settings_config_json(
+          &rig,
+          active_proc,
+          &filaments,
+          &eval_res.flush_matrix,
+          derived_overrides,
+        );
+
+        if let Err(diffs) = crate::threemf::verify_project_settings_matches_standalone_presets(
+          &project_settings_json,
+          &machine_disk_json,
+          &process_disk_json,
+          &filament_disk_jsons,
+        ) {
+          panic!(
+            "3MF vs Disk JSON parity failed for RH={}% nozzle={}:\n  {}",
+            rh,
+            nozzle_type,
+            diffs.join("\n  ")
+          );
+        }
+      }
+    }
   }
 }
