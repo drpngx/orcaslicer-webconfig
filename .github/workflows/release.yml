@@ -1,0 +1,141 @@
+name: Build and Publish Release
+
+on:
+  # Trigger manually from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g., v1.0.0)'
+        required: true
+        type: string
+      release_name:
+        description: 'Release Title (optional, defaults to tag name)'
+        required: false
+        type: string
+      append_changelog:
+        description: 'Also append auto-generated commit list below RELEASE_NOTES.md?'
+        required: false
+        default: false
+        type: boolean
+
+  # Or trigger automatically when you push a v* tag from your terminal
+  push:
+    tags:
+      - 'v*'
+
+# Grants the workflow permission to create tags, releases, and upload assets
+permissions:
+  contents: write
+
+jobs:
+  build-portable-assets:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: orcaslicer-webconfig-portable-windows-x64
+            binary_name: orcaslicer-webconfig-portable-windows-x64.exe
+          - platform: linux-x64
+            os: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            artifact_name: orcaslicer-webconfig-portable-linux-x64
+            binary_name: orcaslicer-webconfig-portable-linux-x64
+          - platform: macos
+            os: macos-15
+            rust_target: aarch64-apple-darwin
+            artifact_name: orcaslicer-webconfig-portable-macos
+            binary_name: orcaslicer-webconfig-portable-macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Linux WebKitGTK & Tauri system dependencies
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config \
+            build-essential \
+            curl \
+            wget \
+            file
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,${{ matrix.rust_target }}
+
+      - name: Setup Bazelisk & Repository Cache
+        uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Install Tauri CLI v2
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@2
+
+      - name: Build project artifacts (Yew WASM + Single-File Tauri Portable Binary)
+        shell: bash
+        run: |
+          bazel run -c opt //:tauri_build -- --target ${{ matrix.rust_target }}
+
+      - name: Stage Single Portable Executable (Windows x64)
+        if: matrix.platform == 'windows-x64'
+        shell: bash
+        run: |
+          cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop.exe" \
+            "${{ matrix.binary_name }}"
+
+      - name: Stage Single Portable Executable (Linux x64 & macOS)
+        if: matrix.platform != 'windows-x64'
+        shell: bash
+        run: |
+          cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop" \
+            "${{ matrix.binary_name }}"
+          chmod +x "${{ matrix.binary_name }}"
+
+      - name: Upload Single-File Build Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.binary_name }}
+          if-no-files-found: error
+
+  release:
+    needs: build-portable-assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code (for RELEASE_NOTES.md)
+        uses: actions/checkout@v7
+
+      - name: Download All Built Portable Executables
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: ${{ inputs.release_name || inputs.tag_name || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: ${{ inputs.append_changelog || false }}
+          files: |
+            dist/orcaslicer-webconfig-portable-windows-x64.exe
+            dist/orcaslicer-webconfig-portable-linux-x64
+            dist/orcaslicer-webconfig-portable-macos

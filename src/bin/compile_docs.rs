@@ -86,6 +86,7 @@ fn main() {
     "hardware-and-weather.md",
     "filaments-and-brands.md",
     "lua-recipes-and-wizard.md",
+    "dev.md",
   ];
 
   let mut pages: Vec<CompiledDocPage> = Vec::new();

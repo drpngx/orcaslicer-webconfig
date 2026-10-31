@@ -8,12 +8,9 @@ on:
         description: "Optional GitHub Release tag (e.g. v0.1.0) to create/update and attach portable builds to"
         required: false
         default: ""
-  # 2. Automatic trigger at release points (published releases & version tags)
+  # 2. Automatic trigger when a release is published
   release:
-    types: [published, created]
-  push:
-    tags:
-      - "v*"
+    types: [published]
 
 permissions:
   contents: write
@@ -117,8 +114,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attach Portable Builds to GitHub Release (on release / tag / manual tag)
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_release_tag != '')
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload_to_release_tag != '')
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.upload_to_release_tag != '' && inputs.upload_to_release_tag || github.ref_name }}
+          body_path: RELEASE_NOTES.md
           files: ${{ matrix.binary_name }}

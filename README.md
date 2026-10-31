@@ -65,23 +65,5 @@ All documentation is located in the [`doc/`](doc/) directory, linked below for b
 3. [**Printer Rigs, Nozzles & Weather Adaptation (`doc/hardware-and-weather.md`)**](doc/hardware-and-weather.md) — Configuring MicroSwiss FlowTech / Diamondback / CHT CM2 nozzles, orifice diameters (`0.2mm`–`1.0mm`), cooling add-ons, and Tropical vs. Cold weather rules.
 4. [**Filaments, Vendor Brands & Flushing Matrix (`doc/filaments-and-brands.md`)**](doc/filaments-and-brands.md) — Browsing Siraya Tech, SUNLU, and Polymaker presets, specialty finishes, active TPU foaming Shore hardness, and the physics-based 8×8 flushing matrix.
 5. [**Lua Recipes, Symptom Wizard & Diff Viewer (`doc/lua-recipes-and-wizard.md`)**](doc/lua-recipes-and-wizard.md) — Using the Symptom Auto-Tuner, writing custom sandboxed Lua rules, and inspecting colored GitHub/Side-by-Side JSON diffs.
+6. [**Developer, Contributor & Release Guide (`doc/dev.md`)**](doc/dev.md) — Building, testing, and running the local Bazel server, editing `constants.json` & Lua transformations, building single-file portable Tauri executables, and publishing GitHub Releases via `RELEASE_NOTES.md`.
 
----
-
-## Building, Testing & Running (Bazel-First)
-
-All builds, catalog generators, documentation precompilation, screenshot generation, and unit tests run under **Bazel**:
-
-```bash
-# Run all unit tests, Lua transformation safety audits, and Python requirement checks
-bazel test //...
-
-# Build the WebAssembly frontend, precompiled docs, vendor catalog, and server
-bazel build //...
-
-# Run the local development server on http://127.0.0.1:8003
-HTTP_LISTEN_ADDR=0.0.0.0:8003 bazel run //server:server
-
-# Regenerate cropped documentation screenshots in doc/images/
-bazel run //scripts:capture_doc_screenshots
-```
