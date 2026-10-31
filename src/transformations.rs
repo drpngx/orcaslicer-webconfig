@@ -362,6 +362,14 @@ pub fn values_are_equivalent(a: &str, b: &str) -> bool {
   false
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleShadowKind {
+  /// A downstream rule overwrote or superseded this step's value (`⚡ Overwritten by later rule`).
+  Overwritten,
+  /// A downstream rule reversed the direction of this step's change or reverted its value (`↩️ Direction reversed`).
+  DirectionReversed,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RuleBeforeAfterChange {
   pub rule_id: String,
@@ -382,6 +390,17 @@ pub struct RuleBeforeAfterChange {
   pub delta_summary: String,
   #[serde(default)]
   pub rule_log: String,
+  /// Present when a downstream rule in the stack overwrote or reversed this step's parameter change.
+  #[serde(default)]
+  pub shadow_kind: Option<RuleShadowKind>,
+  #[serde(default)]
+  pub shadowed_by_step: Option<usize>,
+  #[serde(default)]
+  pub shadowed_by_rule_id: Option<String>,
+  #[serde(default)]
+  pub shadowed_by_rule_name: Option<String>,
+  #[serde(default)]
+  pub shadowed_final_value: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -399,6 +418,12 @@ pub struct ParameterProvenance {
   /// Enabled rules that would have touched this parameter but were out of scope for this context.
   #[serde(default)]
   pub skipped_steps: Vec<SkippedRuleInfo>,
+  /// True when >= 1 step on this parameter was overwritten or direction-reversed by a later rule.
+  #[serde(default)]
+  pub has_shadowed_steps: bool,
+  /// True when >= 1 step on this parameter had its direction reversed or value reverted by a later rule.
+  #[serde(default)]
+  pub has_direction_reversal: bool,
 }
 
 pub fn compute_delta_summary(before_raw: &str, after_raw: &str, unit: &str) -> String {
@@ -1398,10 +1423,22 @@ end
     let mut ordered_rules = rules.to_vec();
     ordered_rules.sort_by_key(|r| r.priority);
 
+    struct RawStepRecord {
+      change_idx: usize,
+      step_num: usize,
+      param_key: String,
+      unit: String,
+      raw_before: String,
+      raw_after: String,
+      before_json_val: Option<serde_json::Value>,
+    }
+
     let catalog = OrcaProfile::get_parameter_catalog();
     let mut active_rule_count = 0;
     let mut rule_sources: HashMap<String, String> = HashMap::new();
     let mut rule_changes: Vec<RuleBeforeAfterChange> = Vec::new();
+    let mut raw_step_records: Vec<RawStepRecord> = Vec::new();
+    let mut step_snapshots: HashMap<usize, (String, serde_json::Value)> = HashMap::new();
     let mut user_rule_scales: HashMap<String, f64> = HashMap::new();
     let mut skipped_rules: Vec<SkippedRuleInfo> = Vec::new();
 
@@ -1483,6 +1520,7 @@ end
       ));
 
       let before_snapshot = current_values.clone();
+      step_snapshots.insert(step_num, (rule.lua_code.clone(), before_snapshot.clone()));
       match execute_transformation_lua(&rule.lua_code, &current_values, context) {
         Ok((new_val, stdout, modified)) => {
           let rule_log_summary = stdout.join(" • ");
@@ -1490,7 +1528,9 @@ end
             execution_logs.push(format!("   {}", line));
           }
           for (mod_key, _, _) in &modified {
-            append_rule_source(&mut rule_sources, mod_key, step_num, &rule.name);
+            if !mod_key.starts_with('_') {
+              append_rule_source(&mut rule_sources, mod_key, step_num, &rule.name);
+            }
           }
           // Compute exact Before -> After diffs for this rule
           if let (
@@ -1501,7 +1541,10 @@ end
             let mut keys: Vec<&String> = after_map.keys().collect();
             keys.sort();
             for k in keys {
-              if k == "flush_volumes_matrix" || k == "computed_safe_speed_ceiling" {
+              if k.starts_with('_')
+                || k == "flush_volumes_matrix"
+                || k == "computed_safe_speed_ceiling"
+              {
                 continue;
               }
               let after_str = after_map.get(k).map(&extract_scalar).unwrap_or_default();
@@ -1558,6 +1601,16 @@ end
                   "   ↳ [Before → After] {} ({}): {} → {} [{}]",
                   label, k, before_fmt, after_fmt, delta_summary
                 ));
+                let change_idx = rule_changes.len();
+                raw_step_records.push(RawStepRecord {
+                  change_idx,
+                  step_num,
+                  param_key: k.clone(),
+                  unit: unit.to_string(),
+                  raw_before: before_str,
+                  raw_after: after_str,
+                  before_json_val: before_map.get(k).cloned(),
+                });
                 rule_changes.push(RuleBeforeAfterChange {
                   rule_id: rule.id.clone(),
                   rule_name: rule.name.clone(),
@@ -1571,6 +1624,11 @@ end
                   after_value: after_fmt,
                   delta_summary,
                   rule_log: rule_log_summary.clone(),
+                  shadow_kind: None,
+                  shadowed_by_step: None,
+                  shadowed_by_rule_id: None,
+                  shadowed_by_rule_name: None,
+                  shadowed_final_value: None,
                 });
               }
             }
@@ -1579,6 +1637,146 @@ end
         }
         Err(err) => {
           execution_logs.push(format!("❌ Error in rule '{}': {}", rule.name, err));
+        }
+      }
+    }
+
+    // Detect Rule Shadowing (⚡ Overwritten by later rule) & Contradictions (↩️ Direction reversed)
+    let parse_num_for_shadow = |raw: &str, unit: &str| -> Option<f64> {
+      if unit == "flag" {
+        return None;
+      }
+      raw
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<f64>()
+        .ok()
+    };
+
+    let mut records_by_key: HashMap<String, Vec<usize>> = HashMap::new();
+    for (rec_idx, rec) in raw_step_records.iter().enumerate() {
+      records_by_key
+        .entry(rec.param_key.clone())
+        .or_default()
+        .push(rec_idx);
+    }
+    let mut sorted_shadow_keys: Vec<String> = records_by_key.keys().cloned().collect();
+    sorted_shadow_keys.sort();
+    for key in sorted_shadow_keys {
+      let Some(rec_indices) = records_by_key.get(&key) else {
+        continue;
+      };
+      if rec_indices.len() < 2 {
+        continue;
+      }
+      let final_change_idx = raw_step_records[*rec_indices.last().unwrap()].change_idx;
+      let final_after_fmt = rule_changes[final_change_idx].after_value.clone();
+
+      for pos in 0..(rec_indices.len() - 1) {
+        let curr = &raw_step_records[rec_indices[pos]];
+        let curr_num_delta = match (
+          parse_num_for_shadow(&curr.raw_before, &curr.unit),
+          parse_num_for_shadow(&curr.raw_after, &curr.unit),
+        ) {
+          (Some(b), Some(a)) => Some(a - b),
+          _ => None,
+        };
+
+        let mut detected: Option<(RuleShadowKind, usize)> = None;
+
+        // 1. Check if any downstream step reverses the numeric direction or reverts back to `curr.raw_before`
+        for &later_rec_idx in &rec_indices[(pos + 1)..] {
+          let later = &raw_step_records[later_rec_idx];
+          let is_reverted = values_are_equivalent(&later.raw_after, &curr.raw_before);
+          let is_opposite_sign = if let Some(d_curr) = curr_num_delta {
+            if let (Some(b_l), Some(a_l)) = (
+              parse_num_for_shadow(&later.raw_before, &later.unit),
+              parse_num_for_shadow(&later.raw_after, &later.unit),
+            ) {
+              let d_later = a_l - b_l;
+              d_curr.abs() > 1e-9 && d_later.abs() > 1e-9 && d_curr * d_later < 0.0
+            } else {
+              false
+            }
+          } else {
+            false
+          };
+          if is_reverted || is_opposite_sign {
+            detected = Some((RuleShadowKind::DirectionReversed, later_rec_idx));
+            break;
+          }
+        }
+
+        // 2. Otherwise check if a downstream step overwrites `curr`
+        if detected.is_none() {
+          if curr_num_delta.is_none() {
+            // Non-numeric string / enum / flag: any subsequent modification overwrites `curr`
+            detected = Some((RuleShadowKind::Overwritten, rec_indices[pos + 1]));
+          } else {
+            // Same-direction numeric change: check via counterfactual execution whether the downstream
+            // rule produces the exact same output even when `key` is restored to `curr.raw_before`.
+            for &later_rec_idx in &rec_indices[(pos + 1)..] {
+              let later = &raw_step_records[later_rec_idx];
+              if let Some((later_lua, later_before_snap)) = step_snapshots.get(&later.step_num) {
+                let mut cf_snap = later_before_snap.clone();
+                if let serde_json::Value::Object(ref mut cf_map) = cf_snap {
+                  if let Some(ref orig_v) = curr.before_json_val {
+                    cf_map.insert(key.clone(), orig_v.clone());
+                  } else if curr.raw_before != "(unset)" {
+                    cf_map.insert(
+                      key.clone(),
+                      serde_json::Value::String(curr.raw_before.clone()),
+                    );
+                  } else {
+                    cf_map.remove(&key);
+                  }
+                }
+                if let Ok((cf_out, _, _)) =
+                  execute_transformation_lua(later_lua, &cf_snap, context)
+                {
+                  if let serde_json::Value::Object(ref cf_out_map) = cf_out {
+                    let cf_after_str = cf_out_map.get(&key).map(&extract_scalar).unwrap_or_default();
+                    if values_are_equivalent(&cf_after_str, &later.raw_after) {
+                      detected = Some((RuleShadowKind::Overwritten, later_rec_idx));
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if let Some((kind, later_rec_idx)) = detected {
+          let later = &raw_step_records[later_rec_idx];
+          let later_rule_id = rule_changes[later.change_idx].rule_id.clone();
+          let later_rule_name = rule_changes[later.change_idx].rule_name.clone();
+          let later_step_num = later.step_num;
+          let curr_change = &mut rule_changes[curr.change_idx];
+          curr_change.shadow_kind = Some(kind);
+          curr_change.shadowed_by_step = Some(later_step_num);
+          curr_change.shadowed_by_rule_id = Some(later_rule_id);
+          curr_change.shadowed_by_rule_name = Some(later_rule_name.clone());
+          curr_change.shadowed_final_value = Some(final_after_fmt.clone());
+
+          let kind_tag = match kind {
+            RuleShadowKind::DirectionReversed => "↩️ Direction Reversed",
+            RuleShadowKind::Overwritten => "⚡ Overwritten by Later Rule",
+          };
+          execution_logs.push(format!(
+            "⚠️ [{}] {} ({}): Step #{} ('{}': {} → {}) superseded by Step #{} ('{}' → {})",
+            kind_tag,
+            curr_change.param_label,
+            key,
+            curr_change.step_number,
+            curr_change.rule_name,
+            curr_change.before_value,
+            curr_change.after_value,
+            later_step_num,
+            later_rule_name,
+            final_after_fmt
+          ));
         }
       }
     }
@@ -1608,7 +1806,7 @@ end
       }
 
       for (k, v) in final_map {
-        if k == "flush_volumes_matrix" {
+        if k.starts_with('_') || k == "flush_volumes_matrix" {
           continue;
         }
         let base_val_str = base_profile.get_str(k).unwrap_or_default();
@@ -1625,7 +1823,7 @@ end
         let meta = catalog.get(k);
         let is_modified = base_val_str != curr_val_str;
 
-        if is_modified || meta.is_some() {
+        if is_modified || meta.is_some() || rule_sources.contains_key(k) {
           let label = meta
             .map(|m| m.label.clone())
             .unwrap_or_else(|| k.replace('_', " "));
@@ -1750,6 +1948,10 @@ end
       } else {
         "Unmodified (Baseline retained)".to_string()
       };
+      let has_shadowed_steps = steps.iter().any(|s| s.shadow_kind.is_some());
+      let has_direction_reversal = steps
+        .iter()
+        .any(|s| s.shadow_kind == Some(RuleShadowKind::DirectionReversed));
       result.push(ParameterProvenance {
         param_key: item.key.clone(),
         param_label: item.label.clone(),
@@ -1762,11 +1964,17 @@ end
         steps,
         is_modified: item.is_modified,
         skipped_steps: Vec::new(),
+        has_shadowed_steps,
+        has_direction_reversal,
       });
     }
     result.sort_by(|a, b| {
-      b.is_modified
-        .cmp(&a.is_modified)
+      let a_active = a.is_modified || !a.steps.is_empty();
+      let b_active = b.is_modified || !b.steps.is_empty();
+      b_active
+        .cmp(&a_active)
+        .then(b.has_direction_reversal.cmp(&a.has_direction_reversal))
+        .then(b.has_shadowed_steps.cmp(&a.has_shadowed_steps))
         .then(b.steps.len().cmp(&a.steps.len()))
         .then(a.category.cmp(&b.category))
         .then(a.param_label.cmp(&b.param_label))
@@ -4266,5 +4474,113 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     assert_eq!(val["bottom_shell_layers"].as_str(), Some("6"));
     assert_eq!(val["infill_wall_overlap"].as_str(), Some("25%"));
     assert_eq!(val["sparse_infill_pattern"].as_str(), Some("gyroid"));
+  }
+
+  #[test]
+  fn test_rule_shadowing_and_contradiction_detector() {
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("z_hop_types", "Auto Lift");
+    base.set_str("nozzle_temperature", "220");
+    base.set_str("outer_wall_line_width", "0.40");
+    base.set_str("bed_temperature", "60");
+
+    let mk_rule = |id: &str, name: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: name.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    let rules = vec![
+      mk_rule(
+        "rule_early",
+        "Rule Early",
+        10,
+        r#"
+          config["z_hop_types"] = "Spiral Lift"
+          local t = tonumber(config["nozzle_temperature"][1]) or 220
+          config["nozzle_temperature"] = { tostring(t - 5) }
+          config["outer_wall_line_width"] = "0.42"
+          local b = tonumber(config["bed_temperature"][1]) or 60
+          config["bed_temperature"] = { tostring(b + 5) }
+        "#,
+      ),
+      mk_rule(
+        "rule_late",
+        "Rule Late",
+        20,
+        r#"
+          config["z_hop_types"] = "Normal Lift"
+          local t = tonumber(config["nozzle_temperature"][1]) or 220
+          config["nozzle_temperature"] = { tostring(t + 8) }
+          config["outer_wall_line_width"] = "0.50"
+          local b = tonumber(config["bed_temperature"][1]) or 60
+          config["bed_temperature"] = { tostring(b + 5) }
+        "#,
+      ),
+    ];
+
+    let eval = TransformationEngine::evaluate_stack(&base, &rules, &json!({}));
+
+    let early_zhop = eval
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "rule_early" && c.param_key == "z_hop_types")
+      .expect("early z_hop_types change");
+    assert_eq!(early_zhop.shadow_kind, Some(RuleShadowKind::Overwritten));
+    assert_eq!(early_zhop.shadowed_by_step, Some(2));
+    assert_eq!(
+      early_zhop.shadowed_by_rule_name.as_deref(),
+      Some("Rule Late")
+    );
+
+    let early_temp = eval
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "rule_early" && c.param_key == "nozzle_temperature")
+      .expect("early nozzle_temperature change");
+    assert_eq!(
+      early_temp.shadow_kind,
+      Some(RuleShadowKind::DirectionReversed)
+    );
+    assert_eq!(early_temp.shadowed_by_step, Some(2));
+
+    let early_width = eval
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "rule_early" && c.param_key == "outer_wall_line_width")
+      .expect("early outer_wall_line_width change");
+    assert_eq!(early_width.shadow_kind, Some(RuleShadowKind::Overwritten));
+
+    // Additive same-direction offset (+5°C then +5°C = +10°C) is NOT shadowed!
+    let early_bed = eval
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "rule_early" && c.param_key == "bed_temperature")
+      .expect("early bed_temperature change");
+    assert_eq!(early_bed.shadow_kind, None);
+
+    // Check Provenance items
+    let prov_temp = eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "nozzle_temperature")
+      .unwrap();
+    assert!(prov_temp.has_shadowed_steps);
+    assert!(prov_temp.has_direction_reversal);
+
+    let prov_bed = eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "bed_temperature")
+      .unwrap();
+    assert!(!prov_bed.has_shadowed_steps);
+    assert!(!prov_bed.has_direction_reversal);
   }
 }

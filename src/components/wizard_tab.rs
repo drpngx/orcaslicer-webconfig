@@ -4,7 +4,7 @@ use crate::orca_profile::{
 };
 use crate::transformations::{
   ParameterProvenance, ParameterizedCalibrationTemplate, RuleBeforeAfterChange, RuleScopeFilter,
-  SkippedRuleInfo, StackReorderAction, TransformationEngine, TransformationRule,
+  RuleShadowKind, SkippedRuleInfo, StackReorderAction, TransformationEngine, TransformationRule,
   SCOPE_NOZZLE_DIAMETER_OPTIONS, SCOPE_NOZZLE_MATERIAL_OPTIONS, SCOPE_POLYMER_OPTIONS,
   SCOPE_PROCESS_TIER_OPTIONS,
 };
@@ -2533,13 +2533,24 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                   let step_num = idx + 1;
                   let sel_state = selected_rule_id.clone();
                   let rid_click = r.id.clone();
+                  let step_shadow_count = props
+                    .rule_changes
+                    .iter()
+                    .filter(|c| c.rule_id == r.id && c.shadow_kind.is_some())
+                    .count();
+                  let step_has_rev = props
+                    .rule_changes
+                    .iter()
+                    .any(|c| c.rule_id == r.id && c.shadow_kind == Some(RuleShadowKind::DirectionReversed));
 
                   html! {
                     <>
                       <button
                         class={format!(
                           "flex flex-col items-start px-2.5 py-1.5 rounded-lg border text-left shrink-0 transition-all cursor-pointer {}",
-                          if r.enabled {
+                          if r.enabled && step_shadow_count > 0 {
+                            "bg-surface-container-lowest border-amber-500/80 text-amber-300 shadow-sm"
+                          } else if r.enabled {
                             "bg-surface-container-lowest border-primary/60 text-primary shadow-sm"
                           } else {
                             "bg-surface-container-low border-outline-variant/40 text-on-surface-variant opacity-55"
@@ -2552,6 +2563,15 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                             {format!("Step #{}", step_num)}
                           </span>
                           <span class="text-[9px] uppercase text-on-surface-variant">{&r.condition_expr}</span>
+                          if r.enabled && step_shadow_count > 0 {
+                            <span class="bg-amber-950/80 text-amber-300 border border-amber-500/60 text-[9px] font-bold px-1 py-0.2 rounded">
+                              {if step_has_rev {
+                                format!("↩️ {}", step_shadow_count)
+                              } else {
+                                format!("⚡ {}", step_shadow_count)
+                              }}
+                            </span>
+                          }
                         </div>
                         <span class="text-[11px] font-bold text-on-surface mt-0.5 max-w-44 truncate">
                           {format!("{} {}", r.icon, r.name)}
@@ -2582,19 +2602,53 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                     {for multi_rule_chains.iter().map(|(pkey, plabel, chain)| {
                       let initial_val = chain.first().map(|c| c.before_value.clone()).unwrap_or_default();
                       let final_val = chain.last().map(|c| c.after_value.clone()).unwrap_or_default();
+                      let chain_has_rev = chain
+                        .iter()
+                        .any(|c| c.shadow_kind == Some(RuleShadowKind::DirectionReversed));
+                      let chain_has_ow = chain
+                        .iter()
+                        .any(|c| c.shadow_kind == Some(RuleShadowKind::Overwritten));
                       html! {
                         <div class="flex items-center justify-between flex-wrap gap-2 bg-surface-container-lowest px-2.5 py-1.5 rounded border border-outline-variant/50 text-[11px]">
-                          <span class="font-bold text-on-surface">
-                            {format!("{} ({})", plabel, pkey)}
-                          </span>
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="font-bold text-on-surface">
+                              {format!("{} ({})", plabel, pkey)}
+                            </span>
+                            if chain_has_rev {
+                              <span class="bg-amber-950/70 text-amber-300 border border-amber-500/60 px-1.5 py-0.2 rounded text-[10px] font-bold">
+                                {"↩️ Direction reversed"}
+                              </span>
+                            } else if chain_has_ow {
+                              <span class="bg-amber-950/60 text-amber-300 border border-amber-500/50 px-1.5 py-0.2 rounded text-[10px] font-bold">
+                                {"⚡ Overwritten by later rule"}
+                              </span>
+                            }
+                          </div>
                           <div class="flex items-center flex-wrap gap-1.5">
                             <span class="text-on-surface-variant">{format!("Base: {}", initial_val)}</span>
                             {for chain.iter().map(|step_ch| {
+                              let sh_badge = match step_ch.shadow_kind {
+                                Some(RuleShadowKind::DirectionReversed) => Some("↩️ Reversed"),
+                                Some(RuleShadowKind::Overwritten) => Some("⚡ Overwritten"),
+                                None => None,
+                              };
                               html! {
                                 <>
                                   <span class="text-primary font-bold">{"➔"}</span>
-                                  <span class="bg-primary/15 border border-primary/40 text-on-surface px-1.5 py-0.5 rounded">
+                                  <span class={format!(
+                                    "px-1.5 py-0.5 rounded border {}",
+                                    if step_ch.shadow_kind.is_some() {
+                                      "bg-amber-950/40 border-amber-500/60 text-amber-200"
+                                    } else {
+                                      "bg-primary/15 border-primary/40 text-on-surface"
+                                    }
+                                  )}>
                                     {format!("Step #{}: {} ({})", step_ch.step_number, step_ch.rule_name, step_ch.after_value)}
+                                    {if let Some(b_txt) = sh_badge {
+                                      html! { <span class="ml-1 text-[10px] font-bold text-amber-300">{format!("[{}]", b_txt)}</span> }
+                                    } else {
+                                      html! {}
+                                    }}
                                   </span>
                                 </>
                               }
@@ -2631,21 +2685,44 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
               .iter()
               .filter(|c| c.rule_id == rule.id)
               .collect();
+            let shadowed_diffs: Vec<&RuleBeforeAfterChange> = per_rule_diffs
+              .iter()
+              .copied()
+              .filter(|c| c.shadow_kind.is_some())
+              .collect();
+            let has_shadow_warning = is_active && !shadowed_diffs.is_empty();
+            let is_completely_shadowed =
+              has_shadow_warning && shadowed_diffs.len() == per_rule_diffs.len();
+            let has_reversal_on_rule = shadowed_diffs
+              .iter()
+              .any(|c| c.shadow_kind == Some(RuleShadowKind::DirectionReversed));
+            let max_shadow_step = shadowed_diffs
+              .iter()
+              .filter_map(|c| c.shadowed_by_step)
+              .max();
 
             let cb_reorder_top = props.on_reorder_rule.clone();
             let cb_reorder_up = props.on_reorder_rule.clone();
             let cb_reorder_down = props.on_reorder_rule.clone();
             let cb_reorder_bot = props.on_reorder_rule.clone();
+            let cb_shadow_up = props.on_reorder_rule.clone();
+            let cb_shadow_down = props.on_reorder_rule.clone();
+            let cb_shadow_after = props.on_reorder_rule.clone();
             let rid_top = rule.id.clone();
             let rid_up = rule.id.clone();
             let rid_down = rule.id.clone();
             let rid_bot = rule.id.clone();
+            let rid_sh_up = rule.id.clone();
+            let rid_sh_down = rule.id.clone();
+            let rid_sh_after = rule.id.clone();
 
             html! {
               <div
                 class={format!(
                   "flex flex-col justify-between p-space-lg rounded-xl border transition-all {}",
-                  if is_active {
+                  if has_shadow_warning {
+                    "bg-surface-container border-amber-500/80 shadow-md"
+                  } else if is_active {
                     "bg-surface-container border-primary shadow-md"
                   } else {
                     "bg-surface-container-low border-outline-variant hover:border-surface-bright"
@@ -2667,6 +2744,26 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                           <span class="text-[10px] font-mono text-primary bg-primary/10 border border-primary/30 px-1.5 py-0.5 rounded">
                             {format!("Scope: {}", rule.condition_expr)}
                           </span>
+                          {if has_shadow_warning {
+                            let badge_txt = if is_completely_shadowed {
+                              if has_reversal_on_rule {
+                                format!("⚠️ Completely Shadowed / Reversed ({}/{})", shadowed_diffs.len(), per_rule_diffs.len())
+                              } else {
+                                format!("⚠️ Completely Shadowed ({}/{} overwritten)", shadowed_diffs.len(), per_rule_diffs.len())
+                              }
+                            } else if has_reversal_on_rule {
+                              format!("↩️ Direction Reversed / Shadowed ({}/{})", shadowed_diffs.len(), per_rule_diffs.len())
+                            } else {
+                              format!("⚡ Partially Shadowed ({}/{} overwritten)", shadowed_diffs.len(), per_rule_diffs.len())
+                            };
+                            html! {
+                              <span class="text-[10px] font-mono font-bold bg-amber-950/80 text-amber-300 border border-amber-500/70 px-2 py-0.5 rounded">
+                                {badge_txt}
+                              </span>
+                            }
+                          } else {
+                            html! {}
+                          }}
                         </div>
                         <h3 class="font-headline-sm text-body-md text-on-surface font-bold mt-0.5">
                           {&rule.name}
@@ -2821,6 +2918,85 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                     }
                   }}
 
+                  // Rule Shadowing & Contradiction Detector Warning Banner (with 1-click ↑ Move Up / ↓ Move Down precedence reordering)
+                  {if has_shadow_warning {
+                    html! {
+                      <div class="bg-amber-950/35 border border-amber-500/70 rounded-lg p-space-sm flex flex-col gap-1.5 font-mono text-xs">
+                        <div class="flex items-center justify-between flex-wrap gap-1.5">
+                          <span class="text-[11px] font-bold text-amber-300">
+                            {if is_completely_shadowed {
+                              format!("⚠️ Rule Completely Shadowed: All {} output parameter(s) from Step #{} are overwritten or reversed by downstream rule(s)!", shadowed_diffs.len(), step_number)
+                            } else {
+                              format!("⚡ Rule Partially Shadowed: {} of {} parameter(s) from Step #{} are overwritten or reversed by downstream rule(s):", shadowed_diffs.len(), per_rule_diffs.len(), step_number)
+                            }}
+                          </span>
+                          <div class="flex items-center gap-1 flex-wrap text-[10px]">
+                            <button
+                              class="px-2 py-0.5 rounded bg-surface-container-lowest hover:bg-surface-bright text-amber-200 border border-amber-500/50 font-bold cursor-pointer disabled:opacity-40"
+                              disabled={is_first}
+                              title="Move rule 1 step up (earlier in evaluation stack)"
+                              onclick={Callback::from(move |_| {
+                                cb_shadow_up.emit((rid_sh_up.clone(), StackReorderAction::MoveUp));
+                              })}
+                            >
+                              {"↑ Move Up"}
+                            </button>
+                            <button
+                              class="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 border border-amber-400 font-bold cursor-pointer disabled:opacity-40"
+                              disabled={is_last}
+                              title="Move rule 1 step down (later in evaluation stack so it takes higher precedence)"
+                              onclick={Callback::from(move |_| {
+                                cb_shadow_down.emit((rid_sh_down.clone(), StackReorderAction::MoveDown));
+                              })}
+                            >
+                              {"↓ Move Down"}
+                            </button>
+                            {if let Some(target_step) = max_shadow_step {
+                              let target_prio = (target_step as i32) * 10 + 5;
+                              html! {
+                                <button
+                                  class="px-2 py-0.5 rounded bg-amber-500 text-slate-950 hover:bg-amber-400 font-bold cursor-pointer"
+                                  title={format!("Move this rule immediately after Step #{} so its output wins", target_step)}
+                                  onclick={Callback::from(move |_| {
+                                    cb_shadow_after.emit((rid_sh_after.clone(), StackReorderAction::SetPriority(target_prio)));
+                                  })}
+                                >
+                                  {format!("⇊ Move After Step #{}", target_step)}
+                                </button>
+                              }
+                            } else {
+                              html! {}
+                            }}
+                          </div>
+                        </div>
+                        <div class="flex flex-col gap-0.5 text-[10px] text-amber-200/95">
+                          {for shadowed_diffs.iter().map(|ch| {
+                            let by_step = ch.shadowed_by_step.unwrap_or(0);
+                            let by_rule = ch.shadowed_by_rule_name.as_deref().unwrap_or("downstream rule");
+                            let by_val = ch.shadowed_final_value.as_deref().unwrap_or("");
+                            let prefix = match ch.shadow_kind {
+                              Some(RuleShadowKind::DirectionReversed) => "↩️ Direction reversed",
+                              _ => "⚡ Overwritten",
+                            };
+                            html! {
+                              <div class="flex items-center justify-between flex-wrap gap-1 bg-surface-container-lowest/70 px-2 py-0.5 rounded border border-amber-500/30">
+                                <span>
+                                  <strong class="text-amber-300">{format!("{}: ", prefix)}</strong>
+                                  {format!("{} ({}) set to {}", ch.param_label, ch.param_key, ch.after_value)}
+                                </span>
+                                <span class="text-amber-300 font-bold">
+                                  {format!("→ Step #{}: {} ({})", by_step, by_rule, by_val)}
+                                </span>
+                              </div>
+                            }
+                          })}
+                        </div>
+                      </div>
+                    }
+                  } else {
+                    html! {}
+                  }}
+
                   // Per-Rule Before -> After Changes Box
                   {if !per_rule_diffs.is_empty() {
                     html! {
@@ -2829,13 +3005,40 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                           {format!("Step #{} Before → After Parameter Changes:", step_number)}
                         </span>
                         {for per_rule_diffs.iter().map(|ch| {
+                          let sh_tag = match ch.shadow_kind {
+                            Some(RuleShadowKind::DirectionReversed) => Some(format!(
+                              "↩️ Reversed by Step #{}",
+                              ch.shadowed_by_step.unwrap_or(0)
+                            )),
+                            Some(RuleShadowKind::Overwritten) => Some(format!(
+                              "⚡ Overwritten by Step #{}",
+                              ch.shadowed_by_step.unwrap_or(0)
+                            )),
+                            None => None,
+                          };
                           html! {
                             <div class="flex items-center justify-between gap-2 text-[11px]">
                               <span class="text-on-surface truncate">{format!("{} ({})", ch.param_label, ch.param_key)}</span>
                               <div class="flex items-center gap-1.5 shrink-0">
                                 <span class="text-on-surface-variant line-through">{&ch.before_value}</span>
                                 <span class="text-primary font-bold">{"→"}</span>
-                                <span class="text-tertiary font-bold">{&ch.after_value}</span>
+                                <span class={format!(
+                                  "font-bold {}",
+                                  if ch.shadow_kind.is_some() {
+                                    "text-amber-300 line-through"
+                                  } else {
+                                    "text-tertiary"
+                                  }
+                                )}>{&ch.after_value}</span>
+                                {if let Some(tag) = sh_tag {
+                                  html! {
+                                    <span class="bg-amber-950/70 text-amber-300 border border-amber-500/50 px-1.5 py-0.2 rounded text-[10px] font-bold">
+                                      {tag}
+                                    </span>
+                                  }
+                                } else {
+                                  html! {}
+                                }}
                               </div>
                             </div>
                           }

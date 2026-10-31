@@ -2,8 +2,8 @@ use crate::components::nav::ActiveTab;
 use crate::models::{MachineRig, ProcessProfile};
 use crate::orca_profile::DiffItem;
 use crate::transformations::{
-  ExternalConflict, ParameterProvenance, PendingDiskUpdate, SafetySeverity, SafetyWarning,
-  TransformationRule,
+  ExternalConflict, ParameterProvenance, PendingDiskUpdate, RuleShadowKind, SafetySeverity,
+  SafetyWarning, TransformationRule,
 };
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
@@ -109,6 +109,11 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
     .iter()
     .filter(|p| p.steps.len() >= 2)
     .count();
+  let shadowed_count = props
+    .provenance_items
+    .iter()
+    .filter(|p| p.has_shadowed_steps || p.has_direction_reversal)
+    .count();
   let total_step_events: usize = props.provenance_items.iter().map(|p| p.steps.len()).sum();
   let out_of_scope_count = props
     .provenance_items
@@ -120,6 +125,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
     .provenance_items
     .iter()
     .filter(|p| match provenance_filter.as_str() {
+      "shadowed" => p.has_shadowed_steps || p.has_direction_reversal,
       "multi_step" => p.steps.len() >= 2,
       "out_of_scope" => !p.skipped_steps.is_empty(),
       "all" => true,
@@ -1106,6 +1112,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                     <div class="flex items-center gap-space-xs flex-wrap">
                       {for [
                         ("modified", format!("Modified Lineage ({})", modified_count)),
+                        ("shadowed", format!("⚠️ Shadowed / Reversed ({})", shadowed_count)),
                         ("multi_step", format!("Multi-Rule Chains ≥2 ({})", multi_step_count)),
                         ("out_of_scope", format!("⏭️ Out-of-Scope Rules ({})", out_of_scope_count)),
                         ("all", format!("All Catalog Params ({})", props.provenance_items.len())),
@@ -1119,6 +1126,8 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                               "px-2.5 py-1 rounded text-xs font-mono border transition-colors cursor-pointer {}",
                               if is_sel {
                                 "bg-primary/20 text-primary border-primary font-bold"
+                              } else if fid == "shadowed" && shadowed_count > 0 {
+                                "bg-amber-950/50 text-amber-300 border-amber-500/60 hover:bg-amber-950/80 font-bold"
                               } else {
                                 "bg-surface-container text-on-surface-variant border-outline-variant hover:text-on-surface"
                               }
@@ -1155,10 +1164,19 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                     <div class="flex flex-col gap-space-sm max-h-[540px] overflow-y-auto pr-1">
                       {for filtered_prov.into_iter().map(|prov| {
                         let step_len = prov.steps.len();
+                        let has_overwritten_step = prov
+                          .steps
+                          .iter()
+                          .any(|s| s.shadow_kind == Some(RuleShadowKind::Overwritten));
+                        let cb_jump_wizard = props.on_switch_tab.clone();
                         html! {
                           <div class={format!(
                             "rounded-lg p-space-md border flex flex-col gap-space-sm transition-colors {}",
-                            if step_len >= 2 {
+                            if prov.has_direction_reversal {
+                              "bg-surface-container border-amber-500/80 shadow-md"
+                            } else if prov.has_shadowed_steps {
+                              "bg-surface-container border-amber-500/60 shadow-sm"
+                            } else if step_len >= 2 {
                               "bg-surface-container border-tertiary/60 shadow-sm"
                             } else if prov.is_modified {
                               "bg-surface-container border-primary/40"
@@ -1190,6 +1208,25 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                   <span class="bg-surface-container-highest text-on-surface-variant px-2 py-0.5 rounded text-[10px] font-mono">
                                     {"0 Steps (Baseline Retained)"}
                                   </span>
+                                }
+                                if prov.has_direction_reversal {
+                                  <span class="bg-amber-950/70 text-amber-300 border border-amber-500/70 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
+                                    {"↩️ Direction reversed"}
+                                  </span>
+                                }
+                                if has_overwritten_step {
+                                  <span class="bg-amber-950/60 text-amber-300 border border-amber-500/50 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
+                                    {"⚡ Overwritten by later rule"}
+                                  </span>
+                                }
+                                if prov.has_shadowed_steps || prov.has_direction_reversal {
+                                  <button
+                                    class="bg-surface-container-lowest hover:bg-surface-container-high text-amber-300 border border-amber-500/50 px-2 py-0.5 rounded text-[10px] font-mono font-bold cursor-pointer"
+                                    title="Jump to Wizard & Lua Studio to reorder conflicting rules"
+                                    onclick={Callback::from(move |_| cb_jump_wizard.emit(ActiveTab::Wizard))}
+                                  >
+                                    {"⚡ Reorder in Lua Studio →"}
+                                  </button>
                                 }
                               </div>
 
@@ -1231,14 +1268,35 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                               </div>
 
                               // Successive Lua Transformation Steps
-                              {for prov.steps.iter().map(|step| {
+                              {for prov.steps.iter().enumerate().map(|(s_idx, step)| {
+                                let earlier_overwritten_steps: Vec<String> = prov.steps[..s_idx]
+                                  .iter()
+                                  .filter(|earlier| earlier.shadowed_by_step == Some(step.step_number))
+                                  .map(|earlier| {
+                                    match earlier.shadow_kind {
+                                      Some(RuleShadowKind::DirectionReversed) => {
+                                        format!("↩️ Reverses Step #{} ({})", earlier.step_number, earlier.after_value)
+                                      }
+                                      _ => {
+                                        format!("⚡ Overwrites Step #{} ({})", earlier.step_number, earlier.after_value)
+                                      }
+                                    }
+                                  })
+                                  .collect();
                                 html! {
                                   <>
                                     <div class="flex flex-col items-center justify-center px-1 text-primary select-none">
                                       <span class="text-[10px] font-bold">{format!("#{}", step.step_number)}</span>
                                       <span class="text-base leading-none">{"➔"}</span>
                                     </div>
-                                    <div class="bg-surface-container-lowest p-2.5 rounded-lg border border-primary/50 flex flex-col justify-between min-w-[230px] flex-1">
+                                    <div class={format!(
+                                      "bg-surface-container-lowest p-2.5 rounded-lg border flex flex-col justify-between min-w-[230px] flex-1 {}",
+                                      if step.shadow_kind.is_some() {
+                                        "border-amber-500/70"
+                                      } else {
+                                        "border-primary/50"
+                                      }
+                                    )}>
                                       <div class="flex items-center justify-between gap-2 flex-wrap">
                                         <div class="flex items-center gap-1">
                                           <span>{if step.rule_icon.is_empty() { "⚙️" } else { &step.rule_icon }}</span>
@@ -1262,13 +1320,53 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                           {&step.before_value}
                                         </span>
                                         <span class="text-on-surface-variant font-bold">{"→"}</span>
-                                        <span class="bg-emerald-950/50 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.5 rounded text-[11px] font-bold break-all">
+                                        <span class={format!(
+                                          "px-1.5 py-0.5 rounded text-[11px] font-bold break-all border {}",
+                                          if step.shadow_kind.is_some() {
+                                            "bg-amber-950/50 text-amber-300 border-amber-500/40 line-through"
+                                          } else {
+                                            "bg-emerald-950/50 text-emerald-300 border-emerald-500/40"
+                                          }
+                                        )}>
                                           {&step.after_value}
                                         </span>
                                         <span class="bg-primary/20 text-primary border border-primary/40 px-1.5 py-0.5 rounded text-[10px] font-bold">
                                           {&step.delta_summary}
                                         </span>
                                       </div>
+
+                                      {if let Some(kind) = step.shadow_kind {
+                                        let by_step = step.shadowed_by_step.unwrap_or(0);
+                                        let by_name = step.shadowed_by_rule_name.as_deref().unwrap_or("later rule");
+                                        let by_val = step.shadowed_final_value.as_deref().unwrap_or("");
+                                        let msg = match kind {
+                                          RuleShadowKind::DirectionReversed => format!(
+                                            "↩️ Direction reversed by Step #{}: {} (→ {})",
+                                            by_step, by_name, by_val
+                                          ),
+                                          RuleShadowKind::Overwritten => format!(
+                                            "⚡ Overwritten by Step #{}: {} (→ {})",
+                                            by_step, by_name, by_val
+                                          ),
+                                        };
+                                        html! {
+                                          <div class="text-[10px] font-bold text-amber-300 bg-amber-950/50 px-2 py-1 rounded border border-amber-500/50 mt-0.5 break-words">
+                                            {msg}
+                                          </div>
+                                        }
+                                      } else {
+                                        html! {}
+                                      }}
+
+                                      {if !earlier_overwritten_steps.is_empty() {
+                                        html! {
+                                          <div class="text-[10px] font-bold text-tertiary bg-tertiary/10 px-2 py-0.5 rounded border border-tertiary/40 mt-0.5 break-words">
+                                            {earlier_overwritten_steps.join(" • ")}
+                                          </div>
+                                        }
+                                      } else {
+                                        html! {}
+                                      }}
 
                                       if !step.rule_log.is_empty() {
                                         <div class="text-[10px] text-on-surface-variant bg-surface-container/60 px-2 py-1 rounded border border-outline-variant/40 mt-0.5 break-words">
