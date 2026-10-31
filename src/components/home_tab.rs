@@ -110,14 +110,20 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
     .filter(|p| p.steps.len() >= 2)
     .count();
   let total_step_events: usize = props.provenance_items.iter().map(|p| p.steps.len()).sum();
+  let out_of_scope_count = props
+    .provenance_items
+    .iter()
+    .filter(|p| !p.skipped_steps.is_empty())
+    .count();
   let q_lower = provenance_search.trim().to_lowercase();
   let filtered_prov: Vec<&ParameterProvenance> = props
     .provenance_items
     .iter()
     .filter(|p| match provenance_filter.as_str() {
       "multi_step" => p.steps.len() >= 2,
+      "out_of_scope" => !p.skipped_steps.is_empty(),
       "all" => true,
-      _ => p.is_modified || !p.steps.is_empty(),
+      _ => p.is_modified || !p.steps.is_empty() || !p.skipped_steps.is_empty(),
     })
     .filter(|p| {
       if q_lower.is_empty() {
@@ -1101,6 +1107,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                       {for [
                         ("modified", format!("Modified Lineage ({})", modified_count)),
                         ("multi_step", format!("Multi-Rule Chains ≥2 ({})", multi_step_count)),
+                        ("out_of_scope", format!("⏭️ Out-of-Scope Rules ({})", out_of_scope_count)),
                         ("all", format!("All Catalog Params ({})", props.provenance_items.len())),
                       ].into_iter().map(|(fid, flabel)| {
                         let is_sel = *provenance_filter == fid;
@@ -1269,6 +1276,28 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                           <span>{&step.rule_log}</span>
                                         </div>
                                       }
+                                    </div>
+                                  </>
+                                }
+                              })}
+
+                              // Out-of-Scope (Skipped) Rules that would have touched this parameter
+                              {for prov.skipped_steps.iter().map(|sk| {
+                                html! {
+                                  <>
+                                    <div class="flex flex-col items-center justify-center px-1 text-secondary select-none">
+                                      <span class="text-[10px] font-bold">{format!("#{}", sk.step_number)}</span>
+                                      <span class="text-base leading-none">{"⏭️"}</span>
+                                    </div>
+                                    <div class="bg-surface-container-lowest/60 p-2.5 rounded-lg border border-dashed border-secondary/60 flex flex-col gap-0.5 min-w-[200px] opacity-80" title={sk.reason.clone()}>
+                                      <div class="flex items-center gap-1">
+                                        <span>{if sk.rule_icon.is_empty() { "⚙️" } else { &sk.rule_icon }}</span>
+                                        <span class="text-[10px] uppercase font-bold text-secondary">
+                                          {format!("Step #{} • Skipped (Out of Scope)", sk.step_number)}
+                                        </span>
+                                      </div>
+                                      <div class="text-xs font-bold text-on-surface-variant line-through">{&sk.rule_name}</div>
+                                      <div class="text-[10px] text-secondary break-words">{&sk.reason}</div>
                                     </div>
                                   </>
                                 }

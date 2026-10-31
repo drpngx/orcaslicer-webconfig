@@ -3,8 +3,10 @@ use crate::orca_profile::{
   DiffItem, OrcaProfile, SettingValueKind, WizardActionOp, WizardRuleAction, WizardSettingDef,
 };
 use crate::transformations::{
-  ParameterProvenance, ParameterizedCalibrationTemplate, RuleBeforeAfterChange, StackReorderAction,
-  TransformationEngine, TransformationRule,
+  ParameterProvenance, ParameterizedCalibrationTemplate, RuleBeforeAfterChange, RuleScopeFilter,
+  SkippedRuleInfo, StackReorderAction, TransformationEngine, TransformationRule,
+  SCOPE_NOZZLE_DIAMETER_OPTIONS, SCOPE_NOZZLE_MATERIAL_OPTIONS, SCOPE_POLYMER_OPTIONS,
+  SCOPE_PROCESS_TIER_OPTIONS,
 };
 use yew::prelude::*;
 
@@ -21,6 +23,9 @@ pub struct WizardTabProps {
   pub on_select_process: Callback<String>,
   pub on_toggle_rule: Callback<String>,
   pub on_update_rule_lua: Callback<(String, String)>,
+  pub on_update_rule_scope: Callback<(String, RuleScopeFilter)>,
+  #[prop_or_default]
+  pub skipped_rules: Vec<SkippedRuleInfo>,
   pub on_create_rule: Callback<TransformationRule>,
   pub on_delete_rule: Callback<String>,
   pub on_reorder_rule: Callback<(String, StackReorderAction)>,
@@ -36,6 +41,7 @@ pub struct WizardTabProps {
 pub fn WizardTab(props: &WizardTabProps) -> Html {
   let on_toggle_rule = props.on_toggle_rule.clone();
   let impact_view_mode = use_state(|| "provenance".to_string()); // "provenance" or "compact_table"
+  let scope_editor_rule = use_state(|| None::<String>);
   let selected_rule_id = use_state(|| {
     props
       .rules
@@ -328,6 +334,19 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                                 {format!("↳ {}", step.rule_log)}
                               </span>
                             }
+                          </div>
+                        </>
+                      })}
+                      {for prov.skipped_steps.iter().map(|sk| html! {
+                        <>
+                          <span class="text-secondary font-bold">{"⏭️"}</span>
+                          <div class="bg-surface-container-lowest/60 px-2.5 py-1.5 rounded border border-dashed border-secondary/60 flex flex-col gap-0.5 opacity-80" title={sk.reason.clone()}>
+                            <div class="flex items-center gap-1 text-[10px]">
+                              <span>{if sk.rule_icon.is_empty() { "⚙️" } else { &sk.rule_icon }}</span>
+                              <span class="text-secondary font-bold">{format!("Step #{} • Out of Scope", sk.step_number)}</span>
+                              <span class="text-on-surface-variant line-through">{&sk.rule_name}</span>
+                            </div>
+                            <span class="text-[10px] text-secondary">{&sk.reason}</span>
                           </div>
                         </>
                       })}
@@ -2447,6 +2466,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                               condition_expr: cond_val.clone(),
                               lua_code: lua_val.clone(),
                               priority: append_prio,
+                              scope: crate::transformations::RuleScopeFilter::default(),
                             };
                             cb_create.emit(new_rule);
                             sel_state.set(rule_id);
@@ -2670,6 +2690,136 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                   </div>
 
                   <p class="text-body-sm text-on-surface-variant">{&rule.description}</p>
+
+                  // Declarative Scope Filters (Polymer / Nozzle / Process Tier) + Out-of-Scope badge
+                  {{
+                    let skipped_info = props.skipped_rules.iter().find(|s| s.rule_id == rule.id).cloned();
+                    let is_editing = scope_editor_rule.as_deref() == Some(rule.id.as_str());
+                    let sed_toggle = scope_editor_rule.clone();
+                    let rid_scope_toggle = rule.id.clone();
+                    let scope_summary = rule.scope.summary();
+                    let scope_is_all = rule.scope.is_all();
+                    let make_row = |row_label: &'static str, field: &'static str, opts: Vec<(String, String)>, selected: Vec<String>| -> Html {
+                      let cb_scope = props.on_update_rule_scope.clone();
+                      let base_scope = rule.scope.clone();
+                      let rid_row = rule.id.clone();
+                      let all_selected = selected.is_empty();
+                      let cb_all = cb_scope.clone();
+                      let base_all = base_scope.clone();
+                      let rid_all = rid_row.clone();
+                      html! {
+                        <div class="flex items-center flex-wrap gap-1">
+                          <span class="text-[10px] uppercase font-bold text-on-surface-variant w-28 shrink-0">{row_label}</span>
+                          <button
+                            class={format!(
+                              "px-1.5 py-0.5 rounded border text-[10px] cursor-pointer {}",
+                              if all_selected { "bg-primary text-on-primary border-primary font-bold" } else { "border-outline-variant text-on-surface-variant hover:text-on-surface" }
+                            )}
+                            onclick={Callback::from(move |_| {
+                              let mut s = base_all.clone();
+                              match field {
+                                "polymers" => s.polymers.clear(),
+                                "nozzle_diameters" => s.nozzle_diameters.clear(),
+                                "nozzle_materials" => s.nozzle_materials.clear(),
+                                _ => s.process_tiers.clear(),
+                              }
+                              cb_all.emit((rid_all.clone(), s));
+                            })}
+                          >
+                            {"All"}
+                          </button>
+                          {for opts.into_iter().map(|(key, lbl)| {
+                            let is_on = selected.iter().any(|v| v.eq_ignore_ascii_case(&key));
+                            let cb = cb_scope.clone();
+                            let base = base_scope.clone();
+                            let rid_c = rid_row.clone();
+                            let key_c = key.clone();
+                            html! {
+                              <button
+                                class={format!(
+                                  "px-1.5 py-0.5 rounded border text-[10px] cursor-pointer {}",
+                                  if is_on { "bg-tertiary/20 text-tertiary border-tertiary font-bold" } else { "border-outline-variant/60 text-on-surface-variant hover:text-on-surface" }
+                                )}
+                                onclick={Callback::from(move |_| {
+                                  let mut s = base.clone();
+                                  let list = match field {
+                                    "polymers" => &mut s.polymers,
+                                    "nozzle_diameters" => &mut s.nozzle_diameters,
+                                    "nozzle_materials" => &mut s.nozzle_materials,
+                                    _ => &mut s.process_tiers,
+                                  };
+                                  if let Some(pos) = list.iter().position(|v| v.eq_ignore_ascii_case(&key_c)) {
+                                    list.remove(pos);
+                                  } else {
+                                    list.push(key_c.clone());
+                                  }
+                                  cb.emit((rid_c.clone(), s));
+                                })}
+                              >
+                                {lbl}
+                              </button>
+                            }
+                          })}
+                        </div>
+                      }
+                    };
+                    html! {
+                      <div class="flex flex-col gap-1 font-mono">
+                        <div class="flex items-center justify-between flex-wrap gap-1.5">
+                          <button
+                            class={format!(
+                              "flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] cursor-pointer {}",
+                              if scope_is_all { "border-outline-variant/60 text-on-surface-variant hover:text-on-surface" } else { "border-tertiary/60 bg-tertiary/10 text-tertiary font-bold" }
+                            )}
+                            title="Declarative scope filters: restrict this rule to specific polymers, nozzles, or process tiers without writing Lua conditions"
+                            onclick={Callback::from(move |_| {
+                              if sed_toggle.as_deref() == Some(rid_scope_toggle.as_str()) {
+                                sed_toggle.set(None);
+                              } else {
+                                sed_toggle.set(Some(rid_scope_toggle.clone()));
+                              }
+                            })}
+                          >
+                            <span>{"🎯"}</span>
+                            <span>{format!("Scope Filters: {}", scope_summary)}</span>
+                            <span class="material-symbols-outlined text-[12px]">{if is_editing { "expand_less" } else { "expand_more" }}</span>
+                          </button>
+                          {if let Some(sk) = &skipped_info {
+                            html! {
+                              <span class="px-2 py-0.5 rounded border border-secondary/60 bg-secondary/10 text-secondary text-[10px] font-bold" title={sk.reason.clone()}>
+                                {format!("⏭️ Out of scope for current context — {}", sk.reason)}
+                              </span>
+                            }
+                          } else {
+                            html! {}
+                          }}
+                        </div>
+                        {if is_editing {
+                          html! {
+                            <div class="flex flex-col gap-1 bg-surface-container-lowest p-space-sm rounded-lg border border-tertiary/40">
+                              {make_row("Polymer", "polymers",
+                                SCOPE_POLYMER_OPTIONS.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
+                                rule.scope.polymers.clone())}
+                              {make_row("Nozzle Ø", "nozzle_diameters",
+                                SCOPE_NOZZLE_DIAMETER_OPTIONS.iter().map(|d| (d.to_string(), format!("{}mm", d))).collect(),
+                                rule.scope.nozzle_diameters.clone())}
+                              {make_row("Nozzle Material", "nozzle_materials",
+                                SCOPE_NOZZLE_MATERIAL_OPTIONS.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
+                                rule.scope.nozzle_materials.clone())}
+                              {make_row("Process Tier", "process_tiers",
+                                SCOPE_PROCESS_TIER_OPTIONS.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
+                                rule.scope.process_tiers.clone())}
+                              <span class="text-[10px] text-on-surface-variant">
+                                {"Empty = All. Process Tier filters are evaluated independently for each of the 5 exported Process presets on Save / Export."}
+                              </span>
+                            </div>
+                          }
+                        } else {
+                          html! {}
+                        }}
+                      </div>
+                    }
+                  }}
 
                   // Per-Rule Before -> After Changes Box
                   {if !per_rule_diffs.is_empty() {

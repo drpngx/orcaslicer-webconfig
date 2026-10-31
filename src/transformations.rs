@@ -19,6 +19,287 @@ pub struct TransformationRule {
   pub condition_expr: String, // e.g. "filament:PETG", "nozzle:diamondback", "all"
   pub lua_code: String,
   pub priority: i32,
+  /// Declarative UI scope filters (Polymer / Nozzle / Process Tier). Empty lists mean "All".
+  /// Evaluated in addition to the legacy `condition_expr`.
+  #[serde(default)]
+  pub scope: RuleScopeFilter,
+}
+
+/// Declarative scope filters that any `TransformationRule` can carry so users don't have to write
+/// `if ctx.filament_type == ...` boilerplate inside Lua. Every empty list means "All".
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleScopeFilter {
+  /// Canonical polymer keys (`PLA`, `PETG`, `PCTG`, `TPU`, `ASA`, `ABS`, `PC`, `PA`, `PHA`) or
+  /// `FIBER` for any fiber-filled (`-CF` / `-GF`) material.
+  #[serde(default)]
+  pub polymers: Vec<String>,
+  /// Nozzle orifice diameters (`0.2`, `0.25`, `0.4`, `0.6`, `0.8`, `1.0`).
+  #[serde(default)]
+  pub nozzle_diameters: Vec<String>,
+  /// Nozzle materials (`brass`, `hardened_steel`, `diamondback`, `cht`, `cm2`).
+  #[serde(default)]
+  pub nozzle_materials: Vec<String>,
+  /// Process tiers (`fine`, `quality`, `standard`, `speed`, `draft`).
+  #[serde(default)]
+  pub process_tiers: Vec<String>,
+}
+
+pub const SCOPE_POLYMER_OPTIONS: &[(&str, &str)] = &[
+  ("PLA", "PLA"),
+  ("PETG", "PETG"),
+  ("PCTG", "PCTG"),
+  ("TPU", "TPU"),
+  ("ASA", "ASA"),
+  ("ABS", "ABS"),
+  ("PC", "PC"),
+  ("PA", "PA"),
+  ("PHA", "PHA"),
+  ("FIBER", "Fiber-Filled (-CF/-GF)"),
+];
+
+pub const SCOPE_NOZZLE_DIAMETER_OPTIONS: &[&str] = &["0.2", "0.25", "0.4", "0.6", "0.8", "1.0"];
+
+pub const SCOPE_NOZZLE_MATERIAL_OPTIONS: &[(&str, &str)] = &[
+  ("brass", "Brass"),
+  ("hardened_steel", "Hardened Steel"),
+  ("diamondback", "Diamondback PCD"),
+  ("cht", "CHT"),
+  ("cm2", "CM2"),
+];
+
+pub const SCOPE_PROCESS_TIER_OPTIONS: &[(&str, &str)] = &[
+  ("fine", "0.12mm Fine"),
+  ("quality", "0.20mm Quality"),
+  ("standard", "0.20mm Standard"),
+  ("speed", "0.20mm Speed"),
+  ("draft", "0.28mm Draft"),
+];
+
+/// Classify a process into one of the 5 declarative scope tiers (`fine`, `quality`, `standard`,
+/// `speed`, `draft`) from its layer height and name.
+pub fn classify_process_scope_tier(process: &crate::models::ProcessProfile) -> &'static str {
+  if process.layer_height <= 0.145 {
+    "fine"
+  } else if process.layer_height >= 0.255 {
+    "draft"
+  } else {
+    match process.quality_tier() {
+      "high_quality" => "quality",
+      "high_speed" => "speed",
+      _ => "standard",
+    }
+  }
+}
+
+fn polymer_matches_scope_key(material: &str, key: &str) -> bool {
+  let up = material.to_uppercase();
+  if key.eq_ignore_ascii_case("FIBER") {
+    return up.contains("-CF")
+      || up.contains("-GF")
+      || up.ends_with(" CF")
+      || up.ends_with(" GF")
+      || up.contains("CARBON")
+      || up.contains("GLASS FIBER");
+  }
+  let canon = FilamentSpool::canonical_polymer_key(material).to_uppercase();
+  let key_up = key.to_uppercase();
+  if canon == key_up || up == key_up {
+    return true;
+  }
+  // Family match: `PLA Matte`, `PLA+`, `PETG-HF`, `PA6-CF`, `TPU 95A`, `ABS-GF`, ...
+  let base = canon
+    .split(|c: char| !c.is_ascii_alphanumeric())
+    .next()
+    .unwrap_or("");
+  let base_trim: String = base.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+  base_trim == key_up
+}
+
+fn nozzle_material_matches_scope_key(nozzle_type: &str, nozzle_material: &str, key: &str) -> bool {
+  let nt = nozzle_type.to_lowercase();
+  let nm = nozzle_material.to_lowercase();
+  match key {
+    "brass" => {
+      (nt.contains("brass") || nm.contains("brass") || nt == "stock")
+        && !nt.contains("cht")
+        && !nt.contains("cm2")
+    }
+    "hardened_steel" => nt.contains("hardened") || nm.contains("hardened"),
+    "diamondback" => nt.contains("diamondback") || nm.contains("diamondback") || nm.contains("pcd"),
+    "cht" => nt.contains("cht") || nm.contains("cht"),
+    "cm2" => nt.contains("cm2") || nm.contains("cm2"),
+    other => nt == other || nm == other,
+  }
+}
+
+impl RuleScopeFilter {
+  pub fn is_all(&self) -> bool {
+    self.polymers.is_empty()
+      && self.nozzle_diameters.is_empty()
+      && self.nozzle_materials.is_empty()
+      && self.process_tiers.is_empty()
+  }
+
+  /// Short human-readable summary such as `PETG, PCTG • 0.4mm • Hardened Steel • Fine, Quality`.
+  pub fn summary(&self) -> String {
+    if self.is_all() {
+      return "All Polymers • All Nozzles • All Process Tiers".to_string();
+    }
+    let lbl = |opts: &[(&str, &str)], v: &str| -> String {
+      opts
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(v))
+        .map(|(_, l)| l.to_string())
+        .unwrap_or_else(|| v.to_string())
+    };
+    let mut parts = Vec::new();
+    if !self.polymers.is_empty() {
+      parts.push(
+        self
+          .polymers
+          .iter()
+          .map(|p| lbl(SCOPE_POLYMER_OPTIONS, p))
+          .collect::<Vec<_>>()
+          .join(", "),
+      );
+    }
+    if !self.nozzle_diameters.is_empty() {
+      parts.push(
+        self
+          .nozzle_diameters
+          .iter()
+          .map(|d| format!("{}mm", d))
+          .collect::<Vec<_>>()
+          .join(", "),
+      );
+    }
+    if !self.nozzle_materials.is_empty() {
+      parts.push(
+        self
+          .nozzle_materials
+          .iter()
+          .map(|m| lbl(SCOPE_NOZZLE_MATERIAL_OPTIONS, m))
+          .collect::<Vec<_>>()
+          .join(", "),
+      );
+    }
+    if !self.process_tiers.is_empty() {
+      parts.push(
+        self
+          .process_tiers
+          .iter()
+          .map(|t| lbl(SCOPE_PROCESS_TIER_OPTIONS, t))
+          .collect::<Vec<_>>()
+          .join(", "),
+      );
+    }
+    parts.join(" • ")
+  }
+
+  /// Returns `None` if the context is in scope, or `Some(reason)` explaining which filter excluded it.
+  pub fn mismatch_reason(&self, context: &serde_json::Value) -> Option<String> {
+    if !self.polymers.is_empty() {
+      let mut materials: Vec<String> = Vec::new();
+      if let Some(f) = context.get("filament_type").and_then(|v| v.as_str()) {
+        materials.push(f.to_string());
+      }
+      if let Some(slots) = context.get("slots").and_then(|v| v.as_array()) {
+        for s in slots {
+          if let Some(m) = s.get("material_type").and_then(|m| m.as_str()) {
+            materials.push(m.to_string());
+          }
+        }
+      }
+      if let Some(all) = context.get("all_filament_types").and_then(|v| v.as_array()) {
+        for m in all.iter().filter_map(|m| m.as_str()) {
+          materials.push(m.to_string());
+        }
+      }
+      // With no filament information in the context, polymer filters cannot be evaluated: treat as in-scope.
+      if !materials.is_empty() {
+        let hit = materials
+          .iter()
+          .any(|m| self.polymers.iter().any(|k| polymer_matches_scope_key(m, k)));
+        if !hit {
+          let active = context
+            .get("filament_type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| materials.join(", "));
+          return Some(format!(
+            "Polymer filter [{}] ≠ loaded filament ({})",
+            self.polymers.join(", "),
+            active
+          ));
+        }
+      }
+    }
+
+    if !self.nozzle_diameters.is_empty() {
+      let diam = context.get("nozzle_diameter").and_then(|v| {
+        v.as_f64()
+          .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+      });
+      if let Some(d) = diam {
+        let hit = self
+          .nozzle_diameters
+          .iter()
+          .filter_map(|s| s.trim().parse::<f64>().ok())
+          .any(|t| (t - d).abs() < 0.011);
+        if !hit {
+          return Some(format!(
+            "Nozzle diameter filter [{}mm] ≠ active {:.2}mm nozzle",
+            self.nozzle_diameters.join(", "),
+            d
+          ));
+        }
+      }
+    }
+
+    if !self.nozzle_materials.is_empty() {
+      let nt = context.get("nozzle_type").and_then(|v| v.as_str()).unwrap_or("");
+      let nm = context.get("nozzle_material").and_then(|v| v.as_str()).unwrap_or("");
+      if !nt.is_empty() || !nm.is_empty() {
+        let hit = self
+          .nozzle_materials
+          .iter()
+          .any(|k| nozzle_material_matches_scope_key(nt, nm, k));
+        if !hit {
+          return Some(format!(
+            "Nozzle material filter [{}] ≠ active nozzle ({})",
+            self.nozzle_materials.join(", "),
+            if nm.is_empty() { nt } else { nm }
+          ));
+        }
+      }
+    }
+
+    if !self.process_tiers.is_empty() {
+      if let Some(tier) = context.get("process_tier").and_then(|v| v.as_str()) {
+        if !self.process_tiers.iter().any(|t| t.eq_ignore_ascii_case(tier)) {
+          return Some(format!(
+            "Process tier filter [{}] ≠ evaluated process tier ({})",
+            self.process_tiers.join(", "),
+            tier
+          ));
+        }
+      }
+    }
+    None
+  }
+}
+
+/// A rule that was enabled but skipped because its declarative scope (or legacy `condition_expr`)
+/// excluded the current evaluation context.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkippedRuleInfo {
+  pub rule_id: String,
+  pub rule_name: String,
+  pub rule_icon: String,
+  pub step_number: usize,
+  pub reason: String,
+  /// Parameters this rule would have modified if it were in scope (dry-run).
+  pub would_touch_keys: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -115,6 +396,9 @@ pub struct ParameterProvenance {
   pub net_delta_summary: String,
   pub steps: Vec<RuleBeforeAfterChange>,
   pub is_modified: bool,
+  /// Enabled rules that would have touched this parameter but were out of scope for this context.
+  #[serde(default)]
+  pub skipped_steps: Vec<SkippedRuleInfo>,
 }
 
 pub fn compute_delta_summary(before_raw: &str, after_raw: &str, unit: &str) -> String {
@@ -190,6 +474,9 @@ pub struct StackEvaluationResult {
   pub execution_logs: Vec<String>,
   pub active_rule_count: usize,
   pub total_rule_count: usize,
+  /// Enabled rules skipped because their declarative scope / condition excluded this context.
+  #[serde(default)]
+  pub skipped_rules: Vec<SkippedRuleInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -202,6 +489,18 @@ pub struct FullExportPackage {
 }
 
 impl TransformationRule {
+  /// Combined scope check: legacy `condition_expr` AND declarative `scope` filters.
+  /// Returns `Some(reason)` when the rule must be skipped for this context.
+  pub fn scope_skip_reason(&self, context: &serde_json::Value) -> Option<String> {
+    if !self.is_applicable(context) {
+      return Some(format!(
+        "Condition '{}' not met for active context",
+        self.condition_expr.trim()
+      ));
+    }
+    self.scope.mismatch_reason(context)
+  }
+
   pub fn is_applicable(&self, context: &serde_json::Value) -> bool {
     let cond = self.condition_expr.trim();
     if cond.is_empty() || cond == "all" || cond == "*" {
@@ -265,6 +564,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/thermal_conductivity.lua").to_string(),
         priority: 10,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "rig_addons_cooling".to_string(),
@@ -276,6 +576,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/rig_addons_cooling.lua").to_string(),
         priority: 12,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "volumetric_speed_ceiling".to_string(),
@@ -287,6 +588,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/volumetric_speed_ceiling.lua").to_string(),
         priority: 98,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "flush_volumes_matrix".to_string(),
@@ -298,6 +600,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/flush_volumes_matrix.lua").to_string(),
         priority: 60,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "symptom_stringing_diamondback".to_string(),
@@ -309,6 +612,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/symptom_stringing_diamondback.lua").to_string(),
         priority: 25,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "symptom_clog_ace_pro".to_string(),
@@ -320,6 +624,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/symptom_clog_ace_pro.lua").to_string(),
         priority: 30,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "symptom_bed_adhesion_petg".to_string(),
@@ -331,6 +636,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/symptom_bed_adhesion_petg.lua").to_string(),
         priority: 35,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "symptom_spaghetti_pla".to_string(),
@@ -342,6 +648,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/symptom_spaghetti_pla.lua").to_string(),
         priority: 40,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "process_scarf_seams_arachne".to_string(),
@@ -353,6 +660,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/process_scarf_seams_arachne.lua").to_string(),
         priority: 45,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "filament_pctg_antistringing".to_string(),
@@ -364,6 +672,7 @@ impl TransformationEngine {
         condition_expr: "filament:PCTG".to_string(),
         lua_code: include_str!("../transformations/filament_pctg_antistringing.lua").to_string(),
         priority: 48,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "support_tuning".to_string(),
@@ -375,6 +684,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/support_tuning.lua").to_string(),
         priority: 49,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "ironing_tuning".to_string(),
@@ -386,6 +696,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/ironing_tuning.lua").to_string(),
         priority: 50,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "dimensional_precision".to_string(),
@@ -397,6 +708,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/dimensional_precision.lua").to_string(),
         priority: 51,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "bridge_overhang_tuning".to_string(),
@@ -408,6 +720,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/bridge_overhang_tuning.lua").to_string(),
         priority: 56,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "transparent_optical_glass".to_string(),
@@ -419,6 +732,7 @@ impl TransformationEngine {
         condition_expr: "filament:PETG".to_string(),
         lua_code: include_str!("../transformations/transparent_optical_glass.lua").to_string(),
         priority: 52,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "tpu_foaming_shore".to_string(),
@@ -430,6 +744,7 @@ impl TransformationEngine {
         condition_expr: "filament:TPU".to_string(),
         lua_code: include_str!("../transformations/parametric/cal_tpu_foaming_shore.lua").to_string(),
         priority: 53,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "weather_climate_adjustment".to_string(),
@@ -441,6 +756,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/sym_weather_climate.lua").to_string(),
         priority: 54,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "sym_wet_filament".to_string(),
@@ -452,6 +768,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/sym_wet_filament.lua").to_string(),
         priority: 55,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "mach_fast_start_gcode".to_string(),
@@ -463,6 +780,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/mach_fast_start_gcode.lua").to_string(),
         priority: 58,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
     ]
   }
@@ -480,6 +798,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/support_tuning.lua").to_string(),
         priority: 49,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "ironing_tuning".to_string(),
@@ -491,6 +810,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/ironing_tuning.lua").to_string(),
         priority: 50,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "dimensional_precision".to_string(),
@@ -502,6 +822,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/dimensional_precision.lua").to_string(),
         priority: 51,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "bridge_overhang_tuning".to_string(),
@@ -513,6 +834,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/bridge_overhang_tuning.lua").to_string(),
         priority: 56,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "mach_fast_start_gcode".to_string(),
@@ -524,6 +846,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/mach_fast_start_gcode.lua").to_string(),
         priority: 58,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "sym_wet_filament".to_string(),
@@ -535,6 +858,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/sym_wet_filament.lua").to_string(),
         priority: 55,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "tpu_foaming_shore".to_string(),
@@ -546,6 +870,7 @@ impl TransformationEngine {
         condition_expr: "filament:TPU".to_string(),
         lua_code: include_str!("../transformations/parametric/cal_tpu_foaming_shore.lua").to_string(),
         priority: 53,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "weather_climate_adjustment".to_string(),
@@ -557,6 +882,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/sym_weather_climate.lua").to_string(),
         priority: 54,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "transparent_optical_glass".to_string(),
@@ -568,6 +894,7 @@ impl TransformationEngine {
         condition_expr: "filament:PETG".to_string(),
         lua_code: include_str!("../transformations/transparent_optical_glass.lua").to_string(),
         priority: 52,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "scarf_seams_arachne".to_string(),
@@ -579,6 +906,7 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/process_scarf_seams_arachne.lua").to_string(),
         priority: 45,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "pctg_antistringing".to_string(),
@@ -590,6 +918,7 @@ impl TransformationEngine {
         condition_expr: "filament:PCTG".to_string(),
         lua_code: include_str!("../transformations/filament_pctg_antistringing.lua").to_string(),
         priority: 48,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "scarf_seams_only".to_string(),
@@ -656,6 +985,7 @@ function apply(config, ctx, p)
 end
 "#.to_string(),
         priority: 46,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "arachne_walls_only".to_string(),
@@ -712,6 +1042,7 @@ function apply(config, ctx, p)
 end
 "#.to_string(),
         priority: 44,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
         id: "custom_blank_rule".to_string(),
@@ -723,6 +1054,7 @@ end
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/custom_parametric_template.lua").to_string(),
         priority: 70,
+        scope: crate::transformations::RuleScopeFilter::default(),
       },
     ]
   }
@@ -841,6 +1173,7 @@ end
       condition_expr: "all".to_string(),
       lua_code,
       priority: 85,
+      scope: crate::transformations::RuleScopeFilter::default(),
     }
   }
 
@@ -944,6 +1277,68 @@ end
     "Transformation stack order unchanged.".to_string()
   }
 
+  /// Seeds a base profile and Lua evaluation context with a specific `ProcessProfile`
+  /// (`layer_height`, line width, wall/infill speeds, and declarative `process_tier`).
+  pub fn seed_process_inputs(
+    base_profile: &OrcaProfile,
+    context: &serde_json::Value,
+    process: &crate::models::ProcessProfile,
+  ) -> (OrcaProfile, serde_json::Value) {
+    let mut working_base = base_profile.clone();
+    working_base.set_str("layer_height", &format!("{:.2}", process.layer_height));
+    working_base.set_str(
+      "outer_wall_line_width",
+      &format!("{:.2}", process.line_width),
+    );
+    working_base.set_str(
+      "outer_wall_speed",
+      &format!("{:.0}", process.outer_wall_speed),
+    );
+    working_base.set_str(
+      "inner_wall_speed",
+      &format!("{:.0}", process.inner_wall_speed),
+    );
+    working_base.set_str(
+      "sparse_infill_speed",
+      &format!("{:.0}", process.sparse_infill_speed),
+    );
+    let mut ctx = context.clone();
+    if let serde_json::Value::Object(ref mut m) = ctx {
+      m.insert(
+        "layer_height".to_string(),
+        serde_json::json!(process.layer_height),
+      );
+      m.insert(
+        "line_width".to_string(),
+        serde_json::json!(process.line_width),
+      );
+      m.insert(
+        "process_tier".to_string(),
+        serde_json::json!(classify_process_scope_tier(process)),
+      );
+      m.insert("process_name".to_string(), serde_json::json!(process.name));
+    }
+    (working_base, ctx)
+  }
+
+  /// Evaluates the full Lua stack independently for every `ProcessProfile`, so Process-Tier-scoped
+  /// rules and layer-height-dependent rules produce tailored overrides in each exported preset.
+  /// Returns `process.id -> resulting override map`.
+  pub fn evaluate_stack_per_process(
+    base_profile: &OrcaProfile,
+    rules: &[TransformationRule],
+    context: &serde_json::Value,
+    processes: &[crate::models::ProcessProfile],
+  ) -> HashMap<String, serde_json::Map<String, serde_json::Value>> {
+    let mut out = HashMap::new();
+    for proc in processes {
+      let (base, ctx) = Self::seed_process_inputs(base_profile, context, proc);
+      let res = Self::evaluate_stack(&base, rules, &ctx);
+      out.insert(proc.id.clone(), res.resulting_profile.values);
+    }
+    out
+  }
+
   pub fn evaluate_stack(
     base_profile: &OrcaProfile,
     rules: &[TransformationRule],
@@ -959,6 +1354,7 @@ end
     let mut rule_sources: HashMap<String, String> = HashMap::new();
     let mut rule_changes: Vec<RuleBeforeAfterChange> = Vec::new();
     let mut user_rule_scales: HashMap<String, f64> = HashMap::new();
+    let mut skipped_rules: Vec<SkippedRuleInfo> = Vec::new();
 
     let extract_scalar = |v: &serde_json::Value| -> String {
       match v {
@@ -989,11 +1385,45 @@ end
       if !rule.enabled {
         continue;
       }
-      if !rule.is_applicable(context) {
+      if let Some(reason) = rule.scope_skip_reason(context) {
         execution_logs.push(format!(
-          "⏩ [Step #{} • Priority #{}] Skipping '{}' (condition not met for context)",
-          step_num, rule.priority, rule.name
+          "⏩ [Step #{} • Priority #{}] Skipping '{}' (out of scope: {})",
+          step_num, rule.priority, rule.name, reason
         ));
+        // Dry-run the skipped rule on the current state to learn which parameters it would touch,
+        // so the Provenance & Lineage view can show it as an out-of-scope step.
+        let mut would_touch_keys: Vec<String> = Vec::new();
+        if let Ok((dry_val, _, dry_mod)) =
+          execute_transformation_lua(&rule.lua_code, &current_values, context)
+        {
+          if let (serde_json::Value::Object(ref before_map), serde_json::Value::Object(ref after_map)) =
+            (&current_values, &dry_val)
+          {
+            for (k, v) in after_map {
+              if k.starts_with('_') || k == "flush_volumes_matrix" || k == "computed_safe_speed_ceiling" {
+                continue;
+              }
+              if before_map.get(k) != Some(v) {
+                would_touch_keys.push(k.clone());
+              }
+            }
+          }
+          for (k, _, _) in dry_mod {
+            if !k.starts_with('_') && !would_touch_keys.contains(&k) {
+              would_touch_keys.push(k);
+            }
+          }
+        }
+        would_touch_keys.sort();
+        would_touch_keys.dedup();
+        skipped_rules.push(SkippedRuleInfo {
+          rule_id: rule.id.clone(),
+          rule_name: rule.name.clone(),
+          rule_icon: rule.icon.clone(),
+          step_number: step_num,
+          reason,
+          would_touch_keys,
+        });
         continue;
       }
 
@@ -1189,8 +1619,15 @@ end
     } else {
       format!("{} (Base Profile + Spool/Process Baseline)", base_profile.name)
     };
-    let provenance_items =
+    let mut provenance_items =
       Self::build_parameter_provenance(&diff_items, &rule_changes, &origin_source_name);
+    for item in &mut provenance_items {
+      item.skipped_steps = skipped_rules
+        .iter()
+        .filter(|s| s.would_touch_keys.iter().any(|k| k == &item.param_key))
+        .cloned()
+        .collect();
+    }
 
     let mut res_profile = base_profile.clone();
     if let serde_json::Value::Object(mut map) = current_values {
@@ -1221,6 +1658,7 @@ end
       execution_logs,
       active_rule_count,
       total_rule_count: rules.len(),
+      skipped_rules,
     }
   }
 
@@ -1275,6 +1713,7 @@ end
         net_delta_summary,
         steps,
         is_modified: item.is_modified,
+        skipped_steps: Vec::new(),
       });
     }
     result.sort_by(|a, b| {
@@ -2425,6 +2864,7 @@ mod tests {
       condition_expr: "all".to_string(),
       lua_code: "function apply(config, ctx)\n  local cur = tonumber(config.filament_max_volumetric_speed and config.filament_max_volumetric_speed[1]) or 20.0\n  config.filament_max_volumetric_speed = { string.format(\"%.1f\", cur * 0.5) }\nend\n".to_string(),
       priority: 10,
+      scope: crate::transformations::RuleScopeFilter::default(),
     };
 
     let rule_add = TransformationRule {
@@ -2437,6 +2877,7 @@ mod tests {
       condition_expr: "all".to_string(),
       lua_code: "function apply(config, ctx)\n  local cur = tonumber(config.filament_max_volumetric_speed and config.filament_max_volumetric_speed[1]) or 20.0\n  config.filament_max_volumetric_speed = { string.format(\"%.1f\", cur + 4.0) }\nend\n".to_string(),
       priority: 20,
+      scope: crate::transformations::RuleScopeFilter::default(),
     };
 
     // Order 1: Step #1 (Scale 0.5x) -> Step #2 (Add +4.0): 20.0 * 0.5 + 4.0 = 14.0
@@ -3179,6 +3620,7 @@ end
         icon: "🔩".to_string(),
         enabled: true,
         priority: 10,
+        scope: RuleScopeFilter::default(),
         condition_expr: "all".to_string(),
         lua_code: r#"
 local t = tonumber(config.nozzle_temperature or "230")
@@ -3195,6 +3637,7 @@ print("Boosted nozzle_temperature by +5C for Hardened Steel")
         icon: "🔥".to_string(),
         enabled: true,
         priority: 20,
+        scope: RuleScopeFilter::default(),
         condition_expr: "all".to_string(),
         lua_code: r#"
 local t = tonumber(config.nozzle_temperature or "230")
@@ -3454,5 +3897,123 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       assert_eq!(val["bridge_flow"].as_str(), Some("0.92"));
       assert_eq!(val["overhang_4_4_speed"].as_str(), Some("15"));
     }
+  }
+
+  #[test]
+  fn test_declarative_scope_filters_polymer_nozzle_and_per_process_tier() {
+    let mk_rule = |id: &str, prio: i32, lua: &str, scope: RuleScopeFilter| TransformationRule {
+      id: id.to_string(),
+      name: format!("Rule {}", id),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "🧪".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope,
+    };
+
+    // 1. Polymer filter: PETG-only rule applies on PETG, skipped on PLA (with provenance skipped step)
+    let petg_rule = mk_rule(
+      "petg_only",
+      10,
+      "config[\"bridge_flow\"] = \"0.90\"",
+      RuleScopeFilter {
+        polymers: vec!["PETG".to_string(), "PCTG".to_string()],
+        ..Default::default()
+      },
+    );
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("bridge_flow", "1.00");
+    let ctx_petg = json!({ "filament_type": "PETG", "nozzle_type": "hardened_steel", "nozzle_material": "Hardened Steel", "nozzle_diameter": "0.4" });
+    let ctx_pla = json!({ "filament_type": "PLA Matte", "nozzle_type": "hardened_steel", "nozzle_material": "Hardened Steel", "nozzle_diameter": "0.4" });
+    let r_petg = TransformationEngine::evaluate_stack(&base, &[petg_rule.clone()], &ctx_petg);
+    assert_eq!(r_petg.resulting_profile.get_str("bridge_flow").as_deref(), Some("0.90"));
+    assert!(r_petg.skipped_rules.is_empty());
+    let r_pla = TransformationEngine::evaluate_stack(&base, &[petg_rule], &ctx_pla);
+    assert_eq!(r_pla.resulting_profile.get_str("bridge_flow").as_deref(), Some("1.00"));
+    assert_eq!(r_pla.skipped_rules.len(), 1);
+    assert!(r_pla.skipped_rules[0].reason.contains("Polymer filter"));
+    assert_eq!(r_pla.skipped_rules[0].would_touch_keys, vec!["bridge_flow".to_string()]);
+    let bf_prov = r_pla
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "bridge_flow")
+      .expect("bridge_flow provenance");
+    assert_eq!(bf_prov.skipped_steps.len(), 1);
+
+    // Fiber filter matches PA6-CF but not plain PETG
+    let fiber = RuleScopeFilter {
+      polymers: vec!["FIBER".to_string()],
+      ..Default::default()
+    };
+    assert!(fiber.mismatch_reason(&json!({ "filament_type": "PA6-CF" })).is_none());
+    assert!(fiber.mismatch_reason(&json!({ "filament_type": "PETG" })).is_some());
+
+    // 2. Nozzle diameter + material filters
+    let noz = RuleScopeFilter {
+      nozzle_diameters: vec!["0.6".to_string()],
+      nozzle_materials: vec!["diamondback".to_string()],
+      ..Default::default()
+    };
+    assert!(noz
+      .mismatch_reason(&json!({ "nozzle_diameter": "0.4", "nozzle_type": "diamondback" }))
+      .unwrap()
+      .contains("Nozzle diameter"));
+    assert!(noz
+      .mismatch_reason(&json!({ "nozzle_diameter": 0.6, "nozzle_type": "hardened_steel", "nozzle_material": "Hardened Steel" }))
+      .unwrap()
+      .contains("Nozzle material"));
+    assert!(noz
+      .mismatch_reason(&json!({ "nozzle_diameter": "0.60", "nozzle_type": "diamondback", "nozzle_material": "Diamondback PCD" }))
+      .is_none());
+
+    // 3. Process Tier filter: evaluated independently per exported process preset
+    let processes = crate::models::ProcessProfile::get_default_processes();
+    let tiers: Vec<&str> = processes.iter().map(classify_process_scope_tier).collect();
+    assert!(tiers.contains(&"fine"));
+    assert!(tiers.contains(&"draft"));
+    assert!(tiers.contains(&"standard"));
+    let fine_only = mk_rule(
+      "fine_ironing",
+      20,
+      "config[\"ironing_type\"] = \"topmost\"",
+      RuleScopeFilter {
+        process_tiers: vec!["fine".to_string()],
+        ..Default::default()
+      },
+    );
+    let per_proc = TransformationEngine::evaluate_stack_per_process(
+      &base,
+      &[fine_only],
+      &ctx_petg,
+      &processes,
+    );
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    for proc in &processes {
+      let ov = per_proc.get(&proc.id).expect("per-process overrides");
+      let is_fine = classify_process_scope_tier(proc) == "fine";
+      assert_eq!(
+        ov.get("ironing_type").and_then(|v| v.as_str()) == Some("topmost"),
+        is_fine,
+        "process {} (tier {})",
+        proc.name,
+        classify_process_scope_tier(proc)
+      );
+      let proc_json = crate::threemf::build_process_preset_json(proc, &rig, ov);
+      let val: serde_json::Value = serde_json::from_str(&proc_json).unwrap();
+      assert_eq!(
+        val.get("ironing_type").and_then(|v| v.as_str()) == Some("topmost"),
+        is_fine,
+        "exported process {}",
+        proc.name
+      );
+    }
+
+    // 4. Scope round-trips through serde and legacy JSON without `scope` still deserializes
+    let legacy = r#"{"id":"x","name":"x","description":"","category":"c","icon":"i","enabled":true,"condition_expr":"all","lua_code":"","priority":10}"#;
+    let parsed: TransformationRule = serde_json::from_str(legacy).unwrap();
+    assert!(parsed.scope.is_all());
   }
 }

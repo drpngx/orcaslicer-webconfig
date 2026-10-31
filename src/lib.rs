@@ -24,7 +24,7 @@ use crate::components::wizard_tab::WizardTab;
 use crate::dir_import::{
   build_directory_backup_zip, build_reference_anycubic_entries,
   build_user_disk_config_summary_json, extract_directory_backup_zip, import_scanned_directory,
-  sync_live_state_to_entries,
+  sync_live_state_to_entries_with_process_overrides,
 };
 use crate::fs_access::{
   FsManager, LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload, LocalFsScanProgress,
@@ -39,9 +39,49 @@ use crate::threemf::{
   build_3mf_project_container, export_standalone_filament_json_with_overrides,
 };
 use crate::transformations::{
-  PendingDiskUpdate, SafetySeverity, SafetyWarning, StackEvaluationResult, StackReorderAction,
+  PendingDiskUpdate, RuleScopeFilter, SafetySeverity, SafetyWarning, StackEvaluationResult,
+  StackReorderAction,
   TransformationEngine, TransformationRule,
 };
+
+/// Captured inputs used to independently re-evaluate the Lua stack for every exported Process preset.
+#[derive(Clone, Debug)]
+struct ExportEvalInputs {
+  base: OrcaProfile,
+  rules: Vec<TransformationRule>,
+  ctx: serde_json::Value,
+}
+
+type OverrideMap = serde_json::Map<String, serde_json::Value>;
+
+impl ExportEvalInputs {
+  /// Returns `(canonical machine/filament overrides, per-process overrides, default .3mf process)`.
+  /// The canonical overrides come from the `0.20mm Standard` evaluation (the `.3mf` startup process),
+  /// keeping standalone filament/machine files and `.3mf` `project_settings.config` 100% in parity.
+  fn compute(
+    &self,
+    processes: &[ProcessProfile],
+    fallback_proc: &ProcessProfile,
+    fallback_overrides: &OverrideMap,
+  ) -> (
+    OverrideMap,
+    std::collections::HashMap<String, OverrideMap>,
+    ProcessProfile,
+  ) {
+    let per_process =
+      TransformationEngine::evaluate_stack_per_process(&self.base, &self.rules, &self.ctx, processes);
+    let default_proc = processes
+      .iter()
+      .find(|p| (p.layer_height - 0.20).abs() < 0.01 && p.quality_tier() == "standard")
+      .cloned()
+      .unwrap_or_else(|| fallback_proc.clone());
+    let canonical = per_process
+      .get(&default_proc.id)
+      .cloned()
+      .unwrap_or_else(|| fallback_overrides.clone());
+    (canonical, per_process, default_proc)
+  }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PendingConfirmedAction {
@@ -357,26 +397,27 @@ pub fn App() -> Html {
     "slots": slots_json,
   });
 
-  // Prepare base profile with active process speeds so Lua can cap them
-  let mut working_base = (*base_profile).clone();
-  working_base.set_str("layer_height", &format!("{:.2}", active_proc.layer_height));
-  working_base.set_str(
-    "outer_wall_line_width",
-    &format!("{:.2}", active_proc.line_width),
-  );
-  working_base.set_str(
-    "outer_wall_speed",
-    &format!("{:.0}", active_proc.outer_wall_speed),
-  );
-  working_base.set_str(
-    "inner_wall_speed",
-    &format!("{:.0}", active_proc.inner_wall_speed),
-  );
-  working_base.set_str(
-    "sparse_infill_speed",
-    &format!("{:.0}", active_proc.sparse_infill_speed),
-  );
-  working_base.set_str("flush_multiplier", &format!("{:.2}", *flush_multiplier));
+  // Prepare base profile with active process speeds so Lua can cap them (also seeds `process_tier`
+  // for declarative Process Tier scope filters)
+  let (working_base, eval_context) = {
+    let mut wb_ctx =
+      TransformationEngine::seed_process_inputs(&base_profile, &eval_context, &active_proc);
+    wb_ctx
+      .0
+      .set_str("flush_multiplier", &format!("{:.2}", *flush_multiplier));
+    wb_ctx
+  };
+
+  // Inputs for independent per-process Lua evaluation at Save / Export time
+  let export_eval_inputs = ExportEvalInputs {
+    base: {
+      let mut b = (*base_profile).clone();
+      b.set_str("flush_multiplier", &format!("{:.2}", *flush_multiplier));
+      b
+    },
+    rules: (*rules).clone(),
+    ctx: eval_context.clone(),
+  };
 
   // Evaluate Lua Stack
   let eval_result: StackEvaluationResult =
@@ -821,10 +862,14 @@ pub fn App() -> Html {
     let conf_relative_path = conf_relative_path.clone();
     let pending_updates = pending_updates.clone();
     let derived_overrides = eval_result.resulting_profile.values.clone();
+    let export_eval_inputs = export_eval_inputs.clone();
+    let active_proc_for_zip = active_proc.clone();
     let toast = toast_message.clone();
     Callback::from(move |_| {
       let mut entries = (*scanned_entries).clone();
-      let _ = sync_live_state_to_entries(
+      let (canonical_overrides, per_process_overrides, _) =
+        export_eval_inputs.compute(&processes, &active_proc_for_zip, &derived_overrides);
+      let _ = sync_live_state_to_entries_with_process_overrides(
         &mut entries,
         &machines,
         &active_machine_id,
@@ -835,7 +880,8 @@ pub fn App() -> Html {
         flush_multiplier,
         &conf_relative_path,
         &pending_updates,
-        &derived_overrides,
+        &canonical_overrides,
+        &per_process_overrides,
       );
       let zip_bytes = build_directory_backup_zip(&entries);
       let filename = "AnycubicSlicerNext_Config_Backup.zip";
@@ -1204,6 +1250,24 @@ pub fn App() -> Html {
       let mut list = (*rules).clone();
       if let Some(r) = list.iter_mut().find(|r| r.id == rule_id) {
         r.lua_code = new_lua;
+      }
+      rules.set(list);
+    })
+  };
+
+  // Declarative Scope Filters (Polymer / Nozzle / Process Tier) on any Lua rule
+  let on_update_rule_scope = {
+    let rules = rules.clone();
+    let toast = toast_message.clone();
+    Callback::from(move |(rule_id, new_scope): (String, RuleScopeFilter)| {
+      let mut list = (*rules).clone();
+      if let Some(r) = list.iter_mut().find(|r| r.id == rule_id) {
+        toast.set(Some(format!(
+          "Scope for '{}' set to: {}",
+          r.name,
+          new_scope.summary()
+        )));
+        r.scope = new_scope;
       }
       rules.set(list);
     })
@@ -1741,6 +1805,7 @@ pub fn App() -> Html {
     let conf_relative_path = conf_relative_path.clone();
     let pending_updates = pending_updates.clone();
     let last_saved_time = last_saved_time.clone();
+    let export_eval_inputs = export_eval_inputs.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1755,17 +1820,14 @@ pub fn App() -> Html {
       } else {
         active_slots.clone()
       };
-      let default_3mf_proc = processes
-        .iter()
-        .find(|p| (p.layer_height - 0.20).abs() < 0.01 && p.quality_tier() == "standard")
-        .cloned()
-        .unwrap_or_else(|| active_proc.clone());
+      let (canonical_overrides, per_process_overrides, default_3mf_proc) =
+        export_eval_inputs.compute(&processes, &active_proc, &derived_overrides);
       let zip_bytes = build_3mf_project_container(
         &active_rig,
         &default_3mf_proc,
         &slots,
         &flush_matrix,
-        &derived_overrides,
+        &canonical_overrides,
       );
       let filename = format!("Kobra_ACEPro_{}Slot_Loadout.3mf", slots.len());
       let download_res = FsManager::trigger_binary_download(
@@ -1776,7 +1838,7 @@ pub fn App() -> Html {
 
       let mut entries_copy = (*scanned_entries).clone();
       let staged_list = (*pending_updates).clone();
-      let modified_files = sync_live_state_to_entries(
+      let modified_files = sync_live_state_to_entries_with_process_overrides(
         &mut entries_copy,
         &machines,
         &active_machine_id,
@@ -1787,7 +1849,8 @@ pub fn App() -> Html {
         flush_multiplier,
         &conf_relative_path,
         &staged_list,
-        &derived_overrides,
+        &canonical_overrides,
+        &per_process_overrides,
       );
       let se_state = scanned_entries.clone();
       let pu_state = pending_updates.clone();
@@ -1856,6 +1919,8 @@ pub fn App() -> Html {
     let conf_relative_path = conf_relative_path.clone();
     let pending_updates = pending_updates.clone();
     let derived_overrides = eval_result.resulting_profile.values.clone();
+    let export_eval_inputs = export_eval_inputs.clone();
+    let active_proc_for_save = active_proc.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1866,7 +1931,9 @@ pub fn App() -> Html {
 
       let mut entries_copy = (*scanned_entries).clone();
       let staged_list = (*pending_updates).clone();
-      let modified_files = sync_live_state_to_entries(
+      let (canonical_overrides, per_process_overrides, _) =
+        export_eval_inputs.compute(&processes, &active_proc_for_save, &derived_overrides);
+      let modified_files = sync_live_state_to_entries_with_process_overrides(
         &mut entries_copy,
         &machines,
         &active_machine_id,
@@ -1877,7 +1944,8 @@ pub fn App() -> Html {
         flush_multiplier,
         &conf_relative_path,
         &staged_list,
-        &derived_overrides,
+        &canonical_overrides,
+        &per_process_overrides,
       );
 
       spawn_local(async move {
@@ -3398,6 +3466,8 @@ pub fn App() -> Html {
               on_select_process={on_select_process}
               on_toggle_rule={on_toggle_rule}
               on_update_rule_lua={on_update_rule_lua}
+              on_update_rule_scope={on_update_rule_scope}
+              skipped_rules={eval_result.skipped_rules.clone()}
               on_create_rule={on_create_rule}
               on_delete_rule={on_delete_rule}
               on_reorder_rule={on_reorder_rule}

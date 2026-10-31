@@ -744,6 +744,7 @@ pub fn resolve_effective_orca_profile_values(
       "melt_zone_multiplier": rig.melt_zone_multiplier,
       "layer_height": process.layer_height,
       "line_width": process.line_width,
+      "process_tier": crate::transformations::classify_process_scope_tier(process),
       "addons": rig.addons,
     });
     crate::transformations::TransformationEngine::evaluate_stack(&base, &rules, &ctx)
@@ -2452,6 +2453,7 @@ mod tests {
       icon: "tune".to_string(),
       enabled: true,
       priority: 95,
+      scope: crate::transformations::RuleScopeFilter::default(),
       condition_expr: "true".to_string(),
       lua_code: r#"
 function apply(config, ctx)

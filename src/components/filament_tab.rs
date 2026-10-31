@@ -2553,6 +2553,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                             condition_expr: scope_expr.clone(),
                             lua_code: lua_code.clone(),
                             priority: 34,
+                            scope: crate::transformations::RuleScopeFilter::default(),
                           };
                           cb_create.emit(new_rule);
                           aqi_close.set(None);

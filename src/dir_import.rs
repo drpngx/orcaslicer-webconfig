@@ -1765,6 +1765,40 @@ pub fn sync_live_state_to_entries(
   pending_updates: &[PendingDiskUpdate],
   derived_overrides: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<LocalFsSaveFileEntry> {
+  sync_live_state_to_entries_with_process_overrides(
+    entries,
+    machines,
+    active_machine_id,
+    filaments,
+    processes,
+    active_process_id,
+    flush_matrix,
+    flush_multiplier,
+    conf_relative_path,
+    pending_updates,
+    derived_overrides,
+    &HashMap::new(),
+  )
+}
+
+/// Same as [`sync_live_state_to_entries`], but each `ProcessProfile` `.json` is generated from its own
+/// independently evaluated Lua stack (`per_process_overrides[process.id]`), so Process-Tier-scoped rules
+/// only land in the matching exported presets. Machine & Filament files use `derived_overrides`.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_live_state_to_entries_with_process_overrides(
+  entries: &mut Vec<ScannedFileEntry>,
+  machines: &[MachineRig],
+  active_machine_id: &str,
+  filaments: &[FilamentSpool],
+  processes: &[ProcessProfile],
+  active_process_id: &str,
+  flush_matrix: &[String],
+  flush_multiplier: f64,
+  conf_relative_path: &str,
+  pending_updates: &[PendingDiskUpdate],
+  derived_overrides: &serde_json::Map<String, serde_json::Value>,
+  per_process_overrides: &HashMap<String, serde_json::Map<String, serde_json::Value>>,
+) -> Vec<LocalFsSaveFileEntry> {
   let mut modified_map: HashMap<String, String> = HashMap::new();
 
   // 1. Detect user_folder_id from `AnycubicSlicerNext.conf` (`app.preset_folder`) or existing
@@ -1869,7 +1903,10 @@ pub fn sync_live_state_to_entries(
   for proc in processes {
     let fname = crate::models::sanitize_profile_filename(&proc.name);
     let rel_path = format!("user/{}/process/{}", user_folder_id, fname);
-    let proc_json = crate::threemf::build_process_preset_json(proc, &active_rig, derived_overrides);
+    let proc_overrides = per_process_overrides
+      .get(&proc.id)
+      .unwrap_or(derived_overrides);
+    let proc_json = crate::threemf::build_process_preset_json(proc, &active_rig, proc_overrides);
 
     if let Some(existing) = entries.iter_mut().find(|e| {
       e.relative_path == rel_path

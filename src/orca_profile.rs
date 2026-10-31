@@ -1686,6 +1686,7 @@ mod tests {
       condition_expr: "all".to_string(),
       lua_code: lua_script,
       priority: 50,
+      scope: crate::transformations::RuleScopeFilter::default(),
     };
 
     let base = OrcaProfile::get_stock_kobra_s1();
