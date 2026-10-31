@@ -559,126 +559,33 @@ pub fn import_scanned_directory(
       || raw_inherits.trim().is_empty()
       || is_oc_managed_filament;
 
-    // Determine actual material type from profile name or `filament_type` field
-    let upper_name = name.to_uppercase();
-    let raw_mat_type = if upper_name.contains("PCTG-CF") {
-      "PCTG-CF".to_string()
-    } else if upper_name.contains("PCTG") {
-      "PCTG".to_string()
-    } else if upper_name.contains("PLA CARBON") || upper_name.contains("PLA-CF") {
-      "PLA-CF".to_string()
-    } else if upper_name.contains("PETG-CF") {
-      "PETG-CF".to_string()
-    } else if upper_name.contains("PET-CF") {
-      "PET-CF".to_string()
-    } else if upper_name.contains("PPA-CF") {
-      "PPA-CF".to_string()
-    } else if upper_name.contains("PAHT-CF") {
-      "PAHT-CF".to_string()
-    } else if upper_name.contains("PA12-CF") {
-      "PA12-CF".to_string()
-    } else if upper_name.contains("PA6-CF") {
-      "PA6-CF".to_string()
-    } else if upper_name.contains("PC-CF") {
-      "PC-CF".to_string()
-    } else if upper_name.contains("TPU-GF") || upper_name.contains("TPU-CF") {
-      "Fibreheart TPU-GF".to_string()
-    } else if upper_name.contains("FLEX TPU 64D HF") {
-      "Flex TPU 64D HF".to_string()
-    } else if upper_name.contains("TPU FOR ACE") {
-      "TPU for ACE".to_string()
-    } else if upper_name.contains("TPU FOR AMS") || upper_name.contains("TPU 64D") {
-      "TPU for AMS".to_string()
-    } else if upper_name.contains("TPU 95A") {
-      "TPU 95A".to_string()
-    } else if upper_name.contains("TPU 90A") {
-      "TPU 90A".to_string()
-    } else if upper_name.contains("TPU 85A") {
-      "TPU 85A".to_string()
-    } else if upper_name.contains("FIBREHEART ABS-CF") {
-      "Fibreheart ABS-CF".to_string()
-    } else if upper_name.contains("ABS-CF") {
-      "ABS-CF".to_string()
-    } else if upper_name.contains("ASA-CF") {
-      "ASA-CF".to_string()
-    } else if upper_name.contains("APLA") {
-      "APLA".to_string()
-    } else if upper_name.contains("PHA") {
-      "PHA".to_string()
-    } else if upper_name.contains("PVA") {
-      "PVA".to_string()
-    } else if upper_name.contains("BVOH") {
-      "BVOH".to_string()
-    } else if upper_name.contains("HIPS") {
-      "HIPS".to_string()
-    } else if upper_name.contains("PEBA") {
-      "PEBA".to_string()
-    } else if upper_name.contains("PLA+") {
-      "PLA+".to_string()
-    } else {
-      extract_str(f_val, "filament_type")
-        .or_else(|| {
-          if upper_name.contains("PETG") {
-            Some("PETG".to_string())
-          } else if upper_name.contains("TPU") {
-            Some("TPU".to_string())
-          } else if upper_name.contains("ABS") {
-            Some("ABS".to_string())
-          } else if upper_name.contains("ASA") {
-            Some("ASA".to_string())
-          } else if upper_name.contains("PA12")
-            || upper_name.contains("PA6")
-            || upper_name.contains("NYLON")
-            || upper_name.contains(" PA ")
-          {
-            Some("PA".to_string())
-          } else if upper_name.contains("PLA") {
-            Some("PLA".to_string())
-          } else {
-            None
-          }
-        })
-        .or_else(|| {
-          system_filaments
-            .get(&raw_inherits)
-            .and_then(|b| extract_str(b, "filament_type"))
-        })
-        .unwrap_or_else(|| "PLA".to_string())
-    };
-    let mat_type = match raw_mat_type.as_str() {
-      "PETG Translucent" => "PETG".to_string(),
-      "PLA Matte" | "PLA Silk" => "PLA".to_string(),
-      other => other.to_string(),
-    };
+    // Determine actual material type from profile name or `filament_type` field via `constants.json`
+    let c = crate::constants::constants();
+    let disk_fil_type = extract_str(f_val, "filament_type");
+    let inherited_fil_type = system_filaments
+      .get(&raw_inherits)
+      .and_then(|b| extract_str(b, "filament_type"));
+    let raw_mat_type = c.detect_polymer_from_profile_texts(
+      &name,
+      disk_fil_type.as_deref(),
+      inherited_fil_type.as_deref(),
+    );
+    let mat_type = c.base_material_code(&raw_mat_type).to_string();
+    let poly_cfg = c.lookup_polymer(&mat_type);
 
     // Resolve true system base matching the actual `mat_type`
-    let canonical_base_name = match FilamentSpool::canonical_polymer_key(&mat_type) {
-      "PETG" | "PCTG" => "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
-      "PETG-CF" | "PCTG-CF" => "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle",
-      "PET-CF" => "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle",
-      "PLA-CF" => "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
-      "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" => {
-        "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle"
-      }
-      "PEBA" => "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle",
-      "ABS" | "ABS-CF" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle",
-      "ASA" | "ASA-CF" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle",
-      "PA" | "PA12-CF" | "PA6-CF" | "PAHT-CF" | "PPA-CF" => {
-        if system_filaments.contains_key("yxpoler PA @Anycubic Kobra S1 0.4 nozzle") {
-          "yxpoler PA @Anycubic Kobra S1 0.4 nozzle"
-        } else {
-          "Anycubic PA @Anycubic Kobra S1 Max 0.4 nozzle"
-        }
-      }
-      "PC" | "PC-CF" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle",
-      "PLA+" => "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle",
-      _ => {
-        if name.contains("PLA+") {
-          "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle"
-        } else {
-          "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle"
-        }
-      }
+    let default_inherits_candidate =
+      c.resolve_filament_inherits("Anycubic Kobra S1", "0.4", &mat_type);
+    let canonical_base_name: &str = if poly_cfg.family == "PA"
+      && system_filaments.contains_key("yxpoler PA @Anycubic Kobra S1 0.4 nozzle")
+    {
+      "yxpoler PA @Anycubic Kobra S1 0.4 nozzle"
+    } else if poly_cfg.family == "PA"
+      && !system_filaments.contains_key(&default_inherits_candidate)
+    {
+      "Anycubic PA @Anycubic Kobra S1 Max 0.4 nozzle"
+    } else {
+      &default_inherits_candidate
     };
 
     let inherited_sys = if !raw_inherits.is_empty() {
@@ -717,17 +624,7 @@ pub fn import_scanned_directory(
     // Determine system Brass and system Hardened Steel (_HS) baselines separately
     // so we NEVER diff Brass values (`nozzle_temperature` / `nozzle_temperature_BRASS`)
     // against Hardened Steel values (`nozzle_temperature_HS`).
-    let default_mat_brass_temp = match mat_type.as_str() {
-      "PCTG" => 255,
-      "PETG" | "PETG-CF" => 230,
-      "TPU" => 230,
-      "ABS" => 255,
-      "ASA" => 260,
-      "PA" | "PA12" | "PA6-CF" => 275,
-      "PC" => 260,
-      "PLA-CF" => 205,
-      _ => 210,
-    };
+    let default_mat_brass_temp = poly_cfg.default_brass_nozzle_c;
 
     let explicit_hs_opt: Option<i32> =
       extract_str(f_val, "nozzle_temperature_HS").and_then(|s| s.parse().ok());
@@ -776,15 +673,7 @@ pub fn import_scanned_directory(
       explicit_generic_opt.unwrap_or(expected_hs_temp)
     };
 
-    let default_mat_bed_temp = match mat_type.as_str() {
-      "PCTG" => 85,
-      "PETG" | "PETG-CF" => 75,
-      "PLA-CF" => 55,
-      "TPU" => 45,
-      "ABS" | "ASA" => 90,
-      "PA" | "PA12" | "PA6-CF" | "PC" => 100,
-      _ => 55,
-    };
+    let default_mat_bed_temp = poly_cfg.default_bed_c;
 
     let disk_bed_opt: Option<i32> = extract_str(f_val, "textured_plate_temp")
       .or_else(|| extract_str(f_val, "hot_plate_temp"))
@@ -806,21 +695,17 @@ pub fn import_scanned_directory(
     let flow_ratio: f32 = extract_str(f_val, "filament_flow_ratio")
       .or_else(|| base_sys.and_then(|b| extract_str(b, "filament_flow_ratio")))
       .and_then(|s| s.parse().ok())
-      .unwrap_or(0.96);
+      .unwrap_or(poly_cfg.default_flow_ratio);
 
     let pressure_advance: f32 = extract_str(f_val, "pressure_advance")
       .or_else(|| base_sys.and_then(|b| extract_str(b, "pressure_advance")))
       .and_then(|s| s.parse().ok())
-      .unwrap_or(0.040);
+      .unwrap_or(poly_cfg.default_pressure_advance);
 
     let max_vol: f32 = extract_str(f_val, "filament_max_volumetric_speed")
       .or_else(|| base_sys.and_then(|b| extract_str(b, "filament_max_volumetric_speed")))
       .and_then(|s| s.parse().ok())
-      .unwrap_or(if mat_type == "PETG" || mat_type == "PCTG" {
-        12.0
-      } else {
-        16.0
-      });
+      .unwrap_or(poly_cfg.default_max_volumetric_speed);
 
     // Analyze `nozzle_temperature_HS` like-for-like (System HS vs. User HS, or System single-temp +5°C HS rule)
     let mut deltas = Vec::new();
@@ -979,10 +864,7 @@ pub fn import_scanned_directory(
     }
 
     // Flag excessive part cooling fan on warp-prone engineering polymers (ABS / ASA / PA / PC)
-    if matches!(
-      mat_type.as_str(),
-      "ABS" | "ASA" | "PA" | "PA12" | "PA6-CF" | "PC"
-    ) {
+    if poly_cfg.is_warp_prone() {
       if let Some(fan_hs) =
         extract_str(f_val, "fan_max_speed_HS").and_then(|s| s.parse::<i32>().ok())
       {
@@ -1022,79 +904,26 @@ pub fn import_scanned_directory(
       .unwrap_or_else(|| "#06B6D4".to_string());
 
     let lower_name = name.to_lowercase();
-    let lower_inherits = raw_inherits.to_lowercase();
-    let lower_raw_mat = raw_mat_type.to_lowercase();
-    let finish_type = if lower_name.contains("translucent")
-      || lower_name.contains("clear")
-      || lower_name.contains("transparent")
-      || lower_inherits.contains("translucent")
-      || lower_raw_mat.contains("translucent")
-    {
-      "Translucent".to_string()
-    } else if lower_name.contains("matt")
-      || lower_inherits.contains("matt")
-      || lower_raw_mat.contains("matt")
-    {
-      "Matte".to_string()
-    } else if lower_name.contains("silk")
-      || lower_inherits.contains("silk")
-      || lower_raw_mat.contains("silk")
-    {
-      "Silk".to_string()
-    } else if lower_name.contains("carbon") || mat_type.contains("-CF") {
-      "Carbon Fiber".to_string()
-    } else if lower_name.contains("glass") || mat_type.contains("-GF") {
-      "Glass Fiber".to_string()
-    } else if lower_name.contains("foaming")
-      || lower_name.contains("-lw")
-      || lower_name.contains("aero")
-      || lower_name.contains(" air ")
-    {
-      "Foaming".to_string()
-    } else if lower_name.contains("wood") {
-      "Wood-Filled".to_string()
-    } else if lower_name.contains("metal") {
-      "Metal-Filled".to_string()
-    } else if lower_name.contains("glow") {
-      "Glow-in-the-Dark".to_string()
-    } else if lower_name.contains("conductive") || lower_name.contains("esd") {
-      "Conductive".to_string()
-    } else if lower_name.contains("marble")
-      || lower_name.contains("stone")
-      || lower_name.contains("terracotta")
-    {
-      "Marble/Stone/Terracotta".to_string()
-    } else if lower_name.contains("photochromic") {
-      "Photochromic".to_string()
-    } else {
-      "Basic".to_string()
-    };
+    let fc = c.detect_finish_from_texts(&name, &raw_inherits, &raw_mat_type, &mat_type);
+    let finish_type = fc.code.clone();
 
     let is_abrasive =
       crate::models::FilamentSpool::is_abrasive_material_or_finish(&mat_type, &finish_type);
     let required_nozzle_hrc: u32 = if is_abrasive {
-      55
+      c.hardware_limits.abrasive_required_hrc
     } else {
       extract_str(f_val, "required_nozzle_HRC")
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3)
+        .unwrap_or(c.hardware_limits.non_abrasive_required_hrc)
     };
 
-    let opacity = if finish_type == "Translucent" {
-      0.30
-    } else {
-      0.95
-    };
-
-    let pigment_stickiness = if finish_type.contains("Carbon") || mat_type.contains("-CF") {
-      1.15
-    } else if color_hex == "#E10600" {
+    let opacity = fc.default_opacity;
+    let pigment_stickiness = if color_hex == "#E10600" && fc.default_pigment_stickiness < 1.25 {
       1.25
     } else {
-      1.00
+      fc.default_pigment_stickiness
     };
 
-    let c = crate::constants::constants();
     let vendor = if is_oc_managed_filament {
       c.detect_brand_from_text(&name).to_string()
     } else {
@@ -1181,13 +1010,13 @@ pub fn import_scanned_directory(
       }
     }
 
-    filaments.push(FilamentSpool {
+    let mut sp = FilamentSpool {
       id: format!("disk_spool_{}", idx + 1),
       name,
       brand: final_brand,
       inherits: resolved_inherits_name,
       material_type: final_mat_type,
-      nozzle_type: detected_spool_noz,
+      nozzle_type: detected_spool_noz.clone(),
       tuned_for_nozzle_type,
       required_nozzle_hrc,
       color_hex,
@@ -1212,7 +1041,29 @@ pub fn import_scanned_directory(
       is_rfid_synced: true,
       deltas_from_base: deltas,
       raw_disk_json: Some(raw_text.clone()),
-    });
+    };
+    if is_oc_managed_filament {
+      let saved_name = sp.name.clone();
+      let saved_color = sp.color_hex.clone();
+      let saved_mat = sp.material_type.clone();
+      let saved_fin = sp.finish_type.clone();
+      let saved_shore = if saved_fin.eq_ignore_ascii_case("Foaming") {
+        Some(sp.effective_foaming_shore_a())
+      } else {
+        None
+      };
+      sp.apply_material_change(&saved_mat, &detected_spool_noz);
+      sp.apply_finish_change(&saved_fin, &detected_spool_noz);
+      if let Some(shore) = saved_shore {
+        if sp.is_foaming_tpu() {
+          sp.apply_foaming_shore_hardness(shore, &detected_spool_noz);
+        }
+      }
+      sp.name = saved_name;
+      sp.color_hex = saved_color;
+      sp.rebuild_synthetic_disk_json(&detected_spool_noz);
+    }
+    filaments.push(sp);
   }
 
   // Include any system filaments referenced in `slot_filament_names_from_conf` (e.g. `Anycubic TPU @Anycubic Kobra S1 0.4 nozzle`
@@ -1234,35 +1085,14 @@ pub fn import_scanned_directory(
   for slot_idx in 0..slot_filament_names_from_conf.len() {
     let slot_fname = slot_filament_names_from_conf[slot_idx].clone();
     if !filaments.iter().any(|f| f.name == slot_fname) {
+      let c = crate::constants::constants();
       let sys_val = system_filaments.get(&slot_fname);
-      let mat_type = sys_val
-        .and_then(|b| extract_str(b, "filament_type"))
-        .unwrap_or_else(|| {
-          let upper = slot_fname.to_uppercase();
-          if upper.contains("PLA-CF") {
-            "PLA-CF".to_string()
-          } else if upper.contains("PLA+") {
-            "PLA+".to_string()
-          } else if upper.contains("PETG-CF") {
-            "PETG-CF".to_string()
-          } else if upper.contains("PET-CF") {
-            "PET-CF".to_string()
-          } else if upper.contains("PA6-CF") {
-            "PA6-CF".to_string()
-          } else if upper.contains("TPU") {
-            "TPU".to_string()
-          } else if upper.contains("PETG") {
-            "PETG".to_string()
-          } else if upper.contains("ABS") {
-            "ABS".to_string()
-          } else if upper.contains("ASA") {
-            "ASA".to_string()
-          } else if upper.contains("PC") {
-            "PC".to_string()
-          } else {
-            "PLA".to_string()
-          }
-        });
+      let disk_fil_type = sys_val.and_then(|b| extract_str(b, "filament_type"));
+      let mat_type = c.detect_polymer_from_profile_texts(
+        &slot_fname,
+        disk_fil_type.as_deref(),
+        None,
+      );
       let slot_canon = FilamentSpool::canonical_polymer_key(&mat_type);
       // Check if an `OC -` spool of this polymer already exists in `filaments` (e.g. `OC - PLA-CF • 0.4 Hardened` or `OC - Anycubic PLA-CF • 0.4 Hardened`)
       if let Some(existing_oc_idx) = filaments.iter().position(|f| {
@@ -1313,35 +1143,35 @@ pub fn import_scanned_directory(
         }
       }
 
+      let slot_poly = c.lookup_polymer(&mat_type);
       let sys_brass = sys_val
         .and_then(|b| {
           extract_str(b, "nozzle_temperature_BRASS")
             .or_else(|| extract_str(b, "nozzle_temperature"))
         })
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(205);
+        .unwrap_or(slot_poly.default_brass_nozzle_c);
       let base_temp = sys_val
         .and_then(|b| {
           extract_str(b, "nozzle_temperature_HS").or_else(|| extract_str(b, "nozzle_temperature"))
         })
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(220);
+        .unwrap_or(sys_brass + 5);
       let base_bed = sys_val
         .and_then(|b| {
           extract_str(b, "textured_plate_temp").or_else(|| extract_str(b, "hot_plate_temp"))
         })
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(if mat_type == "TPU" { 45 } else { 75 });
+        .unwrap_or(slot_poly.default_bed_c);
       let color_hex = slot_colors_from_conf
         .get(slot_idx % slot_colors_from_conf.len())
         .cloned()
         .unwrap_or_else(|| "#75787B".to_string());
-      let (dry_c, dry_hr) = match mat_type.as_str() {
-        "PETG" | "PETG-CF" | "PETG-GF" | "PCTG" => (55, 6),
-        "TPU" | "TPU 95A" | "PEBA" => (50, 4),
-        "ABS" | "ASA" | "PA" | "PA12" | "PA6-CF" | "PAHT-CF" | "PC" => (55, 8),
-        _ => (45, 4), // PLA, PLA+, PLA-CF -> 45°C for 4h
-      };
+      let slot_fc = c.detect_finish_from_texts(&slot_fname, "", &mat_type, &mat_type);
+      let slot_fin = slot_fc.code.clone();
+      let (dry_c, dry_hr) = (slot_poly.default_dry_temp_c, slot_poly.default_dry_time_hr);
+      let is_slot_abrasive =
+        FilamentSpool::is_abrasive_material_or_finish(&mat_type, &slot_fin);
       filaments.push(FilamentSpool {
         id: format!("disk_sys_spool_{}", slot_idx + 1),
         name: slot_fname.clone(),
@@ -1350,10 +1180,10 @@ pub fn import_scanned_directory(
         material_type: mat_type.clone(),
         nozzle_type: "hardened_steel".to_string(),
         tuned_for_nozzle_type: "any".to_string(),
-        required_nozzle_hrc: if slot_fname.contains("-CF") || slot_fname.contains("-GF") {
-          55
+        required_nozzle_hrc: if is_slot_abrasive {
+          c.hardware_limits.abrasive_required_hrc
         } else {
-          3
+          c.hardware_limits.non_abrasive_required_hrc
         },
         color_hex: color_hex.clone(),
         color_name: format!("Slot #{}", slot_idx + 1),
@@ -1363,24 +1193,18 @@ pub fn import_scanned_directory(
         print_temp: base_temp,
         base_bed_temp: base_bed,
         bed_temp: base_bed,
-        flow_ratio: 0.96,
-        pressure_advance: 0.040,
-        max_volumetric_speed: if mat_type == "TPU" { 6.0 } else { 12.0 },
-        fan_speed_percent: if mat_type == "PETG" { 40 } else { 100 },
+        flow_ratio: slot_poly.default_flow_ratio,
+        pressure_advance: slot_poly.default_pressure_advance,
+        max_volumetric_speed: slot_poly.default_max_volumetric_speed,
+        fan_speed_percent: slot_poly.default_fan_pct,
         remaining_grams: 850,
         is_loaded: true,
-        finish_type: if slot_fname.contains("-CF") {
-          "Carbon Fiber".to_string()
-        } else {
-          "Basic".to_string()
-        },
-        opacity: 0.95,
-        pigment_stickiness: if slot_fname.contains("-CF") {
-          1.15
-        } else if color_hex == "#E10600" {
+        finish_type: slot_fin,
+        opacity: slot_fc.default_opacity,
+        pigment_stickiness: if color_hex == "#E10600" && slot_fc.default_pigment_stickiness < 1.25 {
           1.25
         } else {
-          1.00
+          slot_fc.default_pigment_stickiness
         },
         drying_temp_c: dry_c,
         drying_time_hr: dry_hr,

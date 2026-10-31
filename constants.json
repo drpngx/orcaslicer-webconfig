@@ -343,6 +343,7 @@
       "default_pigment_stickiness": 1.0,
       "aliases": [
         "Matte",
+        "Matt",
         "PolyTerra",
         "CosPLA"
       ]
@@ -372,7 +373,9 @@
       "default_opacity": 0.35,
       "default_pigment_stickiness": 1.0,
       "aliases": [
-        "Translucent"
+        "Translucent",
+        "Clear",
+        "Transparent"
       ]
     },
     {
@@ -385,6 +388,7 @@
       "default_pigment_stickiness": 1.15,
       "aliases": [
         "-CF",
+        "-RCF",
         "CF",
         "CARBON"
       ]
@@ -399,6 +403,7 @@
       "default_pigment_stickiness": 1.1,
       "aliases": [
         "-GF",
+        "-RGF",
         "GF",
         "GLASS"
       ]
@@ -454,6 +459,8 @@
       "default_opacity": 1.0,
       "default_pigment_stickiness": 1.0,
       "aliases": [
+        "Foaming",
+        "-LW",
         "LW",
         "Varioshore",
         "Aero",
@@ -496,6 +503,7 @@
       "default_opacity": 0.65,
       "default_pigment_stickiness": 1.05,
       "aliases": [
+        "Photochromic",
         "UV",
         "Temp Shift",
         "Chameleon"
@@ -543,14 +551,17 @@
       "safe_nozzle_max_c": 275,
       "safe_bed_min_c": 70,
       "safe_bed_max_c": 90,
-      "default_brass_nozzle_c": 260,
+      "default_brass_nozzle_c": 255,
       "default_bed_c": 80,
       "default_max_volumetric_speed": 14.0,
       "default_fan_pct": 30,
-      "default_flow_ratio": 0.95,
+      "default_flow_ratio": 0.94,
       "default_pressure_advance": 0.048,
       "default_retraction_mm": 1.0,
       "default_retraction_speed_mms": 45,
+      "default_retract_before_wipe_pct": 40,
+      "default_z_hop_mm": 0.1,
+      "default_z_hop_type": "Spiral Lift",
       "default_dry_temp_c": 65,
       "default_dry_time_hr": 6,
       "slicer_filament_type": "PCTG",
@@ -558,7 +569,7 @@
       "standard_ams_compatible": true,
       "base_preset_code": "PETG-CF",
       "sort_priority": 2,
-      "catalog_nozzle_bounds_c": [245, 265],
+      "catalog_nozzle_bounds_c": [245, 260],
       "catalog_bed_bounds_c": [75, 90],
       "catalog_fan_bounds_pct": [25, 50],
       "catalog_mvs_bounds_mm3s": [6.0, 16.0],
@@ -587,22 +598,25 @@
       "safe_nozzle_max_c": 275,
       "safe_bed_min_c": 70,
       "safe_bed_max_c": 90,
-      "default_brass_nozzle_c": 255,
+      "default_brass_nozzle_c": 250,
       "default_bed_c": 75,
-      "default_max_volumetric_speed": 16.0,
+      "default_max_volumetric_speed": 14.0,
       "default_fan_pct": 35,
-      "default_flow_ratio": 0.95,
+      "default_flow_ratio": 0.94,
       "default_pressure_advance": 0.048,
       "default_retraction_mm": 1.0,
       "default_retraction_speed_mms": 45,
-      "default_dry_temp_c": 60,
+      "default_retract_before_wipe_pct": 40,
+      "default_z_hop_mm": 0.1,
+      "default_z_hop_type": "Spiral Lift",
+      "default_dry_temp_c": 65,
       "default_dry_time_hr": 6,
       "slicer_filament_type": "PCTG",
       "requires_hardened": false,
       "standard_ams_compatible": true,
       "base_preset_code": "PETG",
       "sort_priority": 1,
-      "catalog_nozzle_bounds_c": [245, 265],
+      "catalog_nozzle_bounds_c": [245, 255],
       "catalog_bed_bounds_c": [75, 90],
       "catalog_fan_bounds_pct": [25, 50],
       "catalog_mvs_bounds_mm3s": [6.0, 16.0],
@@ -637,6 +651,9 @@
       "default_pressure_advance": 0.045,
       "default_retraction_mm": 0.8,
       "default_retraction_speed_mms": 40,
+      "default_retract_before_wipe_pct": 35,
+      "default_z_hop_mm": 0.15,
+      "default_z_hop_type": "Spiral Lift",
       "default_dry_temp_c": 60,
       "default_dry_time_hr": 6,
       "slicer_filament_type": "PETG-CF",
@@ -681,6 +698,11 @@
       "default_pressure_advance": 0.045,
       "default_retraction_mm": 0.8,
       "default_retraction_speed_mms": 40,
+      "default_retract_before_wipe_pct": 35,
+      "default_z_hop_mm": 0.15,
+      "default_z_hop_type": "Spiral Lift",
+      "translucent_z_hop_mm": 0.1,
+      "translucent_pressure_advance": 0.05,
       "default_dry_temp_c": 55,
       "default_dry_time_hr": 6,
       "slicer_filament_type": "PETG",
@@ -727,6 +749,9 @@
       "default_pressure_advance": 0.04,
       "default_retraction_mm": 0.8,
       "default_retraction_speed_mms": 40,
+      "default_retract_before_wipe_pct": 35,
+      "default_z_hop_mm": 0.15,
+      "default_z_hop_type": "Spiral Lift",
       "default_dry_temp_c": 70,
       "default_dry_time_hr": 8,
       "slicer_filament_type": "PET-CF",

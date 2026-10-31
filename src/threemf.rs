@@ -236,11 +236,11 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   spool: &FilamentSpool,
   rig_opt: Option<&MachineRig>,
 ) -> serde_json::Map<String, serde_json::Value> {
+  let c = crate::constants::constants();
   let cat = crate::catalog::load_merged_catalog();
   let orca_fil_type = resolve_orca_filament_type(&spool.material_type);
-  let is_pctg = spool.material_type.contains("PCTG") || spool.name.to_uppercase().contains("PCTG");
-  let is_pctg_or_petg = is_pctg || orca_fil_type.contains("PETG") || orca_fil_type.contains("PET");
-  let is_tpu = orca_fil_type.contains("TPU") || orca_fil_type.contains("PEBA");
+  let poly_cfg = c.lookup_polymer(&spool.material_type);
+  let is_foaming_tpu = spool.is_foaming_tpu();
   let mut base_map = serde_json::Map::new();
   if let Some(fil_base) = cat
     .default_filament_bases
@@ -270,53 +270,17 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   }
 
   // Compute relative weather/climate deltas when a non-temperate rig climate is active
-  let mut climate_noz_delta: i32 = 0;
-  let mut climate_bed_delta: i32 = 0;
-  let mut climate_init_bed_extra: i32 = 0;
-  let mut climate_retract_delta: f64 = 0.0;
-  if let Some(rig) = rig_opt {
-    let temp_c = rig.ambient_temp_c;
-    let rh_pct = rig.humidity_pct;
-    let is_hot =
-      temp_c >= 26 || rig.climate_preset == "tropical" || rig.climate_preset == "hot_dry";
-    let is_cold =
-      temp_c <= 18 || rig.climate_preset == "cold_dry" || rig.climate_preset == "cold_humid";
-    let is_humid =
-      rh_pct >= 60 || rig.climate_preset == "tropical" || rig.climate_preset == "cold_humid";
-    let is_ms = rig.is_heat_creep_resistant_nozzle();
-
-    if is_humid {
-      climate_retract_delta = if is_pctg_or_petg || is_tpu {
-        0.20
-      } else {
-        0.15
-      };
-    }
-    if is_hot {
-      climate_noz_delta = if is_ms {
-        -5
-      } else if is_pctg_or_petg || orca_fil_type == "PLA" {
-        -10
-      } else if is_tpu {
-        -6
-      } else {
-        -4
-      };
-      climate_bed_delta = if is_pctg_or_petg {
-        -3
-      } else if orca_fil_type == "PLA" || is_tpu {
-        -5
-      } else {
-        0
-      };
-    } else if is_cold {
-      climate_noz_delta = if is_ms { 4 } else { 6 } - if is_humid { 3 } else { 0 };
-      climate_bed_delta = 5;
-      climate_init_bed_extra = 5;
-    } else if is_humid {
-      climate_noz_delta = -3;
-    }
-  }
+  let (climate_noz_delta, climate_bed_delta, climate_init_bed_extra, climate_retract_delta) =
+    if let Some(rig) = rig_opt {
+      poly_cfg.compute_climate_deltas(
+        rig.ambient_temp_c,
+        rig.humidity_pct,
+        &rig.climate_preset,
+        rig.is_heat_creep_resistant_nozzle(),
+      )
+    } else {
+      (0, 0, 0, 0.0)
+    };
 
   let base_noz = first_str_from_map(&base_map, "nozzle_temperature")
     .and_then(|s| s.parse::<i32>().ok())
@@ -324,19 +288,22 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   let base_init = first_str_from_map(&base_map, "nozzle_temperature_initial_layer")
     .and_then(|s| s.parse::<i32>().ok())
     .unwrap_or(base_noz);
-  let init_delta = if is_pctg_or_petg || is_tpu {
+  let init_delta = if poly_cfg.initial_layer_temp_boost_c(is_foaming_tpu) == 0 {
     0
   } else {
     (base_init - base_noz).clamp(0, 10)
   };
   let (min_safe_noz, mut max_safe_noz) =
     FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type);
-  if spool.is_foaming_tpu() {
+  if is_foaming_tpu {
     max_safe_noz = max_safe_noz.max(280);
   }
   let (min_safe_bed, max_safe_bed) = FilamentSpool::polymer_safe_bed_bounds(&spool.material_type);
   let climate_min_bed = if let Some(rig) = rig_opt {
-    if rig.ambient_temp_c >= 26 || rig.climate_preset == "tropical" || rig.climate_preset == "hot_dry" {
+    if rig.ambient_temp_c >= 26
+      || rig.climate_preset == "tropical"
+      || rig.climate_preset == "hot_dry"
+    {
       min_safe_bed.max((rig.ambient_temp_c + 15).clamp(45, 50))
     } else {
       min_safe_bed
@@ -352,52 +319,38 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   let inherits = resolve_filament_inherits_for_rig(spool, rig_opt);
 
   // Ensure retraction, wipe, z-hop, and fan_min_speed / fan_max_speed are always populated cleanly
-  let poly_cfg = crate::constants::constants().lookup_polymer(&spool.material_type);
   let is_external_disk_spool = spool.id.starts_with("disk_")
     && !spool.name.starts_with("OC -")
     && !spool.name.starts_with("OC:");
+  let default_ret = poly_cfg.default_retraction_mm as f64;
   let base_ret_len = if is_external_disk_spool {
     first_str_from_map(&base_map, "filament_retraction_length")
       .and_then(|s| s.parse::<f64>().ok())
-      .unwrap_or(poly_cfg.default_retraction_mm as f64)
+      .unwrap_or(default_ret)
+      .max(default_ret)
   } else if spool.is_siraya_foaming_air() {
     0.0
-  } else if spool.is_foaming_tpu() {
+  } else if is_foaming_tpu {
     0.35
   } else {
-    poly_cfg.default_retraction_mm as f64
+    default_ret
   };
   let effective_ret_len = if spool.is_siraya_foaming_air() {
     0.0
-  } else if is_pctg && base_ret_len < 1.00 {
-    (1.00 + climate_retract_delta).clamp(0.30, 1.45)
   } else {
     (base_ret_len + climate_retract_delta).clamp(0.30, 1.45)
   };
-  let ret_len_str = if effective_ret_len == 0.0 {
-    "0".to_string()
-  } else if (effective_ret_len - effective_ret_len.round()).abs() < 1e-6 {
-    format!("{:.1}", effective_ret_len)
-  } else {
-    format!("{:.2}", effective_ret_len)
-      .trim_end_matches('0')
-      .trim_end_matches('.')
-      .to_string()
-  };
+  let ret_len_str = crate::constants::PolymerConstants::format_retraction_mm(effective_ret_len);
   let ret_spd_str = if is_external_disk_spool {
     first_str_from_map(&base_map, "filament_retraction_speed")
       .unwrap_or_else(|| poly_cfg.default_retraction_speed_mms.to_string())
-  } else if spool.is_foaming_tpu() {
+  } else if is_foaming_tpu {
     "25".to_string()
   } else {
     poly_cfg.default_retraction_speed_mms.to_string()
   };
   let fan_min_pct = spool.fan_speed_percent.clamp(0, 100);
-  let fan_max_pct = if is_pctg_or_petg && fan_min_pct >= 30 {
-    90.max(fan_min_pct)
-  } else {
-    fan_min_pct
-  };
+  let fan_max_pct = poly_cfg.resolve_fan_max_pct(fan_min_pct);
 
   let compat_printer = rig_opt
     .map(|r| format!("{} {} nozzle", r.printer_model, r.formatted_nozzle_diameter()))
@@ -531,10 +484,13 @@ pub fn resolve_spool_orca_filament_map_with_rig(
     "filament_retraction_speed".to_string(),
     serde_json::json!([ret_spd_str]),
   );
-  if is_pctg_or_petg {
+  let (z_hop_str, z_hop_type_str, retract_before_wipe_str) =
+    poly_cfg.resolve_z_hop_and_retract_before_wipe(&spool.finish_type, is_foaming_tpu);
+
+  if !is_external_disk_spool {
     base_map.insert(
       "filament_retract_before_wipe".to_string(),
-      serde_json::json!(["0%"]),
+      serde_json::json!([retract_before_wipe_str]),
     );
     base_map.insert(
       "filament_deretraction_speed".to_string(),
@@ -545,24 +501,20 @@ pub fn resolve_spool_orca_filament_map_with_rig(
       "filament_wipe_distance".to_string(),
       serde_json::json!(["2"]),
     );
-    if !base_map.contains_key("filament_z_hop") {
-      base_map.insert("filament_z_hop".to_string(), serde_json::json!(["0.15"]));
-    }
-    if !base_map.contains_key("filament_z_hop_types") {
-      base_map.insert(
-        "filament_z_hop_types".to_string(),
-        serde_json::json!(["Spiral Lift"]),
-      );
-    }
+    base_map.insert("filament_z_hop".to_string(), serde_json::json!([z_hop_str]));
+    base_map.insert(
+      "filament_z_hop_types".to_string(),
+      serde_json::json!([z_hop_type_str]),
+    );
   } else {
     for (fallback_key, fallback_val) in [
       ("filament_diameter", "1.75"),
-      ("filament_retract_before_wipe", "0%"),
+      ("filament_retract_before_wipe", retract_before_wipe_str.as_str()),
       ("filament_deretraction_speed", "0"),
       ("filament_wipe", "1"),
       ("filament_wipe_distance", "2"),
-      ("filament_z_hop", "0.2"),
-      ("filament_z_hop_types", "Normal Lift"),
+      ("filament_z_hop", z_hop_str.as_str()),
+      ("filament_z_hop_types", z_hop_type_str),
     ] {
       if !base_map.contains_key(fallback_key) {
         base_map.insert(

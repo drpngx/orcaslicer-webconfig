@@ -1,8 +1,9 @@
 -- Filament Rule: PCTG Stringing & Ooze Mitigation
 -- PCTG has higher melt elasticity and chain entanglement than standard PETG, making it prone
 -- to fine cobwebbing and nozzle tip build-up during travel moves.
--- Applies snappy 1.00mm @ 45mm/s retraction, 0% retract-before-wipe (so full retraction completes
--- before the 2.0mm internal wipe), 0.15mm Spiral Z-Hop, and 8000 mm/s2 travel acceleration.
+-- Applies snappy 1.00mm @ 45mm/s retraction, 40% retract-before-wipe (relieving 40% of nozzle
+-- pressure before the 2.0mm internal wipe and completing 60% during the wipe), 0.10mm Spiral Z-Hop,
+-- and 10000 mm/s2 travel acceleration.
 
 params = {
   {
@@ -83,15 +84,15 @@ function apply(config, ctx, p)
   config["filament_retraction_length"] = { r_len }
   config["filament_retraction_speed"] = { r_spd }
   config["filament_deretraction_speed"] = { "0" }
-  config["filament_retract_before_wipe"] = { "0%" }
+  config["filament_retract_before_wipe"] = { "40%" }
   config["filament_wipe"] = { "1" }
   config["filament_wipe_distance"] = { "2.0" }
-  config["z_hop"] = { "0.15" }
+  config["z_hop"] = { "0.1" }
   config["z_hop_types"] = { z_type }
-  config["filament_z_hop"] = { "0.15" }
+  config["filament_z_hop"] = { "0.1" }
   config["filament_z_hop_types"] = { z_type }
   config["travel_acceleration"] = "10000"
   config["wipe_on_loops"] = "1"
 
-  print(string.format("[Filament:PCTG-AntiStringing] Retract -> %smm @ %smm/s (0%% retract-before-wipe, 2.0mm wipe), 0.15mm %s, 10000 mm/s2 travel accel", r_len, r_spd, z_type))
+  print(string.format("[Filament:PCTG-AntiStringing] Retract -> %smm @ %smm/s (40%% retract-before-wipe, 2.0mm wipe), 0.10mm %s, 10000 mm/s2 travel accel", r_len, r_spd, z_type))
 end

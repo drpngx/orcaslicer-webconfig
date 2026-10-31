@@ -137,7 +137,12 @@ def categorize_polymer(code: str, finish_hint: str | None = None) -> tuple[str, 
     dry_c, dry_h = (65, 6)
   elif any(x in up for x in ("PETG", "PCTG", "PET-", "PET ", "COPE")):
     cat = "PETG / PCTG / PET"
-    dry_c, dry_h = (60, 6)
+    if "PET-" in up or "PET " in up:
+      dry_c, dry_h = (70, 8)
+    elif "PCTG" in up:
+      dry_c, dry_h = (65, 6)
+    else:
+      dry_c, dry_h = (60, 6)
   elif any(x in up for x in ("PVA", "BVOH", "SUPPORT", "POLYCAST")):
     cat = "PVA / Support"
     dry_c, dry_h = (50, 8)

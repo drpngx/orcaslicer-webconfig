@@ -112,6 +112,14 @@ pub struct ClimateConstants {
   pub humidity_pct: i32,
 }
 
+fn default_z_hop_mm() -> f32 {
+  0.2
+}
+
+fn default_z_hop_type() -> String {
+  "Normal Lift".to_string()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PolymerConstants {
   pub canonical_key: String,
@@ -129,6 +137,16 @@ pub struct PolymerConstants {
   pub default_pressure_advance: f32,
   pub default_retraction_mm: f32,
   pub default_retraction_speed_mms: i32,
+  #[serde(default)]
+  pub default_retract_before_wipe_pct: u8,
+  #[serde(default = "default_z_hop_mm")]
+  pub default_z_hop_mm: f32,
+  #[serde(default = "default_z_hop_type")]
+  pub default_z_hop_type: String,
+  #[serde(default)]
+  pub translucent_z_hop_mm: Option<f32>,
+  #[serde(default)]
+  pub translucent_pressure_advance: Option<f32>,
   pub default_dry_temp_c: i32,
   pub default_dry_time_hr: i32,
   pub slicer_filament_type: String,
@@ -150,6 +168,149 @@ pub struct PolymerConstants {
   pub gf_tokens: Vec<String>,
   #[serde(default)]
   pub compatible_finishes_gf: Vec<String>,
+}
+
+impl PolymerConstants {
+  pub fn is_copolyester(&self) -> bool {
+    self.family == "PETG"
+  }
+
+  pub fn is_flexible(&self) -> bool {
+    self.family == "TPU"
+  }
+
+  pub fn is_warp_prone(&self) -> bool {
+    matches!(
+      self.family.as_str(),
+      "ABS" | "ASA" | "PA" | "PC" | "HIGH_TEMP" | "PP"
+    )
+  }
+
+  pub fn initial_layer_temp_boost_c(&self, is_foaming_flex: bool) -> i32 {
+    if self.is_copolyester() || self.is_flexible() || is_foaming_flex {
+      0
+    } else {
+      5
+    }
+  }
+
+  pub fn resolve_fan_max_pct(&self, fan_min_pct: i32) -> i32 {
+    if self.is_copolyester() && fan_min_pct >= 30 {
+      90.max(fan_min_pct)
+    } else {
+      fan_min_pct
+    }
+  }
+
+  pub fn resolve_pressure_advance(&self, finish_code: &str) -> f32 {
+    if finish_code.eq_ignore_ascii_case("Translucent") {
+      self
+        .translucent_pressure_advance
+        .unwrap_or(self.default_pressure_advance)
+    } else {
+      self.default_pressure_advance
+    }
+  }
+
+  pub fn format_retraction_mm(val: f64) -> String {
+    if val == 0.0 {
+      "0".to_string()
+    } else if (val - val.round()).abs() < 1e-6 {
+      format!("{:.1}", val)
+    } else {
+      format!("{:.2}", val)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+    }
+  }
+
+  pub fn resolve_z_hop_and_retract_before_wipe<'a>(
+    &'a self,
+    finish_code: &str,
+    is_foaming_flex: bool,
+  ) -> (String, &'a str, String) {
+    let z_hop_mm = if is_foaming_flex {
+      0.0
+    } else if finish_code.eq_ignore_ascii_case("Translucent") {
+      self.translucent_z_hop_mm.unwrap_or(self.default_z_hop_mm)
+    } else {
+      self.default_z_hop_mm
+    };
+    let z_hop_str = if z_hop_mm == 0.0 {
+      "0".to_string()
+    } else {
+      format!("{:.2}", z_hop_mm)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+    };
+    let retract_before_wipe_str = format!("{}%", self.default_retract_before_wipe_pct);
+    (
+      z_hop_str,
+      self.default_z_hop_type.as_str(),
+      retract_before_wipe_str,
+    )
+  }
+
+  /// Computes `(climate_noz_delta, climate_bed_delta, climate_init_bed_extra, climate_retract_delta)`
+  /// for the active ambient weather preset using polymer family properties from `constants.json`.
+  pub fn compute_climate_deltas(
+    &self,
+    temp_c: i32,
+    rh_pct: i32,
+    climate_preset: &str,
+    is_heat_creep_resistant_nozzle: bool,
+  ) -> (i32, i32, i32, f64) {
+    let is_hot = temp_c >= 26 || climate_preset == "tropical" || climate_preset == "hot_dry";
+    let is_cold = temp_c <= 18 || climate_preset == "cold_dry" || climate_preset == "cold_humid";
+    let is_humid = rh_pct >= 60 || climate_preset == "tropical" || climate_preset == "cold_humid";
+
+    let climate_retract_delta = if is_humid {
+      if self.is_copolyester() || self.is_flexible() {
+        0.20
+      } else {
+        0.15
+      }
+    } else {
+      0.0
+    };
+
+    let mut climate_noz_delta = 0;
+    let mut climate_bed_delta = 0;
+    let mut climate_init_bed_extra = 0;
+    if is_hot {
+      climate_noz_delta = if is_heat_creep_resistant_nozzle {
+        -5
+      } else if self.is_copolyester() || self.family == "PLA" {
+        -10
+      } else if self.is_flexible() {
+        -6
+      } else {
+        -4
+      };
+      climate_bed_delta = if self.is_copolyester() {
+        -3
+      } else if self.family == "PLA" || self.is_flexible() {
+        -5
+      } else {
+        0
+      };
+    } else if is_cold {
+      climate_noz_delta =
+        if is_heat_creep_resistant_nozzle { 4 } else { 6 } - if is_humid { 3 } else { 0 };
+      climate_bed_delta = 5;
+      climate_init_bed_extra = 5;
+    } else if is_humid {
+      climate_noz_delta = -3;
+    }
+    (
+      climate_noz_delta,
+      climate_bed_delta,
+      climate_init_bed_extra,
+      climate_retract_delta,
+    )
+  }
 }
 
 pub fn constants() -> &'static WebConfigConstants {
@@ -420,6 +581,129 @@ impl WebConfigConstants {
       }
     }
     self.polymers.last().expect("polymers list cannot be empty")
+  }
+
+  /// Detects an intrinsic fiber/specialty finish (e.g. `"Carbon Fiber"`, `"Glass Fiber"`, `"Translucent"`)
+  /// from a material code string using `finishes` in `constants.json`.
+  pub fn detect_intrinsic_finish<'a>(&'a self, material_type: &str) -> Option<&'a str> {
+    let up = material_type.trim().to_uppercase();
+    for code in ["Carbon Fiber", "Glass Fiber", "Translucent"] {
+      if let Some(fc) = self.finishes.iter().find(|f| f.code == code) {
+        if up.contains(&fc.code.to_uppercase())
+          || fc.aliases.iter().any(|a| up.contains(&a.to_uppercase()))
+        {
+          return Some(&fc.code);
+        }
+      }
+    }
+    None
+  }
+
+  /// Detects the finish (`Translucent`, `Matte`, `Silk`, `Carbon Fiber`, `Glass Fiber`, `Foaming`, etc.,
+  /// defaulting to `Basic`) from profile name, inherited preset name, and material type strings.
+  pub fn detect_finish_from_texts<'a>(
+    &'a self,
+    name: &str,
+    inherits: &str,
+    raw_mat: &str,
+    resolved_mat: &str,
+  ) -> &'a FinishConstants {
+    let combined_up = format!("{} {} {} {}", name, inherits, raw_mat, resolved_mat).to_uppercase();
+    let name_up = format!("{} {}", name, resolved_mat).to_uppercase();
+    for code in [
+      "Translucent",
+      "Matte",
+      "Silk",
+      "Carbon Fiber",
+      "Glass Fiber",
+      "Foaming",
+      "Wood-Filled",
+      "Metal-Filled",
+      "Glow-in-the-Dark",
+      "Conductive",
+      "Marble/Stone/Terracotta",
+      "Photochromic",
+    ] {
+      if let Some(fc) = self.finishes.iter().find(|f| f.code == code) {
+        let search_target = if matches!(code, "Translucent" | "Matte" | "Silk") {
+          &combined_up
+        } else {
+          &name_up
+        };
+        if fc.aliases.iter().any(|al| {
+          let al_up = al.to_uppercase();
+          if al_up == "CF" || al_up == "GF" || al_up == "LW" || al_up == "UV" {
+            false
+          } else if al_up == "AIR" {
+            search_target.contains(" AIR ")
+          } else {
+            search_target.contains(&al_up)
+          }
+        }) {
+          return fc;
+        }
+      }
+    }
+    &self.finishes[0]
+  }
+
+  /// Resolves the canonical or catalog material code from a profile name, optional `filament_type` field,
+  /// and optional inherited `filament_type` field using `polymers` and `finish_variant_mappings` in `constants.json`.
+  pub fn detect_polymer_from_profile_texts(
+    &self,
+    name: &str,
+    disk_filament_type: Option<&str>,
+    inherited_filament_type: Option<&str>,
+  ) -> String {
+    let upper_name = name.to_uppercase();
+    // 1. Check composite / specialty polymer entries in `self.polymers` before generic base families
+    for p in &self.polymers {
+      let is_generic_family_root = matches!(
+        p.canonical_key.as_str(),
+        "PETG" | "TPU" | "ABS" | "ASA" | "PA" | "PC" | "PLA"
+      );
+      if !is_generic_family_root {
+        if p.match_tokens.iter().any(|tok| {
+          if tok == "PHA" {
+            upper_name == "PHA"
+              || upper_name.starts_with("PHA ")
+              || upper_name.ends_with(" PHA")
+              || upper_name.contains(" PHA ")
+              || upper_name.contains("PHA-")
+          } else if tok == "PCL" {
+            upper_name == "PCL" || upper_name.starts_with("PCL ") || upper_name.contains(" PCL ")
+          } else if tok == "64D" {
+            upper_name.contains("TPU 64D")
+          } else {
+            upper_name.contains(tok)
+          }
+        }) {
+          return self.base_material_code(&p.canonical_key).to_string();
+        }
+      }
+    }
+    // 2. Otherwise use explicit `filament_type` from disk if present, else match remaining polymers on `name`, else inherited
+    let raw = disk_filament_type
+      .map(|s| s.to_string())
+      .or_else(|| {
+        for p in &self.polymers {
+          if p.match_tokens.iter().any(|tok| {
+            if tok == "PA" {
+              upper_name.contains(" PA ")
+            } else if tok == "PC" {
+              upper_name == "PC" || upper_name.contains(" PC ") || upper_name.starts_with("PC ")
+            } else {
+              upper_name.contains(tok)
+            }
+          }) {
+            return Some(p.canonical_key.clone());
+          }
+        }
+        None
+      })
+      .or_else(|| inherited_filament_type.map(|s| s.to_string()))
+      .unwrap_or_else(|| self.polymers.last().unwrap().canonical_key.clone());
+    self.base_material_code(&raw).to_string()
   }
 
   /// Parses the structured WebConfig `filament_notes` header:

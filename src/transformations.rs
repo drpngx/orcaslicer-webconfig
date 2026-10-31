@@ -281,7 +281,7 @@ impl TransformationEngine {
       TransformationRule {
         id: "filament_pctg_antistringing".to_string(),
         name: "PCTG Stringing & Ooze Mitigation".to_string(),
-        description: "Targets PCTG's high melt elasticity: sets 0.85mm @ 45mm/s retraction (35mm/s deretract), 70% retract-before-wipe over a 2.0mm wipe distance, 0.20mm Spiral Z-Hop, 8000 mm/s² travel acceleration, and -3°C anti-ooze trim.".to_string(),
+        description: "Targets PCTG's high melt elasticity: sets 1.00mm @ 45mm/s retraction, 40% retract-before-wipe over a 2.0mm wipe distance, 0.10mm Spiral Z-Hop, 10000 mm/s² travel acceleration, and -3°C anti-ooze trim.".to_string(),
         category: "Filament Tuning Rule".to_string(),
         icon: "🧵".to_string(),
         enabled: true,
