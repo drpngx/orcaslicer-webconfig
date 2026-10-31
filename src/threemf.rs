@@ -878,7 +878,69 @@ pub fn resolve_effective_orca_profile_values(
       ("default_acceleration", process.default_acceleration),
     ] {
       let scale = get_user_scale(key);
-      let scaled_spd = (raw_spd * scale).round().max(15.0);
+      let mut scaled_spd = (raw_spd * scale).round().max(15.0);
+      if key == "outer_wall_speed" {
+        if let Some(vfa_mode) = derived_overrides
+          .get("_outer_wall_vfa_mode")
+          .and_then(|v| v.as_str())
+        {
+          let sub_spd = derived_overrides
+            .get("_outer_wall_vfa_sub_speed")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(55.0);
+          let clear_spd = derived_overrides
+            .get("_outer_wall_vfa_clear_speed")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(145.0);
+          let eff_mvs = derived_overrides
+            .get("_outer_wall_vfa_effective_mvs")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(18.0);
+          let is_silk = derived_overrides
+            .get("_outer_wall_vfa_is_silk")
+            .and_then(|v| v.as_str())
+            == Some("1");
+          let lock_pref = derived_overrides
+            .get("_outer_wall_vfa_lock_pref")
+            .and_then(|v| v.as_str())
+            .unwrap_or("auto");
+          let ow_width = effective
+            .get("outer_wall_line_width")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(process.line_width);
+          let cross_sec = (process.layer_height * ow_width).max(0.01);
+          let mvs_ceiling = (eff_mvs / cross_sec).floor();
+          let actual_outer_spd = scaled_spd.min(mvs_ceiling);
+          let mut stepped_down = false;
+          if vfa_mode == "sub_resonance_gloss"
+            || (is_silk && scaled_spd > sub_spd + 5.0)
+            || (actual_outer_spd > sub_spd + 5.0 && actual_outer_spd < clear_spd)
+          {
+            scaled_spd = (sub_spd * scale).round().max(15.0);
+            stepped_down = true;
+          }
+          if lock_pref == "auto" {
+            let lock_ow = if vfa_mode == "spire_safe"
+              || (!stepped_down
+                && !is_silk
+                && scaled_spd >= clear_spd
+                && process.layer_height <= 0.145)
+            {
+              "0"
+            } else {
+              "1"
+            };
+            effective.insert(
+              "dont_slow_down_outer_wall".to_string(),
+              serde_json::json!(lock_ow),
+            );
+          }
+        }
+      }
       effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", scaled_spd)));
     }
     // `inner_wall_line_width` / `sparse_infill_line_width` now flow straight through from the
@@ -937,6 +999,9 @@ pub const EXTRA_PROCESS_OVERRIDE_KEYS: &[&str] = &[
   "bottom_shell_layers",
   "infill_wall_overlap",
   "sparse_infill_pattern",
+  "dont_slow_down_outer_wall",
+  "small_perimeter_speed",
+  "small_perimeter_threshold",
 ];
 
 /// Builds a user Process `.json` preset from the imported OrcaSlicer process base + Lua-evaluated overrides

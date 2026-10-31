@@ -189,26 +189,25 @@ pub fn App() -> Html {
       .as_ref()
       .map(|s| s.rules.clone())
       .unwrap_or_default();
-    // Migration: inject newly added default-on rules into previously saved stacks
-    // (e.g. the Nozzle-Proportional Line Width Geometry pack), right after the hardware rules.
+    // Migration: inject newly added built-in rules into previously saved stacks
     if !list.is_empty() {
-      for new_id in ["line_width_geometry"] {
+      let defaults = TransformationEngine::get_default_rules();
+      for new_id in [
+        "line_width_geometry",
+        "support_tuning",
+        "ironing_tuning",
+        "dimensional_precision",
+        "bridge_overhang_tuning",
+        "structural_strength",
+        "outer_wall_consistency",
+      ] {
         if !list.iter().any(|r| r.id == new_id) {
-          if let Some(def) = TransformationEngine::get_default_rules()
-            .into_iter()
-            .find(|r| r.id == new_id)
-          {
-            TransformationEngine::normalize_stack_order(&mut list);
-            let insert_at = list
-              .iter()
-              .rposition(|r| r.id == "rig_addons_cooling" || r.id == "thermal_conductivity")
-              .map(|p| p + 1)
-              .unwrap_or(0);
-            list.insert(insert_at.min(list.len()), def);
-            TransformationEngine::reindex_priorities(&mut list);
+          if let Some(def) = defaults.iter().find(|r| r.id == new_id).cloned() {
+            list.push(def);
           }
         }
       }
+      TransformationEngine::normalize_stack_order(&mut list);
     }
     list
   });
@@ -381,6 +380,11 @@ pub fn App() -> Html {
     .find(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
     .map(|s| s.max_volumetric_speed as f64)
     .unwrap_or(12.0);
+  let active_filament_finish = filaments
+    .iter()
+    .find(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
+    .map(|s| s.finish_type.clone())
+    .unwrap_or_else(|| "Standard".to_string());
 
   let slots_json: Vec<serde_json::Value> = active_slots
     .iter()
@@ -411,6 +415,7 @@ pub fn App() -> Html {
     "layer_height": active_proc.layer_height,
     "line_width": active_proc.line_width,
     "filament_type": *active_filament_type,
+    "filament_finish": active_filament_finish,
     "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&active_filament_type).1,
     "all_filament_types": all_filament_types,
     "addons": active_rig.addons,

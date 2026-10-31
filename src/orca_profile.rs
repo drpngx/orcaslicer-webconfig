@@ -674,6 +674,20 @@ impl OrcaProfile {
         description: "Maximum part cooling fan duty cycle".to_string(),
       },
       ParameterMeta {
+        key: "dont_slow_down_outer_wall".to_string(),
+        label: "Don't Slow Down Outer Wall (Anti-Gloss-Banding)".to_string(),
+        category: "Cooling & Adhesion".to_string(),
+        unit: "flag".to_string(),
+        description: "Prevents minimum-layer-time slowdown from throttling outer walls into 70–130 mm/s VFA & gloss-banding zone".to_string(),
+      },
+      ParameterMeta {
+        key: "small_perimeter_speed".to_string(),
+        label: "Small Perimeter Speed".to_string(),
+        category: "Speed & Volumetric Flow".to_string(),
+        unit: "mm/s".to_string(),
+        description: "Speed for small holes, pins, and bosses (kept below the 70 mm/s CoreXY VFA resonance band)".to_string(),
+      },
+      ParameterMeta {
         key: "outer_wall_line_width".to_string(),
         label: "Outer Wall Line Width".to_string(),
         category: "Line Width Geometry".to_string(),

@@ -772,6 +772,18 @@ impl TransformationEngine {
         scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
+        id: "outer_wall_consistency".to_string(),
+        name: "CoreXY Outer-Wall Speed Consistency & VFA / Gloss-Banding Guard".to_string(),
+        description: "Eliminates CoreXY 70–130 mm/s belt/stepper VFA ripples and Benchy hull-line gloss banding: sets dont_slow_down_outer_wall = 1 (auto-disabled to 0 on 0.12mm Fine high-MVS PLA for miniatures & delicate 3mm spires) and steps outer_wall_speed down to 55–60 mm/s whenever MVS or Silk finish cannot sustain >= 145 mm/s.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "〰️".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/outer_wall_consistency.lua").to_string(),
+        priority: 58,
+        scope: crate::transformations::RuleScopeFilter::default(),
+      },
+      TransformationRule {
         id: "transparent_optical_glass".to_string(),
         name: "Transparent / Glass-Like Optical Clarity Mode (Rygar1432 / CNC Kitchen)".to_string(),
         description: "Tunes translucent PETG/PCTG/PLA for maximum optical clarity ('How to Print Glass'): 20 mm/s print speeds (5.0 mm³/s MVS ceiling), +0.05 (+5%) flow ratio boost to flood inter-bead micro-voids, 0% part cooling fan, 0.12mm layer height with 1.25× nozzle line width, 100% Aligned Rectilinear infill at 0°, 1 perimeter wall, 0 top/bottom shells, and 65°C Textured PEI easy-release bed temp.".to_string(),
@@ -907,6 +919,18 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/structural_strength.lua").to_string(),
         priority: 57,
+        scope: crate::transformations::RuleScopeFilter::default(),
+      },
+      TransformationRule {
+        id: "outer_wall_consistency".to_string(),
+        name: "CoreXY Outer-Wall Speed Consistency & VFA / Gloss-Banding Guard".to_string(),
+        description: "Eliminates CoreXY 70–130 mm/s belt/stepper VFA ripples and Benchy hull-line gloss banding: sets dont_slow_down_outer_wall = 1 (with a Spire-Safe 0 toggle for miniatures & delicate 3mm tips at 200 mm/s) and cleanly steps outer_wall_speed down to 55–60 mm/s whenever MVS cannot sustain >= 145 mm/s.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "〰️".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/outer_wall_consistency.lua").to_string(),
+        priority: 58,
         scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
@@ -1148,6 +1172,7 @@ end
         "thermal_conductivity"
         | "rig_addons_cooling"
         | "line_width_geometry"
+        | "outer_wall_consistency"
         | "volumetric_speed_ceiling"
         | "flush_volumes_matrix"
         | "symptom_bed_adhesion_petg"
@@ -1576,6 +1601,8 @@ end
                   rule.id.as_str(),
                   "volumetric_speed_ceiling"
                     | "rule_volumetric_speed_ceiling"
+                    | "outer_wall_consistency"
+                    | "wizard_outer_wall_consistency"
                     | "weather_climate_adjustment"
                     | "rule_weather_climate"
                     | "tpu_foaming_shore"
@@ -2754,6 +2781,10 @@ end
         include_str!("../transformations/parametric/structural_strength.lua"),
       ),
       (
+        "outer_wall_consistency",
+        include_str!("../transformations/parametric/outer_wall_consistency.lua"),
+      ),
+      (
         "mach_fast_start_gcode",
         include_str!("../transformations/parametric/mach_fast_start_gcode.lua"),
       ),
@@ -3019,7 +3050,7 @@ mod tests {
   #[test]
   fn test_parameterized_calibration_templates_build_and_execute() {
     let templates = TransformationEngine::get_parameterized_calibration_templates();
-    assert_eq!(templates.len(), 43);
+    assert_eq!(templates.len(), 44);
 
     // Verify transparent glass wizard generates and executes cleanly on both filament and process JSON
     let glass = templates
@@ -4582,5 +4613,135 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       .unwrap();
     assert!(!prov_bed.has_shadowed_steps);
     assert!(!prov_bed.has_direction_reversal);
+  }
+
+  #[test]
+  fn test_outer_wall_consistency_vfa_guard_and_spire_safe_mode() {
+    let cals = TransformationEngine::get_parameterized_calibration_templates();
+    let tpl = cals
+      .iter()
+      .find(|c| c.id == "outer_wall_consistency")
+      .expect("outer_wall_consistency in calibration templates");
+    let rules = TransformationEngine::get_default_rules();
+    let default_rule = rules
+      .iter()
+      .find(|r| r.id == "outer_wall_consistency")
+      .expect("outer_wall_consistency in default rules");
+    assert!(
+      default_rule.enabled,
+      "outer_wall_consistency should be enabled by default"
+    );
+
+    // 1. Low-MVS filament (PETG / Silk PLA @ 10 mm3/s): 200 mm/s @ 0.20x0.42mm (16.8 mm3/s)
+    // would be clamped by MVS to 119 mm/s (inside 70-130 mm/s VFA band).
+    // Auto VFA Guard steps outer_wall_speed down to 55 mm/s and locks dont_slow_down_outer_wall = "1".
+    let ans_auto = tpl.default_answers();
+    let (_, _, _, lua_auto) = tpl.generate_from_answers(&ans_auto, "all");
+    let (cfg_petg, _, _) = execute_transformation_lua(
+      &lua_auto,
+      &json!({
+        "layer_height": "0.20",
+        "outer_wall_line_width": "0.42",
+        "outer_wall_speed": "200",
+        "filament_max_volumetric_speed": ["10"],
+      }),
+      &json!({ "hotend_max_flow": 22.0, "filament_max_flow": 10.0 }),
+    )
+    .expect("outer_wall_consistency executes for PETG 10 mm3/s");
+    assert_eq!(cfg_petg["dont_slow_down_outer_wall"], "1");
+    assert_eq!(cfg_petg["outer_wall_speed"], "55");
+    assert_eq!(cfg_petg["small_perimeter_speed"], "50");
+
+    // 2. High-MVS filament (High-Speed PLA @ 18 mm3/s) on 0.20mm Standard: ceiling is 214 mm/s >= 145 mm/s.
+    // Keeps outer_wall_speed at 200 mm/s (clears VFA band) and locks dont_slow_down_outer_wall = "1".
+    let (cfg_hs_pla, _, _) = execute_transformation_lua(
+      &lua_auto,
+      &json!({
+        "layer_height": "0.20",
+        "outer_wall_line_width": "0.42",
+        "outer_wall_speed": "200",
+        "filament_max_volumetric_speed": ["18"],
+      }),
+      &json!({ "hotend_max_flow": 22.0, "filament_max_flow": 18.0 }),
+    )
+    .expect("outer_wall_consistency executes for HS PLA 18 mm3/s");
+    assert_eq!(cfg_hs_pla["dont_slow_down_outer_wall"], "1");
+    assert_eq!(cfg_hs_pla["outer_wall_speed"], "200");
+
+    // 2b. High-MVS PLA on 0.12mm Fine (miniatures / delicate vertical spires):
+    // Auto Guard automatically sets dont_slow_down_outer_wall = "0" so tiny 3mm spires can slow down for cooling!
+    let (cfg_fine_pla, _, _) = execute_transformation_lua(
+      &lua_auto,
+      &json!({
+        "layer_height": "0.12",
+        "outer_wall_line_width": "0.42",
+        "outer_wall_speed": "200",
+        "filament_max_volumetric_speed": ["18"],
+      }),
+      &json!({ "hotend_max_flow": 22.0, "filament_max_flow": 18.0 }),
+    )
+    .expect("outer_wall_consistency executes for 0.12mm Fine HS PLA");
+    assert_eq!(cfg_fine_pla["dont_slow_down_outer_wall"], "0");
+    assert_eq!(cfg_fine_pla["outer_wall_speed"], "200");
+
+    // 2c. Silk PLA finish even with nominal 14 mm3/s steps down to 55 mm/s for maximum Silk shine & zero VFA:
+    let (cfg_silk, _, _) = execute_transformation_lua(
+      &lua_auto,
+      &json!({
+        "layer_height": "0.20",
+        "outer_wall_line_width": "0.42",
+        "outer_wall_speed": "200",
+      }),
+      &json!({ "hotend_max_flow": 22.0, "filament_type": "PLA", "filament_finish": "Silk" }),
+    )
+    .expect("outer_wall_consistency executes for Silk PLA");
+    assert_eq!(cfg_silk["dont_slow_down_outer_wall"], "1");
+    assert_eq!(cfg_silk["outer_wall_speed"], "55");
+
+    // 3. Explicit Spire-Safe mode for miniatures & delicate 3mm tips on 0.20mm: sets dont_slow_down_outer_wall = "0"
+    let mut ans_spire = tpl.default_answers();
+    tpl.apply_answer_change(&mut ans_spire, "consistency_mode", "spire_safe".to_string());
+    assert_eq!(
+      ans_spire.get("dont_slow_down_outer_wall").map(String::as_str),
+      Some("0")
+    );
+    let (_, _, _, lua_spire) = tpl.generate_from_answers(&ans_spire, "all");
+    let (cfg_spire, _, _) = execute_transformation_lua(
+      &lua_spire,
+      &json!({
+        "layer_height": "0.20",
+        "outer_wall_line_width": "0.42",
+        "outer_wall_speed": "200",
+        "filament_max_volumetric_speed": ["18"],
+      }),
+      &json!({ "hotend_max_flow": 22.0, "filament_max_flow": 18.0 }),
+    )
+    .expect("spire_safe executes");
+    assert_eq!(cfg_spire["dont_slow_down_outer_wall"], "0");
+    assert_eq!(cfg_spire["outer_wall_speed"], "200");
+
+    // 4. Verify exported process JSON reflects VFA guard per process layer height:
+    // For a 10 mm3/s filament:
+    // - 0.12mm Quality (0.12 x 0.42 = 0.0504 mm2 -> ceiling 198 mm/s, outer_wall=60 mm/s <= 60): stays 60 mm/s!
+    // - 0.20mm Standard (0.20 x 0.42 = 0.084 mm2 -> ceiling 119 mm/s in VFA band): steps down from 200 -> 55 mm/s!
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let procs = crate::models::ProcessProfile::get_default_processes();
+    let mut proc_ov = OrcaProfile::get_stock_kobra_s1().values;
+    for (k, v) in cfg_petg.as_object().unwrap() {
+      proc_ov.insert(k.clone(), v.clone());
+    }
+    proc_ov.insert("seam_slope_type".to_string(), json!("none"));
+    let p_020_std: serde_json::Value =
+      serde_json::from_str(&crate::threemf::build_process_preset_json(&procs[0], &rig, &proc_ov))
+        .unwrap();
+    assert_eq!(p_020_std["dont_slow_down_outer_wall"].as_str(), Some("1"));
+    assert_eq!(p_020_std["outer_wall_speed"].as_str(), Some("55"));
+    assert_eq!(p_020_std["small_perimeter_speed"].as_str(), Some("50"));
+
+    let p_012_hq: serde_json::Value =
+      serde_json::from_str(&crate::threemf::build_process_preset_json(&procs[3], &rig, &proc_ov))
+        .unwrap();
+    assert_eq!(p_012_hq["dont_slow_down_outer_wall"].as_str(), Some("1"));
+    assert_eq!(p_012_hq["outer_wall_speed"].as_str(), Some("60"));
   }
 }

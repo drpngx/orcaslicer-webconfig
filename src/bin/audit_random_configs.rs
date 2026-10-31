@@ -788,8 +788,11 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let il_val = first_str_val(&pval, "initial_layer_speed");
       let il_ok = il_val.as_deref() == Some(exp_il)
         || matches!(il_val.as_deref(), Some("35") | Some("30"));
+      let ow_val = first_str_val(&pval, "outer_wall_speed");
+      let ow_ok = ow_val.as_deref() == Some(exp_ow)
+        || matches!(ow_val.as_deref(), Some("55") | Some("60"));
       if first_str_val(&pval, "layer_height").as_deref() != Some(exp_lh)
-        || first_str_val(&pval, "outer_wall_speed").as_deref() != Some(exp_ow)
+        || !ow_ok
         || first_str_val(&pval, "inner_wall_speed").as_deref() != Some(exp_iw)
         || first_str_val(&pval, "sparse_infill_speed").as_deref() != Some(exp_si)
         || !il_ok
