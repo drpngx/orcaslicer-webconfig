@@ -371,6 +371,25 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
     min_safe_bed
   };
   let pre_wet_temp = (spool.print_temp + climate_noz_delta).clamp(min_safe_noz, max_safe_noz);
+  // Structural Strength pack side-channel: per-spool nozzle boost (clamped to THIS polymer's safe max)
+  // and max-fan reduction. Skipped for active-foaming TPU, where temperature controls foam density.
+  let structural_boost = if is_foaming_tpu {
+    0
+  } else {
+    derived_overrides
+      .and_then(|m| m.get("_structural_temp_boost_c"))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<i32>().ok())
+      .unwrap_or(0)
+      .clamp(0, 10)
+  };
+  let structural_fan_cut_pct = derived_overrides
+    .and_then(|m| m.get("_structural_fan_cut_pct"))
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<i32>().ok())
+    .unwrap_or(0)
+    .clamp(0, 60);
+  let pre_wet_temp = (pre_wet_temp + structural_boost).clamp(min_safe_noz, max_safe_noz);
   let effective_temp = (pre_wet_temp + wet_temp_drop).clamp(min_safe_noz, max_safe_noz);
   let initial_temp = (pre_wet_temp + init_delta).clamp(min_safe_noz, max_safe_noz);
   let effective_bed = (spool.bed_temp + climate_bed_delta).clamp(climate_min_bed, max_safe_bed);
@@ -430,6 +449,13 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   };
   let fan_min_pct = spool.fan_speed_percent.clamp(0, 100);
   let fan_max_pct = poly_cfg.resolve_fan_max_pct(fan_min_pct);
+  let (fan_min_pct, fan_max_pct) = if structural_fan_cut_pct > 0 {
+    let cut_max =
+      ((fan_max_pct as f64) * (100 - structural_fan_cut_pct) as f64 / 100.0).round() as i32;
+    (fan_min_pct.min(cut_max), cut_max)
+  } else {
+    (fan_min_pct, fan_max_pct)
+  };
 
   let compat_printer = rig_opt
     .map(|r| format!("{} {} nozzle", r.printer_model, r.formatted_nozzle_diameter()))
@@ -905,6 +931,12 @@ pub const EXTRA_PROCESS_OVERRIDE_KEYS: &[&str] = &[
   "overhang_3_4_speed",
   "overhang_4_4_speed",
   "overhang_fan_speed",
+  "wall_loops",
+  "alternate_extra_wall",
+  "top_shell_layers",
+  "bottom_shell_layers",
+  "infill_wall_overlap",
+  "sparse_infill_pattern",
 ];
 
 /// Builds a user Process `.json` preset from the imported OrcaSlicer process base + Lua-evaluated overrides

@@ -735,6 +735,18 @@ impl TransformationEngine {
         scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
+        id: "structural_strength".to_string(),
+        name: "Structural Strength & Z-Axis Inter-Layer Bonding Pack".to_string(),
+        description: "Load-bearing part tuning: nozzle +5–8°C (clamped per spool to each polymer's safe max), max part-cooling fan -20–35%, 4–6 wall loops + alternate_extra_wall, 5–6 top/bottom shells, 20–25% infill/wall overlap, and isotropic gyroid / crosshatch infill.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "💪".to_string(),
+        enabled: false,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/structural_strength.lua").to_string(),
+        priority: 57,
+        scope: crate::transformations::RuleScopeFilter::default(),
+      },
+      TransformationRule {
         id: "transparent_optical_glass".to_string(),
         name: "Transparent / Glass-Like Optical Clarity Mode (Rygar1432 / CNC Kitchen)".to_string(),
         description: "Tunes translucent PETG/PCTG/PLA for maximum optical clarity ('How to Print Glass'): 20 mm/s print speeds (5.0 mm³/s MVS ceiling), +0.05 (+5%) flow ratio boost to flood inter-bead micro-voids, 0% part cooling fan, 0.12mm layer height with 1.25× nozzle line width, 100% Aligned Rectilinear infill at 0°, 1 perimeter wall, 0 top/bottom shells, and 65°C Textured PEI easy-release bed temp.".to_string(),
@@ -858,6 +870,18 @@ impl TransformationEngine {
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/parametric/bridge_overhang_tuning.lua").to_string(),
         priority: 56,
+        scope: crate::transformations::RuleScopeFilter::default(),
+      },
+      TransformationRule {
+        id: "structural_strength".to_string(),
+        name: "Structural Strength & Z-Axis Inter-Layer Bonding Pack".to_string(),
+        description: "Load-bearing part tuning: nozzle +5–8°C (clamped per spool to each polymer's safe max), max part-cooling fan -20–35%, 4–6 wall loops + alternate_extra_wall, 5–6 top/bottom shells, 20–25% infill/wall overlap, and isotropic gyroid / crosshatch infill.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "💪".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/structural_strength.lua").to_string(),
+        priority: 57,
         scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
@@ -2518,6 +2542,10 @@ end
         include_str!("../transformations/parametric/line_width_geometry.lua"),
       ),
       (
+        "structural_strength",
+        include_str!("../transformations/parametric/structural_strength.lua"),
+      ),
+      (
         "mach_fast_start_gcode",
         include_str!("../transformations/parametric/mach_fast_start_gcode.lua"),
       ),
@@ -2637,6 +2665,7 @@ impl ParameterizedCalibrationTemplate {
         self.id.as_str(),
         "support_tuning" | "ironing_tuning" | "dimensional_precision" | "bridge_overhang_tuning"
           | "line_width_geometry"
+          | "structural_strength"
       )
   }
 
@@ -2782,7 +2811,7 @@ mod tests {
   #[test]
   fn test_parameterized_calibration_templates_build_and_execute() {
     let templates = TransformationEngine::get_parameterized_calibration_templates();
-    assert_eq!(templates.len(), 42);
+    assert_eq!(templates.len(), 43);
 
     // Verify transparent glass wizard generates and executes cleanly on both filament and process JSON
     let glass = templates
@@ -4140,5 +4169,102 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       assert_eq!(val["sparse_infill_line_width"].as_str(), Some("0.50"), "process {}", proc.name);
       assert_eq!(val["top_surface_line_width"].as_str(), Some("0.38"), "process {}", proc.name);
     }
+  }
+
+  #[test]
+  fn test_structural_strength_pack_process_keys_and_per_spool_clamped_filament_export() {
+    let tpl = TransformationEngine::get_parameterized_calibration_templates()
+      .into_iter()
+      .find(|t| t.id == "structural_strength")
+      .expect("structural_strength template");
+    let defaults = TransformationEngine::get_default_rules();
+    let rule = defaults
+      .iter()
+      .find(|r| r.id == "structural_strength")
+      .expect("structural_strength default rule");
+    assert!(!rule.enabled, "structural_strength is opt-in");
+
+    // 1. Load-bearing preset snaps dials and applies process structure + live preview
+    let mut ans = tpl.default_answers();
+    tpl.apply_answer_change(&mut ans, "strength_preset", "load_bearing".to_string());
+    assert_eq!(ans.get("wall_loops").map(|s| s.as_str()), Some("6"));
+    let (_, _, _, lua) = tpl.generate_from_answers(&ans, "all");
+    let (cfg, _, _) = execute_transformation_lua(
+      &lua,
+      &json!({
+        "nozzle_temperature": ["245"],
+        "nozzle_temperature_initial_layer": ["250"],
+        "fan_max_speed": ["80"],
+        "wall_loops": "2",
+        "sparse_infill_pattern": "crosshatch"
+      }),
+      &json!({ "filament_type": "PETG", "filament_nozzle_max_c": 250 }),
+    )
+    .expect("structural_strength executes");
+    assert_eq!(cfg["_structural_temp_boost_c"], "8");
+    assert_eq!(cfg["_structural_fan_cut_pct"], "35");
+    assert_eq!(cfg["nozzle_temperature"][0], "250"); // 245 + 8 clamped to 250
+    assert_eq!(cfg["nozzle_temperature_initial_layer"][0], "250");
+    assert_eq!(cfg["fan_max_speed"][0], "52"); // 80 × 0.65
+    assert_eq!(cfg["wall_loops"], "6");
+    assert_eq!(cfg["alternate_extra_wall"], "1");
+    assert_eq!(cfg["top_shell_layers"], "6");
+    assert_eq!(cfg["bottom_shell_layers"], "6");
+    assert_eq!(cfg["infill_wall_overlap"], "25%");
+    assert_eq!(cfg["sparse_infill_pattern"], "gyroid");
+
+    // 2. Validation: PLA with > 35% fan cut is rejected
+    let mut pla_ans = ans.clone();
+    pla_ans.insert("fan_cut_pct".to_string(), "45".to_string());
+    let pla_ctx = json!({ "scope": "all", "filament_type": "PLA" });
+    assert!(validate_lua_rule_params(&tpl.lua_template, &pla_ans, &pla_ctx).is_err());
+
+    // 3. Per-spool filament export: boost applied & clamped against EACH polymer's own safe max
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let catalog = crate::catalog::load_merged_catalog();
+    let mut overrides = serde_json::Map::new();
+    overrides.insert("_structural_temp_boost_c".to_string(), json!("8"));
+    overrides.insert("_structural_fan_cut_pct".to_string(), json!("35"));
+    for code in ["PLA", "PETG", "ASA"] {
+      let entry = catalog
+        .filaments
+        .iter()
+        .find(|f| f.code == code)
+        .unwrap_or_else(|| panic!("{} in catalog", code));
+      let spool = FilamentSpool::from_catalog_entry(1, entry, &rig.nozzle_type);
+      let plain: serde_json::Value = serde_json::from_str(
+        &crate::threemf::export_standalone_filament_json(&spool, &rig),
+      )
+      .unwrap();
+      let boosted: serde_json::Value = serde_json::from_str(
+        &crate::threemf::export_standalone_filament_json_with_overrides(&spool, &rig, &overrides),
+      )
+      .unwrap();
+      let num = |v: &serde_json::Value, k: &str| -> i32 {
+        v[k][0].as_str().unwrap().parse::<i32>().unwrap()
+      };
+      let (_, max_safe) = FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type);
+      let expected = (num(&plain, "nozzle_temperature") + 8).min(max_safe);
+      assert_eq!(num(&boosted, "nozzle_temperature"), expected, "{}", code);
+      assert!(num(&boosted, "nozzle_temperature") <= max_safe, "{}", code);
+      let expected_fan = ((num(&plain, "fan_max_speed") as f64) * 0.65).round() as i32;
+      assert_eq!(num(&boosted, "fan_max_speed"), expected_fan, "{}", code);
+      assert!(num(&boosted, "fan_min_speed") <= num(&boosted, "fan_max_speed"), "{}", code);
+    }
+
+    // 4. Process presets export the structural keys
+    let processes = crate::models::ProcessProfile::get_default_processes();
+    let mut proc_ov = OrcaProfile::get_stock_kobra_s1().values;
+    for (k, v) in cfg.as_object().unwrap() {
+      proc_ov.insert(k.clone(), v.clone());
+    }
+    proc_ov.insert("seam_slope_type".to_string(), json!("none"));
+    let proc_json = crate::threemf::build_process_preset_json(&processes[0], &rig, &proc_ov);
+    let val: serde_json::Value = serde_json::from_str(&proc_json).unwrap();
+    assert_eq!(val["wall_loops"].as_str(), Some("6"));
+    assert_eq!(val["alternate_extra_wall"].as_str(), Some("1"));
+    assert_eq!(val["bottom_shell_layers"].as_str(), Some("6"));
+    assert_eq!(val["infill_wall_overlap"].as_str(), Some("25%"));
+    assert_eq!(val["sparse_infill_pattern"].as_str(), Some("gyroid"));
   }
 }

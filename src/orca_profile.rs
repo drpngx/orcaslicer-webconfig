@@ -638,6 +638,42 @@ impl OrcaProfile {
         description: "Print speed for the crucial first layer".to_string(),
       },
       ParameterMeta {
+        key: "alternate_extra_wall".to_string(),
+        label: "Alternate Extra Wall".to_string(),
+        category: "Walls & Seams".to_string(),
+        unit: "flag".to_string(),
+        description: "Extra inner perimeter on every other layer to interlock walls and infill"
+          .to_string(),
+      },
+      ParameterMeta {
+        key: "top_shell_layers".to_string(),
+        label: "Top Shell Layers".to_string(),
+        category: "Structure".to_string(),
+        unit: "layers".to_string(),
+        description: "Number of solid top skin layers".to_string(),
+      },
+      ParameterMeta {
+        key: "bottom_shell_layers".to_string(),
+        label: "Bottom Shell Layers".to_string(),
+        category: "Structure".to_string(),
+        unit: "layers".to_string(),
+        description: "Number of solid bottom skin layers".to_string(),
+      },
+      ParameterMeta {
+        key: "infill_wall_overlap".to_string(),
+        label: "Infill / Wall Overlap".to_string(),
+        category: "Structure".to_string(),
+        unit: "".to_string(),
+        description: "How far sparse infill overlaps into the innermost perimeter".to_string(),
+      },
+      ParameterMeta {
+        key: "fan_max_speed".to_string(),
+        label: "Max Part Cooling Fan".to_string(),
+        category: "Cooling & Adhesion".to_string(),
+        unit: "%".to_string(),
+        description: "Maximum part cooling fan duty cycle".to_string(),
+      },
+      ParameterMeta {
         key: "outer_wall_line_width".to_string(),
         label: "Outer Wall Line Width".to_string(),
         category: "Line Width Geometry".to_string(),

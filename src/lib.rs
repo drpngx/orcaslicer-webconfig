@@ -411,6 +411,7 @@ pub fn App() -> Html {
     "layer_height": active_proc.layer_height,
     "line_width": active_proc.line_width,
     "filament_type": *active_filament_type,
+    "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&active_filament_type).1,
     "all_filament_types": all_filament_types,
     "addons": active_rig.addons,
     "climate_preset": active_rig.climate_preset,
