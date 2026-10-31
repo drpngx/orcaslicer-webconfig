@@ -2,8 +2,10 @@ use crate::components::nav::ActiveTab;
 use crate::models::{MachineRig, ProcessProfile};
 use crate::orca_profile::DiffItem;
 use crate::transformations::{
-  ExternalConflict, PendingDiskUpdate, SafetySeverity, SafetyWarning, TransformationRule,
+  ExternalConflict, ParameterProvenance, PendingDiskUpdate, SafetySeverity, SafetyWarning,
+  TransformationRule,
 };
+use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 #[derive(Properties, PartialEq)]
@@ -27,6 +29,7 @@ pub struct HomeTabProps {
   pub on_export_standalone_json: Callback<()>,
   pub on_switch_tab: Callback<ActiveTab>,
   pub diff_items: Vec<DiffItem>,
+  pub provenance_items: Vec<ParameterProvenance>,
   pub rules: Vec<TransformationRule>,
   pub on_toggle_rule: Callback<String>,
   pub conflicts: Vec<ExternalConflict>,
@@ -52,8 +55,11 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
   let on_toggle_rule = props.on_toggle_rule.clone();
   let on_resolve_conflict = props.on_resolve_conflict.clone();
   let on_select_process = props.on_select_process.clone();
-  let diff_view_mode = use_state(|| "github".to_string()); // "github" or "side_by_side"
+  let diff_view_mode = use_state(|| "provenance".to_string()); // "provenance", "github", or "side_by_side"
   let diff_only_changes = use_state(|| false);
+  let provenance_filter = use_state(|| "modified".to_string()); // "modified", "multi_step", or "all"
+  let provenance_search = use_state(String::new);
+  let expanded_override_key = use_state(|| Option::<String>::None);
 
   if !props.is_config_loaded {
     return html! {
@@ -92,6 +98,41 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
     .iter()
     .filter(|w| w.severity == SafetySeverity::Warning)
     .count();
+
+  let modified_count = props
+    .provenance_items
+    .iter()
+    .filter(|p| p.is_modified || !p.steps.is_empty())
+    .count();
+  let multi_step_count = props
+    .provenance_items
+    .iter()
+    .filter(|p| p.steps.len() >= 2)
+    .count();
+  let total_step_events: usize = props.provenance_items.iter().map(|p| p.steps.len()).sum();
+  let q_lower = provenance_search.trim().to_lowercase();
+  let filtered_prov: Vec<&ParameterProvenance> = props
+    .provenance_items
+    .iter()
+    .filter(|p| match provenance_filter.as_str() {
+      "multi_step" => p.steps.len() >= 2,
+      "all" => true,
+      _ => p.is_modified || !p.steps.is_empty(),
+    })
+    .filter(|p| {
+      if q_lower.is_empty() {
+        return true;
+      }
+      p.param_key.to_lowercase().contains(&q_lower)
+        || p.param_label.to_lowercase().contains(&q_lower)
+        || p.category.to_lowercase().contains(&q_lower)
+        || p.steps.iter().any(|s| {
+          s.rule_name.to_lowercase().contains(&q_lower)
+            || s.rule_category.to_lowercase().contains(&q_lower)
+            || s.rule_log.to_lowercase().contains(&q_lower)
+        })
+    })
+    .collect();
 
   html! {
     <div class="flex flex-col w-full gap-space-lg">
@@ -658,17 +699,41 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
           <div class="flex items-center justify-between flex-wrap gap-space-sm">
             <div class="flex items-center gap-space-sm">
               <span class="material-symbols-outlined text-secondary">{"tune"}</span>
-              <h3 class="font-headline-sm text-headline-sm text-on-surface font-semibold">
-                {"Re-Created Overrides vs System Base Defaults"}
-              </h3>
+              <div class="flex flex-col">
+                <h3 class="font-headline-sm text-headline-sm text-on-surface font-semibold">
+                  {"Re-Created Overrides vs System Base Defaults"}
+                </h3>
+                <span class="text-[11px] text-on-surface-variant">
+                  {"Click any parameter row to inspect its step-by-step Provenance & Lineage chain inline, or open the full Provenance & Lineage view below."}
+                </span>
+              </div>
             </div>
-            <span class="text-xs text-on-surface-variant font-mono">
-              {format!(
-                "{} modified parameters ({} active Lua rules)",
-                props.diff_items.iter().filter(|d| d.is_modified).count(),
-                props.rules.iter().filter(|r| r.enabled).count()
-              )}
-            </span>
+            <div class="flex items-center gap-space-sm flex-wrap">
+              <span class="text-xs text-on-surface-variant font-mono">
+                {format!(
+                  "{} modified parameters ({} active Lua rules)",
+                  props.diff_items.iter().filter(|d| d.is_modified).count(),
+                  props.rules.iter().filter(|r| r.enabled).count()
+                )}
+              </span>
+              <button
+                class="bg-tertiary/15 hover:bg-tertiary/25 text-tertiary border border-tertiary/50 px-2.5 py-1 rounded text-xs font-mono font-bold transition-colors cursor-pointer flex items-center gap-1"
+                onclick={
+                  let dvm = diff_view_mode.clone();
+                  let sdd = props.on_toggle_diff_drawer.clone();
+                  let is_open = props.show_diff_drawer;
+                  Callback::from(move |_| {
+                    dvm.set("provenance".to_string());
+                    if !is_open {
+                      sdd.emit(());
+                    }
+                  })
+                }
+              >
+                <span>{"🧬"}</span>
+                <span>{"Provenance & Lineage View"}</span>
+              </button>
+            </div>
           </div>
 
           <div class="flex flex-col overflow-x-auto">
@@ -678,7 +743,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
               <div class="col-span-2">{"Category"}</div>
               <div class="col-span-2 text-right">{"System Base"}</div>
               <div class="col-span-2 text-right">{"Re-Created"}</div>
-              <div class="col-span-2 text-right">{"Lua Rule Source"}</div>
+              <div class="col-span-2 text-right">{"Provenance / Rule Chain"}</div>
             </div>
 
             // Rows
@@ -696,22 +761,112 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                   format!(" {}", item.unit)
                 };
 
+                let prov_opt = props
+                  .provenance_items
+                  .iter()
+                  .find(|p| p.param_key == item.key);
+                let step_count = prov_opt.map(|p| p.steps.len()).unwrap_or(0);
+                let is_expanded = expanded_override_key.as_deref() == Some(item.key.as_str());
+                let key_for_toggle = item.key.clone();
+                let exp_state = expanded_override_key.clone();
+
                 html! {
-                  <div class={format!("grid grid-cols-12 px-space-md py-space-sm items-center rounded hover:bg-surface-container-high transition-colors font-code-sm text-code-sm {}", row_bg)}>
-                    <div class="col-span-4 flex flex-col">
-                      <span class="text-on-surface font-medium">{&item.label}</span>
-                      <span class="text-on-surface-variant text-[10px] font-mono">{&item.key}</span>
+                  <div class="flex flex-col rounded overflow-hidden">
+                    <div
+                      class={format!("grid grid-cols-12 px-space-md py-space-sm items-center hover:bg-surface-container-high transition-colors font-code-sm text-code-sm cursor-pointer {}", row_bg)}
+                      onclick={Callback::from(move |_| {
+                        if exp_state.as_deref() == Some(key_for_toggle.as_str()) {
+                          exp_state.set(None);
+                        } else {
+                          exp_state.set(Some(key_for_toggle.clone()));
+                        }
+                      })}
+                    >
+                      <div class="col-span-4 flex flex-col">
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-on-surface font-medium">{&item.label}</span>
+                          if step_count > 0 {
+                            <span class={format!(
+                              "px-1.5 py-0.2 rounded text-[10px] font-mono font-bold border {}",
+                              if step_count >= 2 {
+                                "bg-tertiary/20 text-tertiary border-tertiary/50"
+                              } else {
+                                "bg-primary/20 text-primary border-primary/40"
+                              }
+                            )}>
+                              {format!("🧬 {} {}", step_count, if step_count == 1 { "step" } else { "steps" })}
+                            </span>
+                          }
+                        </div>
+                        <span class="text-on-surface-variant text-[10px] font-mono">{&item.key}</span>
+                      </div>
+                      <div class="col-span-2 text-on-surface-variant text-xs">{&item.category}</div>
+                      <div class="col-span-2 text-right text-on-surface-variant font-mono">
+                        {format!("{}{}", item.base_value, unit_suffix)}
+                      </div>
+                      <div class={format!("col-span-2 text-right font-mono font-bold {}", if item.is_modified { "text-primary" } else { "text-on-surface" })}>
+                        {format!("{}{}", item.override_value, unit_suffix)}
+                      </div>
+                      <div class="col-span-2 text-right text-xs truncate text-secondary flex items-center justify-end gap-1" title={item.source_rule.clone()}>
+                        <span class="truncate">{&item.source_rule}</span>
+                        <span class="material-symbols-outlined text-[14px] text-on-surface-variant shrink-0">
+                          {if is_expanded { "expand_less" } else { "expand_more" }}
+                        </span>
+                      </div>
                     </div>
-                    <div class="col-span-2 text-on-surface-variant text-xs">{&item.category}</div>
-                    <div class="col-span-2 text-right text-on-surface-variant font-mono">
-                      {format!("{}{}", item.base_value, unit_suffix)}
-                    </div>
-                    <div class={format!("col-span-2 text-right font-mono font-bold {}", if item.is_modified { "text-primary" } else { "text-on-surface" })}>
-                      {format!("{}{}", item.override_value, unit_suffix)}
-                    </div>
-                    <div class="col-span-2 text-right text-xs truncate text-secondary" title={item.source_rule.clone()}>
-                      {&item.source_rule}
-                    </div>
+
+                    if is_expanded {
+                      if let Some(prov) = prov_opt {
+                        <div class="bg-surface-container-lowest border-x border-b border-primary/40 p-space-sm flex flex-col gap-space-xs">
+                          <div class="flex items-center justify-between flex-wrap gap-2 text-[11px] font-mono border-b border-outline-variant/40 pb-1">
+                            <span class="text-tertiary font-bold uppercase">
+                              {format!("🧬 Parameter Provenance & Lineage: {} ({})", prov.param_label, prov.param_key)}
+                            </span>
+                            <span class="bg-emerald-950/60 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded font-bold">
+                              {format!("Net Δ: {}", prov.net_delta_summary)}
+                            </span>
+                          </div>
+                          <div class="flex items-center flex-wrap gap-2 pt-1 text-xs font-mono">
+                            <div class="bg-surface-container px-2.5 py-1.5 rounded border border-outline-variant flex flex-col">
+                              <span class="text-[9px] uppercase text-on-surface-variant">{"Stage 0 • Baseline Origin"}</span>
+                              <span class="text-on-surface font-bold">{&prov.origin_value}</span>
+                              <span class="text-[9px] text-on-surface-variant truncate max-w-[220px]">{&prov.origin_source}</span>
+                            </div>
+                            {for prov.steps.iter().map(|st| html! {
+                              <>
+                                <span class="text-primary font-bold">{"➔"}</span>
+                                <div class="bg-surface-container-high px-2.5 py-1.5 rounded border border-primary/50 flex flex-col gap-0.5">
+                                  <div class="flex items-center gap-1 text-[10px]">
+                                    <span>{if st.rule_icon.is_empty() { "⚙️" } else { &st.rule_icon }}</span>
+                                    <span class="text-primary font-bold">{format!("Step #{}", st.step_number)}</span>
+                                    <span class="text-on-surface font-semibold">{&st.rule_name}</span>
+                                  </div>
+                                  <div class="flex items-center gap-1.5 text-[11px]">
+                                    <span class="text-red-300 line-through">{&st.before_value}</span>
+                                    <span class="text-on-surface-variant">{"→"}</span>
+                                    <span class="text-emerald-300 font-bold">{&st.after_value}</span>
+                                    <span class="bg-primary/20 text-primary px-1.5 py-0.2 rounded text-[10px]">
+                                      {&st.delta_summary}
+                                    </span>
+                                  </div>
+                                  if !st.rule_log.is_empty() {
+                                    <span class="text-[10px] text-on-surface-variant italic truncate max-w-md" title={st.rule_log.clone()}>
+                                      {format!("↳ {}", st.rule_log)}
+                                    </span>
+                                  }
+                                </div>
+                              </>
+                            })}
+                            <span class="text-emerald-400 font-bold">{"="}</span>
+                            <div class="bg-emerald-950/40 px-2.5 py-1.5 rounded border border-emerald-500/60 flex flex-col">
+                              <span class="text-[9px] uppercase text-emerald-300">{"Final Derived Value"}</span>
+                              <span class="text-emerald-300 font-bold">{&prov.final_value}</span>
+                              <span class="text-[9px] text-emerald-200/80">{&prov.net_delta_summary}</span>
+                            </div>
+                          </div>
+                        </div>
+                      }
+                    }
                   </div>
                 }
               })}
@@ -796,7 +951,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
         </div>
       </div>
 
-      // JSON Diff Preview (Colored GitHub / Unified Diff & Side-by-Side Mode)
+      // JSON Diff & Parameter Provenance / Lineage Preview
       <div class="bg-surface-container-low p-space-lg rounded-xl shadow-md border border-outline-variant flex flex-col gap-space-md">
         <div class="flex items-center justify-between flex-wrap gap-space-sm">
           <div
@@ -808,7 +963,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
           >
             <span class="material-symbols-outlined text-secondary">{"difference"}</span>
             <h3 class="font-headline-sm text-headline-sm text-on-surface font-semibold">
-              {"JSON Diff Preview (System Base vs Re-Created Output)"}
+              {"Diff & Parameter Provenance / Lineage Inspector (System Base vs Re-Created Output)"}
             </h3>
             <span class="material-symbols-outlined text-on-surface-variant text-[18px]">
               {if props.show_diff_drawer { "expand_less" } else { "expand_more" }}
@@ -816,8 +971,32 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
           </div>
 
           <div class="flex items-center gap-space-sm flex-wrap">
-            // View Mode Toggle: GitHub / Unified vs Side-by-Side
+            // View Mode Toggle: Provenance & Lineage vs GitHub / Unified vs Side-by-Side
             <div class="flex items-center bg-surface-container-lowest p-0.5 rounded-lg border border-outline-variant font-mono text-xs">
+              <button
+                class={format!(
+                  "px-2.5 py-1 rounded transition-colors cursor-pointer flex items-center gap-1 {}",
+                  if *diff_view_mode == "provenance" {
+                    "bg-primary text-on-primary font-bold"
+                  } else {
+                    "text-on-surface-variant hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let dvm = diff_view_mode.clone();
+                  let sdd = props.on_toggle_diff_drawer.clone();
+                  let is_open = props.show_diff_drawer;
+                  Callback::from(move |_| {
+                    dvm.set("provenance".to_string());
+                    if !is_open {
+                      sdd.emit(());
+                    }
+                  })
+                }
+              >
+                <span>{"🧬"}</span>
+                <span>{"Provenance & Lineage"}</span>
+              </button>
               <button
                 class={format!(
                   "px-2.5 py-1 rounded transition-colors cursor-pointer {}",
@@ -866,30 +1045,32 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
               </button>
             </div>
 
-            // Filter Toggle: All Lines vs Changed Only
-            <button
-              class={format!(
-                "px-2.5 py-1 rounded-lg border font-mono text-xs transition-colors cursor-pointer {}",
-                if *diff_only_changes {
-                  "bg-secondary/20 text-secondary border-secondary font-bold"
-                } else {
-                  "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
-                }
-              )}
-              onclick={
-                let doc = diff_only_changes.clone();
-                let sdd = props.on_toggle_diff_drawer.clone();
-                let is_open = props.show_diff_drawer;
-                Callback::from(move |_| {
-                  doc.set(!*doc);
-                  if !is_open {
-                    sdd.emit(());
+            if *diff_view_mode != "provenance" {
+              // Filter Toggle: All Lines vs Changed Only
+              <button
+                class={format!(
+                  "px-2.5 py-1 rounded-lg border font-mono text-xs transition-colors cursor-pointer {}",
+                  if *diff_only_changes {
+                    "bg-secondary/20 text-secondary border-secondary font-bold"
+                  } else {
+                    "bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:text-on-surface"
                   }
-                })
-              }
-            >
-              {if *diff_only_changes { "Showing: Changed Lines Only" } else { "Showing: Full JSON" }}
-            </button>
+                )}
+                onclick={
+                  let doc = diff_only_changes.clone();
+                  let sdd = props.on_toggle_diff_drawer.clone();
+                  let is_open = props.show_diff_drawer;
+                  Callback::from(move |_| {
+                    doc.set(!*doc);
+                    if !is_open {
+                      sdd.emit(());
+                    }
+                  })
+                }
+              >
+                {if *diff_only_changes { "Showing: Changed Lines Only" } else { "Showing: Full JSON" }}
+              </button>
+            }
 
             if props.is_tauri {
               <button
@@ -907,7 +1088,235 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
         </div>
 
         if props.show_diff_drawer {
-          if *diff_view_mode == "side_by_side" {
+          if *diff_view_mode == "provenance" {
+            <div class="bg-surface-container-lowest rounded-lg p-space-md border border-outline-variant flex flex-col gap-space-md">
+                  // Top Controls & Summary Bar
+                  <div class="flex items-center justify-between flex-wrap gap-space-sm border-b border-outline-variant/50 pb-space-sm">
+                    <div class="flex flex-col gap-0.5">
+                      <span class="text-xs font-mono font-bold text-primary uppercase">
+                        {"🧬 Parameter Provenance & Lineage Pipeline (Stage 0 Origin ➔ Successive Lua Rule Steps ➔ Final Derived Value)"}
+                      </span>
+                      <span class="text-[11px] text-on-surface-variant">
+                        {format!(
+                          "Traces how each parameter starts from its System Base + Spool/Process Baseline and transforms step-by-step across {} total rule evaluations ({} multi-rule parameter chains).",
+                          total_step_events, multi_step_count
+                        )}
+                      </span>
+                    </div>
+
+                    <div class="flex items-center gap-space-xs flex-wrap">
+                      {for [
+                        ("modified", format!("Modified Lineage ({})", modified_count)),
+                        ("multi_step", format!("Multi-Rule Chains ≥2 ({})", multi_step_count)),
+                        ("all", format!("All Catalog Params ({})", props.provenance_items.len())),
+                      ].into_iter().map(|(fid, flabel)| {
+                        let is_sel = *provenance_filter == fid;
+                        let pf = provenance_filter.clone();
+                        let fid_str = fid.to_string();
+                        html! {
+                          <button
+                            class={format!(
+                              "px-2.5 py-1 rounded text-xs font-mono border transition-colors cursor-pointer {}",
+                              if is_sel {
+                                "bg-primary/20 text-primary border-primary font-bold"
+                              } else {
+                                "bg-surface-container text-on-surface-variant border-outline-variant hover:text-on-surface"
+                              }
+                            )}
+                            onclick={Callback::from(move |_| pf.set(fid_str.clone()))}
+                          >
+                            {flabel}
+                          </button>
+                        }
+                      })}
+
+                      <input
+                        type="text"
+                        placeholder="Filter parameter, key, or Lua rule..."
+                        value={(*provenance_search).clone()}
+                        class="bg-surface-container px-2.5 py-1 rounded border border-outline-variant text-xs font-mono text-on-surface w-60"
+                        oninput={
+                          let ps = provenance_search.clone();
+                          Callback::from(move |e: InputEvent| {
+                            if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
+                              ps.set(input.value());
+                            }
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  if filtered_prov.is_empty() {
+                    <div class="p-space-lg text-center text-xs font-mono text-on-surface-variant bg-surface-container/30 rounded border border-outline-variant/40">
+                      {"No parameters match the current Provenance & Lineage filter. Try switching to 'Modified Lineage' or 'All Catalog Params' or enabling more Lua transformation rules."}
+                    </div>
+                  } else {
+                    <div class="flex flex-col gap-space-sm max-h-[540px] overflow-y-auto pr-1">
+                      {for filtered_prov.into_iter().map(|prov| {
+                        let step_len = prov.steps.len();
+                        html! {
+                          <div class={format!(
+                            "rounded-lg p-space-md border flex flex-col gap-space-sm transition-colors {}",
+                            if step_len >= 2 {
+                              "bg-surface-container border-tertiary/60 shadow-sm"
+                            } else if prov.is_modified {
+                              "bg-surface-container border-primary/40"
+                            } else {
+                              "bg-surface-container/40 border-outline-variant/50 opacity-80"
+                            }
+                          )}>
+                            // Card Header: Parameter Label, Key, Category, Step Count & Net Delta
+                            <div class="flex items-center justify-between flex-wrap gap-2 border-b border-outline-variant/40 pb-1.5">
+                              <div class="flex items-center gap-2 flex-wrap">
+                                <span class="font-headline-sm text-sm font-bold text-on-surface">
+                                  {&prov.param_label}
+                                </span>
+                                <span class="bg-surface-container-lowest px-2 py-0.5 rounded text-[11px] font-mono text-secondary border border-outline-variant/60">
+                                  {&prov.param_key}
+                                </span>
+                                <span class="bg-surface-container-high px-2 py-0.5 rounded text-[10px] font-mono uppercase text-on-surface-variant">
+                                  {&prov.category}
+                                </span>
+                                if step_len >= 2 {
+                                  <span class="bg-tertiary/20 text-tertiary border border-tertiary/50 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
+                                    {format!("⛓️ {}-Step Non-Commutative Chain", step_len)}
+                                  </span>
+                                } else if step_len == 1 {
+                                  <span class="bg-primary/20 text-primary border border-primary/40 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
+                                    {"1-Step Transformation"}
+                                  </span>
+                                } else {
+                                  <span class="bg-surface-container-highest text-on-surface-variant px-2 py-0.5 rounded text-[10px] font-mono">
+                                    {"0 Steps (Baseline Retained)"}
+                                  </span>
+                                }
+                              </div>
+
+                              <div class="flex items-center gap-2 font-mono text-xs">
+                                <span class="text-on-surface-variant">
+                                  {format!("{} → {}", prov.origin_value, prov.final_value)}
+                                </span>
+                                <span class={format!(
+                                  "px-2 py-0.5 rounded text-[11px] font-bold border {}",
+                                  if prov.is_modified {
+                                    "bg-emerald-950/60 text-emerald-300 border-emerald-500/50"
+                                  } else {
+                                    "bg-surface-container-lowest text-on-surface-variant border-outline-variant"
+                                  }
+                                )}>
+                                  {format!("Net Δ: {}", prov.net_delta_summary)}
+                                </span>
+                              </div>
+                            </div>
+
+                            // Visual Step-by-Step Provenance & Lineage Pipeline
+                            <div class="flex items-stretch flex-wrap gap-2 pt-0.5 font-mono text-xs">
+                              // Stage 0: Origin Baseline Node
+                              <div class="bg-surface-container-lowest p-2.5 rounded-lg border border-outline-variant flex flex-col justify-between min-w-[185px]">
+                                <div class="flex items-center justify-between gap-2">
+                                  <span class="text-[10px] uppercase font-bold text-on-surface-variant">
+                                    {"Stage 0 • Origin Baseline"}
+                                  </span>
+                                  <span class="text-[10px] bg-surface-container px-1.5 py-0.2 rounded text-on-surface-variant">
+                                    {"Input"}
+                                  </span>
+                                </div>
+                                <div class="text-sm font-bold text-on-surface my-1 break-all">
+                                  {&prov.origin_value}
+                                </div>
+                                <div class="text-[10px] text-on-surface-variant truncate max-w-[230px]" title={prov.origin_source.clone()}>
+                                  {&prov.origin_source}
+                                </div>
+                              </div>
+
+                              // Successive Lua Transformation Steps
+                              {for prov.steps.iter().map(|step| {
+                                html! {
+                                  <>
+                                    <div class="flex flex-col items-center justify-center px-1 text-primary select-none">
+                                      <span class="text-[10px] font-bold">{format!("#{}", step.step_number)}</span>
+                                      <span class="text-base leading-none">{"➔"}</span>
+                                    </div>
+                                    <div class="bg-surface-container-lowest p-2.5 rounded-lg border border-primary/50 flex flex-col justify-between min-w-[230px] flex-1">
+                                      <div class="flex items-center justify-between gap-2 flex-wrap">
+                                        <div class="flex items-center gap-1">
+                                          <span>{if step.rule_icon.is_empty() { "⚙️" } else { &step.rule_icon }}</span>
+                                          <span class="text-[10px] uppercase font-bold text-primary">
+                                            {format!("Step #{} (Prio #{})", step.step_number, step.rule_priority)}
+                                          </span>
+                                        </div>
+                                        if !step.rule_category.is_empty() {
+                                          <span class="text-[9px] bg-secondary/15 text-secondary px-1.5 py-0.2 rounded uppercase">
+                                            {&step.rule_category}
+                                          </span>
+                                        }
+                                      </div>
+
+                                      <div class="text-xs font-bold text-on-surface mt-0.5">
+                                        {&step.rule_name}
+                                      </div>
+
+                                      <div class="flex items-center gap-1.5 my-1 flex-wrap">
+                                        <span class="bg-red-950/50 text-red-300 border border-red-500/30 px-1.5 py-0.5 rounded text-[11px] line-through break-all">
+                                          {&step.before_value}
+                                        </span>
+                                        <span class="text-on-surface-variant font-bold">{"→"}</span>
+                                        <span class="bg-emerald-950/50 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.5 rounded text-[11px] font-bold break-all">
+                                          {&step.after_value}
+                                        </span>
+                                        <span class="bg-primary/20 text-primary border border-primary/40 px-1.5 py-0.5 rounded text-[10px] font-bold">
+                                          {&step.delta_summary}
+                                        </span>
+                                      </div>
+
+                                      if !step.rule_log.is_empty() {
+                                        <div class="text-[10px] text-on-surface-variant bg-surface-container/60 px-2 py-1 rounded border border-outline-variant/40 mt-0.5 break-words">
+                                          <span class="text-tertiary font-bold">{"Lua Audit: "}</span>
+                                          <span>{&step.rule_log}</span>
+                                        </div>
+                                      }
+                                    </div>
+                                  </>
+                                }
+                              })}
+
+                              // Final Derived Output Node
+                              <div class="flex flex-col items-center justify-center px-1 text-emerald-400 select-none">
+                                <span class="text-[10px] font-bold">{"Out"}</span>
+                                <span class="text-base leading-none">{"="}</span>
+                              </div>
+                              <div class={format!(
+                                "p-2.5 rounded-lg border flex flex-col justify-between min-w-[185px] {}",
+                                if prov.is_modified {
+                                  "bg-emerald-950/35 border-emerald-500/60"
+                                } else {
+                                  "bg-surface-container-lowest border-outline-variant"
+                                }
+                              )}>
+                                <div class="flex items-center justify-between gap-2">
+                                  <span class="text-[10px] uppercase font-bold text-emerald-300">
+                                    {"Final Derived Output"}
+                                  </span>
+                                  <span class="text-[10px] bg-emerald-900/50 text-emerald-200 px-1.5 py-0.2 rounded font-bold">
+                                    {format!("{} {}", step_len, if step_len == 1 { "rule" } else { "rules" })}
+                                  </span>
+                                </div>
+                                <div class="text-sm font-bold text-emerald-300 my-1 break-all">
+                                  {&prov.final_value}
+                                </div>
+                                <div class="text-[10px] text-emerald-200/90 font-semibold">
+                                  {&prov.net_delta_summary}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        }
+                      })}
+                    </div>
+                  }
+            </div>
+          } else if *diff_view_mode == "side_by_side" {
             <div class="bg-surface-container-lowest rounded-lg font-mono text-xs overflow-x-auto max-h-96 border border-outline-variant">
               <div class="grid grid-cols-2 border-b border-surface-container bg-surface-container text-[11px] font-bold uppercase tracking-wider sticky top-0 z-10">
                 <div class="px-space-md py-1.5 text-red-300 border-r border-surface-container flex items-center justify-between">

@@ -3,7 +3,7 @@ use crate::orca_profile::{
   DiffItem, OrcaProfile, SettingValueKind, WizardActionOp, WizardRuleAction, WizardSettingDef,
 };
 use crate::transformations::{
-  ParameterizedCalibrationTemplate, RuleBeforeAfterChange, StackReorderAction,
+  ParameterProvenance, ParameterizedCalibrationTemplate, RuleBeforeAfterChange, StackReorderAction,
   TransformationEngine, TransformationRule,
 };
 use yew::prelude::*;
@@ -15,6 +15,7 @@ pub struct WizardTabProps {
   pub rules: Vec<TransformationRule>,
   pub diff_items: Vec<DiffItem>,
   pub rule_changes: Vec<RuleBeforeAfterChange>,
+  pub provenance_items: Vec<ParameterProvenance>,
   pub processes: Vec<ProcessProfile>,
   pub active_process_id: String,
   pub on_select_process: Callback<String>,
@@ -34,6 +35,7 @@ pub struct WizardTabProps {
 #[function_component]
 pub fn WizardTab(props: &WizardTabProps) -> Html {
   let on_toggle_rule = props.on_toggle_rule.clone();
+  let impact_view_mode = use_state(|| "provenance".to_string()); // "provenance" or "compact_table"
   let selected_rule_id = use_state(|| {
     props
       .rules
@@ -204,24 +206,146 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
         </div>
       </div>
 
-      // Overall Before -> After Summary Table
+      // Overall Before -> After Summary Table & Parameter Provenance / Lineage Pipeline
       <div class="flex flex-col gap-space-md bg-surface-container-low p-space-lg rounded-xl shadow-md border border-outline-variant">
         <div class="flex items-center justify-between flex-wrap gap-space-sm">
           <div class="flex items-center gap-space-sm">
             <span class="material-symbols-outlined text-tertiary">{"compare_arrows"}</span>
             <h2 class="font-headline-sm text-headline-sm text-on-surface font-semibold">
-              {"Transformation Stack Impact — Before (Base Config) vs After (Transformed Output)"}
+              {"Transformation Stack Impact — Parameter Provenance & Lineage (Before vs After)"}
             </h2>
           </div>
-          <span class="text-xs font-mono text-tertiary bg-tertiary-container/20 px-2.5 py-0.5 rounded">
-            {format!("{} parameters modified by active stack", modified_diffs.len())}
-          </span>
+          <div class="flex items-center gap-space-sm flex-wrap">
+            <div class="flex items-center bg-surface-container-lowest p-0.5 rounded-lg border border-outline-variant font-mono text-xs">
+              <button
+                class={format!(
+                  "px-2.5 py-1 rounded transition-colors cursor-pointer flex items-center gap-1 {}",
+                  if *impact_view_mode == "provenance" {
+                    "bg-primary text-on-primary font-bold"
+                  } else {
+                    "text-on-surface-variant hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let ivm = impact_view_mode.clone();
+                  Callback::from(move |_| ivm.set("provenance".to_string()))
+                }
+              >
+                <span>{"🧬"}</span>
+                <span>{"Provenance & Lineage Pipeline"}</span>
+              </button>
+              <button
+                class={format!(
+                  "px-2.5 py-1 rounded transition-colors cursor-pointer {}",
+                  if *impact_view_mode == "compact_table" {
+                    "bg-primary text-on-primary font-bold"
+                  } else {
+                    "text-on-surface-variant hover:text-on-surface"
+                  }
+                )}
+                onclick={
+                  let ivm = impact_view_mode.clone();
+                  Callback::from(move |_| ivm.set("compact_table".to_string()))
+                }
+              >
+                {"📋 Compact Before / After Table"}
+              </button>
+            </div>
+            <span class="text-xs font-mono text-tertiary bg-tertiary-container/20 px-2.5 py-0.5 rounded">
+              {format!("{} parameters modified by active stack", modified_diffs.len())}
+            </span>
+          </div>
         </div>
 
         {if modified_diffs.is_empty() {
           html! {
             <div class="text-xs font-mono text-on-surface-variant bg-surface-container-lowest p-space-md rounded-lg border border-outline-variant/60">
               {"No parameters differ from base defaults under the current rule selection."}
+            </div>
+          }
+        } else if *impact_view_mode == "provenance" {
+          let modified_prov: Vec<&ParameterProvenance> = props
+            .provenance_items
+            .iter()
+            .filter(|p| p.is_modified || !p.steps.is_empty())
+            .collect();
+          html! {
+            <div class="flex flex-col gap-space-sm max-h-96 overflow-y-auto pr-1">
+              {for modified_prov.into_iter().map(|prov| {
+                let step_len = prov.steps.len();
+                html! {
+                  <div class={format!(
+                    "rounded-lg p-space-sm border flex flex-col gap-2 font-mono text-xs {}",
+                    if step_len >= 2 {
+                      "bg-surface-container border-tertiary/60"
+                    } else {
+                      "bg-surface-container border-primary/40"
+                    }
+                  )}>
+                    <div class="flex items-center justify-between flex-wrap gap-2 border-b border-outline-variant/40 pb-1">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="text-on-surface font-bold text-sm">{&prov.param_label}</span>
+                        <span class="text-secondary bg-surface-container-lowest px-1.5 py-0.5 rounded text-[11px] border border-outline-variant/50">
+                          {&prov.param_key}
+                        </span>
+                        <span class="bg-surface-container-high px-1.5 py-0.5 rounded text-[10px] uppercase text-on-surface-variant">
+                          {&prov.category}
+                        </span>
+                        <span class={format!(
+                          "px-1.5 py-0.5 rounded text-[10px] font-bold border {}",
+                          if step_len >= 2 {
+                            "bg-tertiary/20 text-tertiary border-tertiary/50"
+                          } else {
+                            "bg-primary/20 text-primary border-primary/40"
+                          }
+                        )}>
+                          {format!("🧬 {} {}", step_len, if step_len == 1 { "step" } else { "steps" })}
+                        </span>
+                      </div>
+                      <span class="bg-emerald-950/60 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded text-[11px] font-bold">
+                        {format!("Net Δ: {}", prov.net_delta_summary)}
+                      </span>
+                    </div>
+
+                    <div class="flex items-center flex-wrap gap-2">
+                      <div class="bg-surface-container-lowest px-2.5 py-1.5 rounded border border-outline-variant flex flex-col">
+                        <span class="text-[9px] uppercase text-on-surface-variant">{"Stage 0 • Origin Baseline"}</span>
+                        <span class="text-on-surface font-bold break-all">{&prov.origin_value}</span>
+                      </div>
+                      {for prov.steps.iter().map(|step| html! {
+                        <>
+                          <span class="text-primary font-bold">{"➔"}</span>
+                          <div class="bg-surface-container-lowest px-2.5 py-1.5 rounded border border-primary/50 flex flex-col gap-0.5">
+                            <div class="flex items-center gap-1 text-[10px]">
+                              <span>{if step.rule_icon.is_empty() { "⚙️" } else { &step.rule_icon }}</span>
+                              <span class="text-primary font-bold">{format!("Step #{}", step.step_number)}</span>
+                              <span class="text-on-surface font-semibold">{&step.rule_name}</span>
+                            </div>
+                            <div class="flex items-center gap-1.5 text-[11px]">
+                              <span class="text-red-300 line-through break-all">{&step.before_value}</span>
+                              <span class="text-on-surface-variant">{"→"}</span>
+                              <span class="text-emerald-300 font-bold break-all">{&step.after_value}</span>
+                              <span class="bg-primary/20 text-primary px-1.5 py-0.2 rounded text-[10px] font-bold">
+                                {&step.delta_summary}
+                              </span>
+                            </div>
+                            if !step.rule_log.is_empty() {
+                              <span class="text-[10px] text-on-surface-variant italic truncate max-w-md" title={step.rule_log.clone()}>
+                                {format!("↳ {}", step.rule_log)}
+                              </span>
+                            }
+                          </div>
+                        </>
+                      })}
+                      <span class="text-emerald-400 font-bold">{"="}</span>
+                      <div class="bg-emerald-950/35 px-2.5 py-1.5 rounded border border-emerald-500/60 flex flex-col">
+                        <span class="text-[9px] uppercase text-emerald-300">{"Final Derived Output"}</span>
+                        <span class="text-emerald-300 font-bold break-all">{&prov.final_value}</span>
+                      </div>
+                    </div>
+                  </div>
+                }
+              })}
             </div>
           }
         } else {

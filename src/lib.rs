@@ -2853,6 +2853,7 @@ pub fn App() -> Html {
                 Callback::from(move |tab: ActiveTab| at.set(tab))
               }
               diff_items={eval_result.diff_items.clone()}
+              provenance_items={eval_result.provenance_items.clone()}
               rules={(*rules).clone()}
               on_toggle_rule={on_toggle_rule.clone()}
               conflicts={(*conflicts).clone()}
@@ -3015,6 +3016,7 @@ pub fn App() -> Html {
               rules={(*rules).clone()}
               diff_items={eval_result.diff_items.clone()}
               rule_changes={eval_result.rule_changes.clone()}
+              provenance_items={eval_result.provenance_items.clone()}
               processes={(*processes).clone()}
               active_process_id={(*active_process_id).clone()}
               on_select_process={on_select_process}

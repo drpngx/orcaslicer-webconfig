@@ -248,9 +248,14 @@ Clicking **+ Create / Add Lua Rule → Custom Lua Script** pre-populates a compl
 - Applying relative numeric offsets (`tonumber(profile["nozzle_temperature"]) + 5`) and array overrides (`profile["z_hop_types"] = { "Spiral Lift" }`).
 - Logging audit messages via `log("...")`.
 
-## Colored JSON Diff Preview (GitHub Unified & Side-by-Side)
+## Diff & Parameter Provenance / Lineage Inspector (Lineage Pipeline, GitHub Unified & Side-by-Side)
 
-At the bottom of **1. Overview & Config Sync**, the **JSON Diff Preview** compares the **System Base JSON** against the **Re-Created Output JSON** with full color coding:
+At the bottom of **1. Overview & Config Sync** (and inside **4. Wizard & Lua Rules**), the **Diff & Parameter Provenance / Lineage Inspector** compares the **System Base JSON** against the **Re-Created Output JSON** with three interactive views:
 
+- **🧬 Provenance & Lineage Mode**:
+  - Visualizes the complete, non-commutative computation chain for every parameter:
+    $$\text{Stage 0 Origin Baseline} \xrightarrow{\text{Step \#1 Rule }(\Delta_1)} \text{Intermediate Value} \xrightarrow{\text{Step \#2 Rule }(\Delta_2)} \dots = \text{Final Derived Output }(\text{Net }\Delta)$$
+  - Displays each step's **Rule Name, Icon, Category, Execution Step `#k`, Priority `#P`, Before → After values, additive & multiplicative delta summary** (e.g. `+5 °C (+2.2% • 1.02×)`), and the **Lua Audit Log** emitted by `print(...)` during rule evaluation.
+  - Includes instant filters for **Modified Lineage**, **Multi-Rule Chains (≥2 Steps)**, and **All Catalog Params**, plus a real-time search box and inline expandable rows in the **Re-Created Overrides vs System Base Defaults** table.
 - **GitHub / Unified Diff Mode**: Highlights removed base lines in red (`- ...`) and transformed lines in green (`+ ...`) with a toggle for **Changed Lines Only** vs. **Full JSON**.
 - **Side-by-Side Mode**: Displays the System Base JSON on the left and the Re-Created Output JSON on the right in synchronized rows.

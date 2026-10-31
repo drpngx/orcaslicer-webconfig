@@ -86,6 +86,10 @@ pub struct RuleBeforeAfterChange {
   pub rule_id: String,
   pub rule_name: String,
   #[serde(default)]
+  pub rule_icon: String,
+  #[serde(default)]
+  pub rule_category: String,
+  #[serde(default)]
   pub step_number: usize,
   #[serde(default)]
   pub rule_priority: i32,
@@ -93,6 +97,77 @@ pub struct RuleBeforeAfterChange {
   pub param_label: String,
   pub before_value: String,
   pub after_value: String,
+  #[serde(default)]
+  pub delta_summary: String,
+  #[serde(default)]
+  pub rule_log: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParameterProvenance {
+  pub param_key: String,
+  pub param_label: String,
+  pub category: String,
+  pub unit: String,
+  pub origin_source: String,
+  pub origin_value: String,
+  pub final_value: String,
+  pub net_delta_summary: String,
+  pub steps: Vec<RuleBeforeAfterChange>,
+  pub is_modified: bool,
+}
+
+pub fn compute_delta_summary(before_raw: &str, after_raw: &str, unit: &str) -> String {
+  let clean_before = before_raw.trim().trim_end_matches('%');
+  let clean_after = after_raw.trim().trim_end_matches('%');
+  let unit_suffix = if unit.is_empty() {
+    String::new()
+  } else {
+    format!(" {}", unit)
+  };
+
+  if before_raw == "(unset)" || before_raw.is_empty() {
+    let preview = if after_raw.len() > 28 {
+      format!("{}…", &after_raw[..28])
+    } else {
+      after_raw.to_string()
+    };
+    return format!("Initialized → {}{}", preview, unit_suffix);
+  }
+
+  if let (Ok(b), Ok(a)) = (clean_before.parse::<f64>(), clean_after.parse::<f64>()) {
+    let diff = a - b;
+    if diff.abs() < 1e-6 {
+      return "No net change (0)".to_string();
+    }
+    let sign = if diff > 0.0 { "+" } else { "" };
+    let diff_fmt = if (diff.round() - diff).abs() < 1e-4 {
+      format!("{}{:.0}{}", sign, diff, unit_suffix)
+    } else if (diff * 100.0 - (diff * 100.0).round()).abs() < 1e-3 {
+      format!("{}{:.2}{}", sign, diff, unit_suffix)
+    } else {
+      format!("{}{:.3}{}", sign, diff, unit_suffix)
+    };
+
+    if b.abs() > 1e-6 {
+      let ratio = a / b;
+      let pct = (ratio - 1.0) * 100.0;
+      let pct_sign = if pct > 0.0 { "+" } else { "" };
+      return format!("{} ({}{:.1}% • {:.2}×)", diff_fmt, pct_sign, pct, ratio);
+    }
+    return diff_fmt;
+  }
+
+  if before_raw.contains('\n') || after_raw.contains('\n') || after_raw.len() > 42 {
+    let before_lines = before_raw.lines().count();
+    let after_lines = after_raw.lines().count();
+    return format!(
+      "Rewrote multi-line G-code/script ({} → {} lines)",
+      before_lines, after_lines
+    );
+  }
+
+  format!("Set {} → {}", before_raw, after_raw)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +184,7 @@ pub struct StackEvaluationResult {
   pub resulting_profile: OrcaProfile,
   pub diff_items: Vec<DiffItem>,
   pub rule_changes: Vec<RuleBeforeAfterChange>,
+  pub provenance_items: Vec<ParameterProvenance>,
   pub flush_matrix: Vec<String>,
   pub safe_speed_ceiling: f64,
   pub execution_logs: Vec<String>,
@@ -841,6 +917,7 @@ end
       let before_snapshot = current_values.clone();
       match execute_transformation_lua(&rule.lua_code, &current_values, context) {
         Ok((new_val, stdout, modified)) => {
+          let rule_log_summary = stdout.join(" • ");
           for line in stdout {
             execution_logs.push(format!("   {}", line));
           }
@@ -883,19 +960,24 @@ end
                   format!("{}{}", before_str, unit_suffix)
                 };
                 let after_fmt = format!("{}{}", after_str, unit_suffix);
+                let delta_summary = compute_delta_summary(&before_str, &after_str, unit);
                 execution_logs.push(format!(
-                  "   ↳ [Before → After] {} ({}): {} → {}",
-                  label, k, before_fmt, after_fmt
+                  "   ↳ [Before → After] {} ({}): {} → {} [{}]",
+                  label, k, before_fmt, after_fmt, delta_summary
                 ));
                 rule_changes.push(RuleBeforeAfterChange {
                   rule_id: rule.id.clone(),
                   rule_name: rule.name.clone(),
+                  rule_icon: rule.icon.clone(),
+                  rule_category: rule.category.clone(),
                   step_number: step_num,
                   rule_priority: rule.priority,
                   param_key: k.clone(),
                   param_label: label,
                   before_value: before_fmt,
                   after_value: after_fmt,
+                  delta_summary,
+                  rule_log: rule_log_summary.clone(),
                 });
               }
             }
@@ -987,6 +1069,14 @@ end
         .then(a.label.cmp(&b.label))
     });
 
+    let origin_source_name = if base_profile.name.is_empty() {
+      "System Base Profile + Active Spool & Process Baseline".to_string()
+    } else {
+      format!("{} (Base Profile + Spool/Process Baseline)", base_profile.name)
+    };
+    let provenance_items =
+      Self::build_parameter_provenance(&diff_items, &rule_changes, &origin_source_name);
+
     let mut res_profile = base_profile.clone();
     if let serde_json::Value::Object(map) = current_values {
       res_profile.values = map;
@@ -996,12 +1086,76 @@ end
       resulting_profile: res_profile,
       diff_items,
       rule_changes,
+      provenance_items,
       flush_matrix,
       safe_speed_ceiling,
       execution_logs,
       active_rule_count,
       total_rule_count: rules.len(),
     }
+  }
+
+  pub fn build_parameter_provenance(
+    diff_items: &[DiffItem],
+    rule_changes: &[RuleBeforeAfterChange],
+    origin_source: &str,
+  ) -> Vec<ParameterProvenance> {
+    let mut result = Vec::with_capacity(diff_items.len());
+    for item in diff_items {
+      let steps: Vec<RuleBeforeAfterChange> = rule_changes
+        .iter()
+        .filter(|rc| rc.param_key == item.key)
+        .cloned()
+        .collect();
+      let unit_suffix = if item.unit.is_empty() {
+        String::new()
+      } else {
+        format!(" {}", item.unit)
+      };
+      let origin_raw = if item.base_value.is_empty() {
+        steps
+          .first()
+          .map(|s| s.before_value.clone())
+          .unwrap_or_else(|| "(unset)".to_string())
+      } else {
+        item.base_value.clone()
+      };
+      let origin_fmt = if origin_raw == "(unset)" || origin_raw.ends_with(&unit_suffix) {
+        origin_raw.clone()
+      } else {
+        format!("{}{}", origin_raw, unit_suffix)
+      };
+      let final_fmt = if item.override_value.is_empty() {
+        "(unset)".to_string()
+      } else {
+        format!("{}{}", item.override_value, unit_suffix)
+      };
+      let net_delta_summary = if item.is_modified || !steps.is_empty() {
+        compute_delta_summary(&item.base_value, &item.override_value, &item.unit)
+      } else {
+        "Unmodified (Baseline retained)".to_string()
+      };
+      result.push(ParameterProvenance {
+        param_key: item.key.clone(),
+        param_label: item.label.clone(),
+        category: item.category.clone(),
+        unit: item.unit.clone(),
+        origin_source: origin_source.to_string(),
+        origin_value: origin_fmt,
+        final_value: final_fmt,
+        net_delta_summary,
+        steps,
+        is_modified: item.is_modified,
+      });
+    }
+    result.sort_by(|a, b| {
+      b.is_modified
+        .cmp(&a.is_modified)
+        .then(b.steps.len().cmp(&a.steps.len()))
+        .then(a.category.cmp(&b.category))
+        .then(a.param_label.cmp(&b.param_label))
+    });
+    result
   }
 
   pub fn detect_conflicts(
@@ -2860,5 +3014,88 @@ end
     assert!(proj_json.contains("machine_end_gcode"));
     assert!(proj_json.contains("change_filament_gcode"));
     assert!(proj_json.contains("before_layer_change_gcode"));
+  }
+
+  #[test]
+  fn test_parameter_provenance_and_lineage_tracks_successive_transformations() {
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("nozzle_temperature", "230");
+    let rules = vec![
+      TransformationRule {
+        id: "r_step1".to_string(),
+        name: "Hardened Steel +5°C Boost".to_string(),
+        description: "Boost nozzle temp by +5°C".to_string(),
+        category: "Nozzle Material".to_string(),
+        icon: "🔩".to_string(),
+        enabled: true,
+        priority: 10,
+        condition_expr: "all".to_string(),
+        lua_code: r#"
+local t = tonumber(config.nozzle_temperature or "230")
+config.nozzle_temperature = tostring(t + 5)
+print("Boosted nozzle_temperature by +5C for Hardened Steel")
+"#
+        .to_string(),
+      },
+      TransformationRule {
+        id: "r_step2".to_string(),
+        name: "High-Flow Thermal Multiplier (×1.02)".to_string(),
+        description: "Scale nozzle temp by 2%".to_string(),
+        category: "Thermal".to_string(),
+        icon: "🔥".to_string(),
+        enabled: true,
+        priority: 20,
+        condition_expr: "all".to_string(),
+        lua_code: r#"
+local t = tonumber(config.nozzle_temperature or "230")
+config.nozzle_temperature = string.format("%.0f", t * 1.02)
+print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
+"#
+        .to_string(),
+      },
+    ];
+
+    let eval = TransformationEngine::evaluate_stack(&base, &rules, &json!({}));
+    let temp_prov = eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "nozzle_temperature")
+      .expect("nozzle_temperature provenance should exist");
+
+    assert!(temp_prov.is_modified);
+    assert_eq!(temp_prov.origin_value, "230 °C");
+    assert_eq!(temp_prov.final_value, "240 °C");
+    assert_eq!(temp_prov.steps.len(), 2);
+
+    assert_eq!(temp_prov.steps[0].step_number, 1);
+    assert_eq!(temp_prov.steps[0].rule_name, "Hardened Steel +5°C Boost");
+    assert_eq!(temp_prov.steps[0].before_value, "230 °C");
+    assert_eq!(temp_prov.steps[0].after_value, "235 °C");
+    assert!(
+      temp_prov.steps[0].delta_summary.contains("+5 °C"),
+      "step 1 delta_summary: {}",
+      temp_prov.steps[0].delta_summary
+    );
+    assert!(temp_prov.steps[0]
+      .rule_log
+      .contains("Boosted nozzle_temperature by +5C"));
+
+    assert_eq!(temp_prov.steps[1].step_number, 2);
+    assert_eq!(
+      temp_prov.steps[1].rule_name,
+      "High-Flow Thermal Multiplier (×1.02)"
+    );
+    assert_eq!(temp_prov.steps[1].before_value, "235 °C");
+    assert_eq!(temp_prov.steps[1].after_value, "240 °C");
+    assert!(
+      temp_prov.steps[1].delta_summary.contains("+5 °C"),
+      "step 2 delta_summary: {}",
+      temp_prov.steps[1].delta_summary
+    );
+    assert!(
+      temp_prov.net_delta_summary.contains("+10 °C"),
+      "net_delta_summary: {}",
+      temp_prov.net_delta_summary
+    );
   }
 }
