@@ -384,12 +384,19 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   let export_name = spool.format_concise_title();
   let inherits = resolve_filament_inherits_for_rig(spool, rig_opt);
 
+  let kobra_unbottleneck_petg_abs = derived_overrides
+    .and_then(|m| m.get("_kobra_unbottleneck_petg_abs"))
+    .and_then(|v| v.as_str())
+    == Some("1");
+  let is_translucent_finish = spool.finish_type.eq_ignore_ascii_case("Translucent")
+    || spool.material_type.to_lowercase().contains("translucent");
+
   // Ensure retraction, wipe, z-hop, and fan_min_speed / fan_max_speed are always populated cleanly
   let is_external_disk_spool = spool.id.starts_with("disk_")
     && !spool.name.starts_with("OC -")
     && !spool.name.starts_with("OC:");
   let default_ret = poly_cfg.default_retraction_mm as f64;
-  let base_ret_len = if is_external_disk_spool {
+  let mut base_ret_len = if is_external_disk_spool {
     first_str_from_map(&base_map, "filament_retraction_length")
       .and_then(|s| s.parse::<f64>().ok())
       .unwrap_or(default_ret)
@@ -401,6 +408,12 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   } else {
     default_ret
   };
+  if kobra_unbottleneck_petg_abs
+    && matches!(orca_fil_type.as_str(), "PETG" | "ABS" | "ASA")
+    && base_ret_len > 0.70
+  {
+    base_ret_len = 0.70;
+  }
   let effective_ret_len = if spool.is_siraya_foaming_air() {
     0.0
   } else {
@@ -514,9 +527,17 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
     "temperature_vitrification".to_string(),
     serde_json::json!([(effective_bed + 10).max(55).to_string()]),
   );
+  let mut effective_mvs = spool.max_volumetric_speed;
+  if kobra_unbottleneck_petg_abs && !is_translucent_finish {
+    if orca_fil_type == "PETG" && effective_mvs < 19.0 {
+      effective_mvs = 19.0;
+    } else if (orca_fil_type == "ABS" || orca_fil_type == "ASA") && effective_mvs < 23.0 {
+      effective_mvs = 23.0;
+    }
+  }
   base_map.insert(
     "filament_max_volumetric_speed".to_string(),
-    serde_json::json!([format!("{:.1}", spool.max_volumetric_speed)]),
+    serde_json::json!([format!("{:.1}", effective_mvs)]),
   );
   base_map.insert(
     "fan_min_speed".to_string(),
@@ -934,6 +955,15 @@ fn format_retraction_length_str(ret_len: f64) -> String {
 
 /// Builds a user Machine `.json` preset from the imported OrcaSlicer machine base + rig settings
 pub fn build_machine_preset_json(rig: &MachineRig) -> String {
+  build_machine_preset_json_with_overrides(rig, None)
+}
+
+/// Builds a user Machine `.json` preset from the imported OrcaSlicer machine base + rig settings
+/// and any machine-level Lua overrides (such as `machine_start_gcode` and `machine_end_gcode`).
+pub fn build_machine_preset_json_with_overrides(
+  rig: &MachineRig,
+  derived_overrides: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> String {
   let cat = crate::catalog::load_merged_catalog();
   let (orca_noz, hrc) = rig.orca_machine_nozzle_type_and_hrc();
   let noz_diam_str = rig.formatted_nozzle_diameter();
@@ -987,6 +1017,22 @@ pub fn build_machine_preset_json(rig: &MachineRig) -> String {
   }
   if let Some(ret_spd) = cat.default_machine_base.get("retraction_speed") {
     out.insert("retraction_speed".to_string(), ret_spd.clone());
+  }
+  if let Some(ov) = derived_overrides {
+    for gcode_key in [
+      "before_layer_change_gcode",
+      "change_filament_gcode",
+      "machine_end_gcode",
+      "machine_start_gcode",
+    ] {
+      if let Some(s) = ov
+        .get(gcode_key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+      {
+        out.insert(gcode_key.to_string(), serde_json::json!(s));
+      }
+    }
   }
   out.insert("printer_notes".to_string(), serde_json::json!(notes_str));
   out.insert(
@@ -1231,18 +1277,43 @@ pub fn build_project_settings_config_json(
   }
 
   let filament_diff_str = FILAMENT_SETTING_KEYS.join(";");
-  let machine_diff_str = if rig.ace_pro_units > 0 {
-    "nozzle_diameter;nozzle_hrc;nozzle_type;printer_notes;retraction_distances_when_cut;retraction_length;retraction_speed"
-  } else {
-    "nozzle_diameter;nozzle_hrc;nozzle_type;printer_notes;retraction_length;retraction_speed"
-  };
+  let mut machine_diff_keys: std::collections::BTreeSet<String> = [
+    "nozzle_diameter",
+    "nozzle_hrc",
+    "nozzle_type",
+    "printer_notes",
+    "retraction_length",
+    "retraction_speed",
+  ]
+  .into_iter()
+  .map(|s| s.to_string())
+  .collect();
+  if rig.ace_pro_units > 0 {
+    machine_diff_keys.insert("retraction_distances_when_cut".to_string());
+  }
+  for gcode_key in [
+    "before_layer_change_gcode",
+    "change_filament_gcode",
+    "machine_end_gcode",
+    "machine_start_gcode",
+  ] {
+    if let Some(s) = derived_overrides
+      .get(gcode_key)
+      .and_then(|v| v.as_str())
+      .filter(|s| !s.trim().is_empty())
+    {
+      out.insert(gcode_key.to_string(), serde_json::json!(s));
+      machine_diff_keys.insert(gcode_key.to_string());
+    }
+  }
+  let machine_diff_str = machine_diff_keys.into_iter().collect::<Vec<_>>().join(";");
 
   let mut different_settings_to_system: Vec<String> = Vec::with_capacity(active_slots.len() + 2);
   different_settings_to_system.push(proc_diff_keys.into_iter().collect::<Vec<_>>().join(";"));
   for _ in active_slots {
     different_settings_to_system.push(filament_diff_str.clone());
   }
-  different_settings_to_system.push(machine_diff_str.to_string());
+  different_settings_to_system.push(machine_diff_str);
 
   out.insert(
     "inherits_group".to_string(),
@@ -1289,7 +1360,7 @@ pub fn build_project_settings_config_json(
 
   #[cfg(debug_assertions)]
   {
-    let mach_json = build_machine_preset_json(rig);
+    let mach_json = build_machine_preset_json_with_overrides(rig, Some(derived_overrides));
     let proc_json = build_process_preset_json(process, rig, derived_overrides);
     let mut disk_filaments_by_id: std::collections::HashMap<String, String> =
       std::collections::HashMap::new();

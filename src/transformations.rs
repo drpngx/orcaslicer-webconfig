@@ -333,12 +333,34 @@ impl TransformationEngine {
         lua_code: include_str!("../transformations/parametric/sym_wet_filament.lua").to_string(),
         priority: 55,
       },
+      TransformationRule {
+        id: "mach_fast_start_gcode".to_string(),
+        name: "⚠️ Fast-Start & Unpacked G9111 / Bambu Machine G-Code (POTENTIALLY DANGEROUS)".to_string(),
+        description: "⚠️ POTENTIALLY DANGEROUS: Unpacks Anycubic Kobra S1's `G9111` startup macro into explicit Kobra OS sub-macros (direct 140°C preheat skipping 170°C→140°C cooldown, 1–14× `WIPE_NOZZLE1`, `G28 W`, optional `LEVIQ2_AUTO_ZOFFSET`, `BED_MESH_PROFILE LOAD=\"default\"`, front or KAMP prime line) or optimizes Bambu Lab (P1S/X1C/A1) start/end G-code. Never home Z above 140°C or skip Z-offset after swapping build plates!".to_string(),
+        category: "Machine Start/End G-Code (⚠️ Potentially Dangerous)".to_string(),
+        icon: "⚡".to_string(),
+        enabled: false,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/mach_fast_start_gcode.lua").to_string(),
+        priority: 58,
+      },
     ]
   }
 
   /// Curated rule templates for the interactive "Create / Add New Lua Rule" builder in `WizardTab`.
   pub fn get_rule_templates() -> Vec<TransformationRule> {
     vec![
+      TransformationRule {
+        id: "mach_fast_start_gcode".to_string(),
+        name: "⚠️ Fast-Start & Unpacked G9111 / Bambu Machine G-Code (POTENTIALLY DANGEROUS)".to_string(),
+        description: "⚠️ POTENTIALLY DANGEROUS: Unpacks Anycubic Kobra S1's `G9111` startup macro into explicit Kobra OS sub-macros (direct 140°C preheat, 1–14× `WIPE_NOZZLE1`, `G28 W`, optional `LEVIQ2_AUTO_ZOFFSET`, `BED_MESH_PROFILE LOAD=\"default\"`, front or KAMP prime line) or optimizes Bambu Lab (P1S/X1C/A1) start/end G-code.".to_string(),
+        category: "Machine Start/End G-Code (⚠️ Potentially Dangerous)".to_string(),
+        icon: "⚡".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/mach_fast_start_gcode.lua").to_string(),
+        priority: 58,
+      },
       TransformationRule {
         id: "sym_wet_filament".to_string(),
         name: "Wet / Damp Filament — Humidity (% RH) Auto-Tuner (1st-Layer Holes, Mis-Adhesion & Stringing)".to_string(),
@@ -1542,6 +1564,40 @@ end
       }
     }
 
+    if let Some(start_gcode) = derived_profile
+      .get_str("machine_start_gcode")
+      .filter(|s| !s.trim().is_empty())
+    {
+      if !start_gcode.trim().starts_with("G9111 ") {
+        let skipped_leviq2 = start_gcode.contains("LEVIQ2_AUTO_ZOFFSET skipped")
+          || (start_gcode.contains("G28 W") && !start_gcode.contains("LEVIQ2_AUTO_ZOFFSET"));
+        let uses_kamp_prime = start_gcode.contains("first_layer_print_min[0] - 5");
+        push_warn(SafetyWarning {
+          id: "derived:machine_start_gcode".to_string(),
+          severity: if skipped_leviq2 {
+            SafetySeverity::Danger
+          } else {
+            SafetySeverity::Warning
+          },
+          scope_label: "Derived Machine G-Code (⚠️ Potentially Dangerous)".to_string(),
+          param_key: "machine_start_gcode".to_string(),
+          current_value: if skipped_leviq2 {
+            "Custom Fast-Start G-Code (⚠️ LEVIQ2_AUTO_ZOFFSET Skipped)".to_string()
+          } else if uses_kamp_prime {
+            "Custom Fast-Start G-Code (Adaptive KAMP Prime Line)".to_string()
+          } else {
+            "Custom Unpacked / Fast-Start G-Code".to_string()
+          },
+          safe_range: "Stock G9111 or 140°C Z-Home + LEVIQ2_AUTO_ZOFFSET ON".to_string(),
+          explanation: if skipped_leviq2 {
+            "⚠️ POTENTIALLY DANGEROUS: Custom startup G-code skips `LEVIQ2_AUTO_ZOFFSET`. Re-enable `LEVIQ2_AUTO_ZOFFSET` immediately if you swap build plates (e.g. Textured PEI ↔ Smooth PEI) or change nozzles, otherwise the nozzle can gouge the bed!".to_string()
+          } else {
+            "⚠️ POTENTIALLY DANGEROUS: Custom startup G-code replaces the factory macro. Never home Z (`G28 W` / `G28 Z`) above 140°C, and ensure models sit ≥5mm inside X=0 when using the Adaptive KAMP prime line.".to_string()
+          },
+        });
+      }
+    }
+
     warnings
   }
 
@@ -1695,6 +1751,10 @@ end
         "sym_weather_climate",
         include_str!("../transformations/parametric/sym_weather_climate.lua"),
       ),
+      (
+        "mach_fast_start_gcode",
+        include_str!("../transformations/parametric/mach_fast_start_gcode.lua"),
+      ),
     ];
 
     scripts
@@ -1805,7 +1865,7 @@ impl ParameterizedCalibrationTemplate {
   }
 
   pub fn is_symptom_wizard(&self) -> bool {
-    self.id.starts_with("sym_")
+    self.id.starts_with("sym_") || self.id.starts_with("mach_")
   }
 
   /// Returns the 7 top-level categories in the Print Quality & Troubleshooting Category Tree:
@@ -1950,7 +2010,7 @@ mod tests {
   #[test]
   fn test_parameterized_calibration_templates_build_and_execute() {
     let templates = TransformationEngine::get_parameterized_calibration_templates();
-    assert_eq!(templates.len(), 36);
+    assert_eq!(templates.len(), 37);
 
     // Verify transparent glass wizard generates and executes cleanly on both filament and process JSON
     let glass = templates
@@ -2666,5 +2726,139 @@ end
       diams_for("microswiss_brass"),
       vec!["0.2", "0.3", "0.4", "0.6", "0.8", "1.0"]
     );
+  }
+
+  #[test]
+  fn test_fast_start_gcode_kobra_s1_and_bambu_lab_knobs_and_3mf_parity() {
+    let templates = TransformationEngine::get_parameterized_calibration_templates();
+    let fast_start = templates
+      .iter()
+      .find(|t| t.id == "mach_fast_start_gcode")
+      .expect("mach_fast_start_gcode template exists");
+    assert!(fast_start.name.contains("POTENTIALLY DANGEROUS"));
+
+    // 1. Default preset: Kobra S1 Trimmed Safe (140°C direct, 2× WIPE_NOZZLE1, LEVIQ2_AUTO_ZOFFSET ON, E-14 cut, E-5 end, PETG/ABS unbottleneck)
+    let mut ans = fast_start.default_answers();
+    let (title1, _desc1, badge1, lua1) = fast_start.generate_from_answers(&ans, "all");
+    assert!(title1.contains("Kobra S1 Unpacked G9111"), "title: {}", title1);
+    assert!(badge1.contains("LEVIQ2 Z-Offset ON"), "badge: {}", badge1);
+    let (cfg1, _, _) = execute_transformation_lua(
+      &lua1,
+      &json!({
+        "filament_retraction_length": "1.50",
+        "filament_max_volumetric_speed": "12.0"
+      }),
+      &json!({ "printer_model": "Anycubic Kobra S1", "filament_type": "PETG" }),
+    )
+    .expect("kobra_s1_trimmed_safe executes");
+    let gcode1 = cfg1["machine_start_gcode"].as_str().unwrap();
+    assert!(gcode1.contains("M109 S140"));
+    assert!(gcode1.contains("WIPE_NOZZLE1 ; Single brush wipe pass (1/2)"));
+    assert!(gcode1.contains("WIPE_NOZZLE1 ; Single brush wipe pass (2/2)"));
+    assert!(!gcode1.contains("WIPE_NOZZLE ; Execute 14x"));
+    assert!(gcode1.contains("G28 W"));
+    assert!(gcode1.contains("LEVIQ2_AUTO_ZOFFSET"));
+    assert!(gcode1.contains("BED_MESH_PROFILE LOAD=\"default\""));
+    assert!(gcode1.contains("SET_GCODE_OFFSET Z_ADJUST=-0.03 MOVE=1"));
+    assert!(gcode1.contains("SET_GCODE_OFFSET Z_ADJUST=+0.02 MOVE=1"));
+    assert!(gcode1.contains("G4 S240 ; Heat-soak for 4 minutes"));
+    assert!(cfg1["machine_end_gcode"]
+      .as_str()
+      .unwrap()
+      .contains("G1 E-5 F1800 ; Retract 5mm immediately"));
+    assert!(cfg1["machine_end_gcode"]
+      .as_str()
+      .unwrap()
+      .contains("G1 Z150 F3000"));
+    assert!(cfg1["change_filament_gcode"]
+      .as_str()
+      .unwrap()
+      .contains("G1 E-14 F1200"));
+    assert_eq!(cfg1["flush_multiplier"], "0.65");
+    assert_eq!(cfg1["filament_retraction_length"], "0.70");
+    assert_eq!(cfg1["filament_max_volumetric_speed"], "19.0");
+    assert!(cfg1["before_layer_change_gcode"]
+      .as_str()
+      .unwrap()
+      .contains("BEFORE_LAYER_CHANGE"));
+
+    // 2. Kobra S1 1:1 Unpacked Stock G9111 (170°C -> 14x WIPE_NOZZLE -> 140°C cooldown on WIPE_STOP -> G28 W + LEVIQ2)
+    fast_start.apply_answer_change(
+      &mut ans,
+      "startup_preset",
+      "kobra_s1_unpacked_1to1".to_string(),
+    );
+    assert_eq!(
+      ans.get("preheat_wipe_temp_c").map(|s| s.as_str()),
+      Some("170")
+    );
+    assert_eq!(ans.get("wipe_passes").map(|s| s.as_str()), Some("14"));
+    let (_, _, _, lua_1to1) = fast_start.generate_from_answers(&ans, "all");
+    let (cfg_1to1, _, _) = execute_transformation_lua(
+      &lua_1to1,
+      &json!({}),
+      &json!({ "printer_model": "Anycubic Kobra S1" }),
+    )
+    .expect("kobra_s1_unpacked_1to1 executes");
+    let gcode_1to1 = cfg_1to1["machine_start_gcode"].as_str().unwrap();
+    assert!(gcode_1to1.contains("M109 S170 ; Heat nozzle to 170C"));
+    assert!(gcode_1to1.contains("WIPE_NOZZLE ; Execute 14x native brush wipe"));
+    assert!(gcode_1to1.contains("M109 S140 ; GOLDEN RULE: Cool nozzle to 140C on silicone pad before Z-homing!"));
+    assert!(gcode_1to1.contains("LEVIQ2_AUTO_ZOFFSET"));
+
+    // 3. Bambu Lab Fast-Start + Keep AMS Loaded at End + E-18 Cut Poop-Saver
+    fast_start.apply_answer_change(
+      &mut ans,
+      "startup_preset",
+      "bambu_fast_same_spool".to_string(),
+    );
+    let (_, _, badge_bambu, lua_bambu) = fast_start.generate_from_answers(&ans, "all");
+    assert!(badge_bambu.contains("Bambu Fast-Start"), "badge: {}", badge_bambu);
+    assert!(badge_bambu.contains("Keep AMS Loaded"), "badge: {}", badge_bambu);
+    let (cfg_bambu, _, _) = execute_transformation_lua(
+      &lua_bambu,
+      &json!({}),
+      &json!({ "printer_model": "Bambu Lab P1S" }),
+    )
+    .expect("bambu_fast_same_spool executes");
+    let gcode_bambu_start = cfg_bambu["machine_start_gcode"].as_str().unwrap();
+    let gcode_bambu_end = cfg_bambu["machine_end_gcode"].as_str().unwrap();
+    let gcode_bambu_cut = cfg_bambu["change_filament_gcode"].as_str().unwrap();
+    assert!(gcode_bambu_start.contains("M140 S[bed_temperature_initial_layer_single]"));
+    assert!(gcode_bambu_start.contains("Mech Mode Fast Check Skipped"));
+    assert!(gcode_bambu_start.contains("G28 Z ; Home Z with clean 140C nozzle"));
+    assert!(gcode_bambu_start.contains("G29.1 Z-0.03"));
+    assert!(gcode_bambu_start.contains("G4 S300 ; Dwell 5 minutes"));
+    assert!(gcode_bambu_start.contains("first_layer_print_min[0] - 5"));
+    assert!(gcode_bambu_end.contains("G1 E-6 F1800 ; Quickly retract 6mm"));
+    assert!(gcode_bambu_end.contains("G1 Z150 F3000"));
+    assert!(gcode_bambu_end.contains("M620 S255 / T255 / M621 S255 AMS cut & unload intentionally skipped"));
+    assert!(gcode_bambu_cut.contains("G1 E-18 F1200 ; Pull 18mm"));
+    assert_eq!(cfg_bambu["flush_multiplier"], "0.60");
+
+    // 4. Verify 100% parity between standalone machine/filament .json and .3mf project_settings.config when enabled!
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let proc = crate::models::ProcessProfile::get_default_processes().remove(1);
+    let spools: Vec<FilamentSpool> = crate::dir_import::import_scanned_directory(
+      &crate::dir_import::build_reference_anycubic_entries(),
+    )
+    .unwrap()
+    .filaments
+    .into_iter()
+    .take(4)
+    .collect();
+    let flush_matrix = vec!["0".to_string(); 16];
+    let overrides = cfg1.as_object().unwrap().clone();
+    let proj_json = crate::threemf::build_project_settings_config_json(
+      &rig,
+      &proc,
+      &spools,
+      &flush_matrix,
+      &overrides,
+    );
+    assert!(proj_json.contains("machine_start_gcode"));
+    assert!(proj_json.contains("machine_end_gcode"));
+    assert!(proj_json.contains("change_filament_gcode"));
+    assert!(proj_json.contains("before_layer_change_gcode"));
   }
 }

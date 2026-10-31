@@ -1821,12 +1821,14 @@ pub fn sync_live_state_to_entries(
   }
 
   // 2. Ensure every MachineRig in `machines` has an up-to-date file in `user/<user_folder_id>/machine/`
-  // Always use `build_machine_preset_json(rig)` so the standalone machine `.json` file on disk
-  // is 100% identical to the machine parameters embedded in `.3mf` `Metadata/project_settings.config`.
+  // Always use `build_machine_preset_json_with_overrides(rig, Some(derived_overrides))` so the standalone
+  // machine `.json` file on disk is 100% identical to the machine parameters embedded in `.3mf`
+  // `Metadata/project_settings.config`.
   for rig in machines {
     let fname = crate::models::sanitize_profile_filename(&rig.name);
     let rel_path = format!("user/{}/machine/{}", user_folder_id, fname);
-    let machine_json = crate::threemf::build_machine_preset_json(rig);
+    let machine_json =
+      crate::threemf::build_machine_preset_json_with_overrides(rig, Some(derived_overrides));
 
     if let Some(existing) = entries.iter_mut().find(|e| {
       e.relative_path == rel_path

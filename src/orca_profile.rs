@@ -426,6 +426,42 @@ impl OrcaProfile {
             .to_string(),
       },
       ParameterMeta {
+        key: "machine_start_gcode".to_string(),
+        label: "Machine Start G-Code (⚠️ Potentially Dangerous)".to_string(),
+        category: "Machine".to_string(),
+        unit: "".to_string(),
+        description:
+          "Custom printer startup sequence (Unpacked Kobra S1 G9111 sub-macros or Bambu Lab Fast-Start G-code)"
+            .to_string(),
+      },
+      ParameterMeta {
+        key: "machine_end_gcode".to_string(),
+        label: "Machine End G-Code (⚠️ Potentially Dangerous)".to_string(),
+        category: "Machine".to_string(),
+        unit: "".to_string(),
+        description:
+          "Custom printer end-of-print sequence (e.g. E-5/E-6 anti-ooze retract, smart Z150 bed drop, silence fans, keep AMS loaded)"
+            .to_string(),
+      },
+      ParameterMeta {
+        key: "change_filament_gcode".to_string(),
+        label: "Change Filament G-Code (Poop-Saver)".to_string(),
+        category: "Machine".to_string(),
+        unit: "".to_string(),
+        description:
+          "Multi-color toolchange sequence (e.g. G1 E-14 / E-18 long retract before filament cutter actuation)"
+            .to_string(),
+      },
+      ParameterMeta {
+        key: "before_layer_change_gcode".to_string(),
+        label: "Before Layer Change G-Code".to_string(),
+        category: "Machine".to_string(),
+        unit: "".to_string(),
+        description:
+          "Per-layer G-code hook (e.g. removing redundant Layer-0 Y255 rear purge line on Kobra S1)"
+            .to_string(),
+      },
+      ParameterMeta {
         key: "nozzle_temperature".to_string(),
         label: "Print Temperature".to_string(),
         category: "Thermal".to_string(),

@@ -1091,6 +1091,10 @@ impl LuaEnv {
       "insert".to_string(),
       LuaVal::NativeFn("table.insert".to_string()),
     );
+    tbl_lib.insert(
+      "concat".to_string(),
+      LuaVal::NativeFn("table.concat".to_string()),
+    );
     self.set_local("table", LuaVal::Table(Rc::new(RefCell::new(tbl_lib))));
   }
 
@@ -2019,6 +2023,35 @@ impl Interpreter {
           }
         }
         Ok(LuaVal::Nil)
+      }
+      "table.concat" => {
+        if let Some(LuaVal::Table(t)) = args.get(0) {
+          let sep = args
+            .get(1)
+            .map(|v| match v {
+              LuaVal::Nil => String::new(),
+              other => other.to_lua_string(),
+            })
+            .unwrap_or_default();
+          let map = t.borrow();
+          let mut parts = Vec::with_capacity(map.len());
+          let mut idx = 1usize;
+          while let Some(v) = map.get(&idx.to_string()) {
+            parts.push(v.to_lua_string());
+            idx += 1;
+          }
+          let joined = parts.join(&sep);
+          if joined.len() > MAX_LUA_STRING_BYTES {
+            return Err(format!(
+              "[Lua Sandbox Security Violation] table.concat result ({} bytes) exceeds {} byte limit.",
+              joined.len(),
+              MAX_LUA_STRING_BYTES
+            ));
+          }
+          Ok(LuaVal::String(joined))
+        } else {
+          Ok(LuaVal::String(String::new()))
+        }
       }
       _ => Err(format!("Unknown native function: {}", name)),
     }
