@@ -28,14 +28,17 @@ jobs:
             os: windows-2025
             rust_target: x86_64-pc-windows-msvc
             artifact_name: orcaslicer-webconfig-portable-windows-x64
+            binary_name: orcaslicer-webconfig-portable-windows-x64.exe
           - platform: linux-x64
             os: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
             artifact_name: orcaslicer-webconfig-portable-linux-x64
+            binary_name: orcaslicer-webconfig-portable-linux-x64
           - platform: macos
             os: macos-15
             rust_target: aarch64-apple-darwin
             artifact_name: orcaslicer-webconfig-portable-macos
+            binary_name: orcaslicer-webconfig-portable-macos
 
     runs-on: ${{ matrix.os }}
 
@@ -80,48 +83,27 @@ jobs:
         run: |
           bazel run -c opt //:tauri_build -- --target ${{ matrix.rust_target }}
 
-      - name: Package Portable Artifact (Windows x64)
+      - name: Stage Single Portable Executable (Windows x64)
         if: matrix.platform == 'windows-x64'
         shell: bash
         run: |
-          mkdir -p portable-out
           cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop.exe" \
-            "portable-out/orcaslicer-webconfig-portable-windows-x64.exe"
-          cp -f local_slicer_config.json portable-out/
-          (cd portable-out && 7z a "../${{ matrix.artifact_name }}.zip" *)
+            "${{ matrix.binary_name }}"
 
-      - name: Package Portable Artifact (Linux x64)
-        if: matrix.platform == 'linux-x64'
+      - name: Stage Single Portable Executable (Linux x64 & macOS)
+        if: matrix.platform != 'windows-x64'
         shell: bash
         run: |
-          mkdir -p portable-out
           cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop" \
-            "portable-out/orcaslicer-webconfig-portable-linux-x64"
-          chmod +x "portable-out/orcaslicer-webconfig-portable-linux-x64"
-          find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage" -name "*.AppImage" -exec cp -f {} portable-out/ \; || true
-          cp -f local_slicer_config.json portable-out/
-          tar -czvf "${{ matrix.artifact_name }}.tar.gz" -C portable-out .
-
-      - name: Package Portable Artifact (macOS)
-        if: matrix.platform == 'macos'
-        shell: bash
-        run: |
-          mkdir -p portable-out
-          cp -R "src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos/"*.app portable-out/ || \
-            cp -f "src-tauri/target/${{ matrix.rust_target }}/release/orcaslicer-webconfig-desktop" portable-out/
-          find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg" -name "*.dmg" -exec cp -f {} portable-out/ \; || true
-          cp -f local_slicer_config.json portable-out/
-          tar -czvf "${{ matrix.artifact_name }}.tar.gz" -C portable-out .
+            "${{ matrix.binary_name }}"
+          chmod +x "${{ matrix.binary_name }}"
 
       - name: Upload On-Demand Workflow Artifact
         id: upload-portable
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
-          path: |
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}.tar.gz
-            portable-out/*
+          path: ${{ matrix.binary_name }}
           if-no-files-found: error
 
       - name: Write Artifact Download Link to Job Summary
@@ -130,6 +112,7 @@ jobs:
           {
             echo "## 🖥️ Portable Tauri Build Ready (${{ matrix.platform }})"
             echo "- **Download Artifact:** [\`${{ matrix.artifact_name }}\`](${{ steps.upload-portable.outputs.artifact-url }})"
+            echo "- **Single Executable Inside:** \`${{ matrix.binary_name }}\`"
             echo "- **Workflow Run Summary Page:** [Run #${{ github.run_id }} Summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -138,6 +121,4 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.upload_to_release_tag != '' && inputs.upload_to_release_tag || github.ref_name }}
-          files: |
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}.tar.gz
+          files: ${{ matrix.binary_name }}

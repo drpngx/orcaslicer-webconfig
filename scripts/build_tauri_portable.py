@@ -121,13 +121,19 @@ def main() -> int:
         base_png.write_bytes(make_png(512, 512))
         subprocess.run(["cargo", "tauri", "icon", str(base_png)], env=env, check=True)
 
+    extra_args = sys.argv[1:]
+    has_bundle_flag = any(
+        arg in ("--bundles", "-b", "--no-bundle") or arg.startswith("--bundles=")
+        for arg in extra_args
+    )
     cmd = [
         "cargo",
         "tauri",
         "build",
+        *([] if has_bundle_flag else ["--no-bundle"]),
         "--config",
         '{"build":{"beforeBuildCommand":""}}',
-        *sys.argv[1:],
+        *extra_args,
     ]
     return subprocess.call(cmd, env=env)
 
