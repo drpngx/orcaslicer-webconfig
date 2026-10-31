@@ -17,18 +17,21 @@ local function polymer_family(mat)
   if not mat then
     return "PLA"
   end
-  if mat == "PETG" or mat == "PCTG" or mat == "PETG-CF" or mat == "PETG-GF" or mat == "PCTG-CF" or mat == "PCTG-GF" or mat == "PET-CF" then
+  local up = string.upper(tostring(mat))
+  if string.find(up, "PVA", 1, true) or string.find(up, "BVOH", 1, true) then
+    return "WATER_SOLUBLE"
+  elseif string.find(up, "PCTG", 1, true) or string.find(up, "PETG", 1, true) or string.find(up, "PET%-CF") or string.find(up, "PET%-GF") or string.find(up, "COPE", 1, true) then
     return "PETG"
-  elseif mat == "PLA" or mat == "PLA+" or mat == "PLA-CF" or mat == "PLA-GF" or mat == "PLA Matte" or mat == "PLA Silk" or mat == "PLA High Speed" then
-    return "PLA"
-  elseif mat == "ABS" or mat == "ASA" or mat == "ABS-GF" or mat == "ASA-CF" then
-    return "STYRENIC"
-  elseif mat == "TPU" or mat == "TPU 95A" or mat == "PEBA" or mat == "PEBA 90A" or mat == "PEBA-CF" or mat == "Rebound TPU" then
+  elseif string.find(up, "TPU", 1, true) or string.find(up, "PEBA", 1, true) or string.find(up, "TPE", 1, true) or string.find(up, "FLEX", 1, true) then
     return "ELASTOMER"
-  elseif mat == "PA" or mat == "PA6-CF" or mat == "PAHT" or mat == "PAHT-CF" or mat == "PAHT-GF" or mat == "PPA" or mat == "PPA-CF" or mat == "PPA-GF" or mat == "PC" or mat == "PC-CF" or mat == "PC-GF" then
+  elseif string.find(up, "ABS", 1, true) or string.find(up, "ASA", 1, true) or string.find(up, "HIPS", 1, true) or string.find(up, "SBS", 1, true) then
+    return "STYRENIC"
+  elseif string.find(up, "PPA", 1, true) or string.find(up, "PAHT", 1, true) or string.find(up, "PA6", 1, true) or string.find(up, "PA12", 1, true) or up == "PA" or string.find(up, "PA%-") or string.find(up, "PC", 1, true) or string.find(up, "PEEK", 1, true) or string.find(up, "PPS", 1, true) then
     return "ENGINEERING"
+  elseif string.find(up, "PLA", 1, true) or string.find(up, "PHA", 1, true) or string.find(up, "PANCHROMA", 1, true) or string.find(up, "POLYTERRA", 1, true) or string.find(up, "POLYLITE", 1, true) or string.find(up, "POLYMAX", 1, true) then
+    return "PLA"
   end
-  return mat
+  return up
 end
 
 function apply(config, ctx)

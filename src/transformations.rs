@@ -134,8 +134,12 @@ impl TransformationRule {
 
     if let Some(rest) = cond.strip_prefix("filament:") {
       let target_fil = rest.trim();
+      let matches_fil = |m: &str| -> bool {
+        m.eq_ignore_ascii_case(target_fil)
+          || FilamentSpool::canonical_polymer_key(m).eq_ignore_ascii_case(target_fil)
+      };
       if let Some(fil) = context.get("filament_type").and_then(|v| v.as_str()) {
-        if fil.eq_ignore_ascii_case(target_fil) {
+        if matches_fil(fil) {
           return true;
         }
       }
@@ -143,18 +147,17 @@ impl TransformationRule {
         if slots.iter().any(|s| {
           s.get("material_type")
             .and_then(|m| m.as_str())
-            .map(|m| m.eq_ignore_ascii_case(target_fil))
+            .map(&matches_fil)
             .unwrap_or(false)
         }) {
           return true;
         }
       }
       if let Some(all_fils) = context.get("all_filament_types").and_then(|v| v.as_array()) {
-        if all_fils.iter().any(|m| {
-          m.as_str()
-            .map(|s| s.eq_ignore_ascii_case(target_fil))
-            .unwrap_or(false)
-        }) {
+        if all_fils
+          .iter()
+          .any(|m| m.as_str().map(&matches_fil).unwrap_or(false))
+        {
           return true;
         }
       }
@@ -1293,6 +1296,32 @@ end
               });
             }
           }
+
+          if let Some(cp_arr) = raw_val
+            .get("compatible_printers")
+            .and_then(|v| v.as_array())
+          {
+            let has_active_printer = cp_arr.is_empty()
+              || cp_arr.iter().any(|x| {
+                x.as_str()
+                  .map(|s| s.contains(&rig.printer_model) || s == rig.name)
+                  .unwrap_or(false)
+              });
+            if !has_active_printer {
+              push_warn(SafetyWarning {
+                id: format!("spool_raw_compat_printers:{}", spool.id),
+                severity: SafetySeverity::Danger,
+                scope_label: format!("Filament Disk JSON: {}", spool.name),
+                param_key: "compatible_printers (Hidden in Slicer Dropdown)".to_string(),
+                current_value: format!("{:?}", cp_arr),
+                safe_range: format!("Omit or include '{}'", rig.printer_model),
+                explanation: format!(
+                  "{} contains a restrictive `compatible_printers` list on disk that excludes '{}', causing OrcaSlicer / AnycubicSlicerNext to hide this filament from the dropdown and reset the slot to a default filament!",
+                  spool.name, rig.printer_model
+                ),
+              });
+            }
+          }
         }
       }
 
@@ -1311,75 +1340,31 @@ end
         });
       }
 
-      // Check polymer temperature bounds on the spool
+      // Check polymer temperature bounds on the spool via centralized `constants.json`
       let mat = spool.material_type.as_str();
       let mat_up = mat.to_uppercase();
-      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = if mat_up.contains("PCL") {
-        (70, 180, 175, 65)
-      } else if mat_up.contains("PEEK") {
-        (320, 420, 410, 160)
-      } else if mat_up.contains("PPS") {
-        (295, 365, 360, 125)
-      } else if mat_up.contains("PPA")
-        || mat_up.contains("PAHT")
-        || mat_up.contains("PA6")
-        || mat_up.contains("PA12")
-        || mat_up.contains("PA612")
-        || mat_up.contains("EASY PA")
-        || mat_up == "PA"
-        || mat_up == "PA-CF"
-        || mat_up == "PA-GF"
-        || mat_up.starts_with("PA ")
-        || mat_up.contains("ULTRAPA")
-        || (mat_up.contains("PC") && !mat_up.contains("PCTG"))
-        || mat_up.contains("PET-")
-        || mat_up.starts_with("SUPPORT FOR PA")
-        || mat_up.contains("FOR PA12")
-        || mat_up == "PETG-ESD"
+      let canon = FilamentSpool::canonical_polymer_key(mat);
+      let (base_min_noz, base_max_noz) = FilamentSpool::polymer_safe_nozzle_bounds(mat);
+      let (_base_min_bed, base_max_bed) = FilamentSpool::polymer_safe_bed_bounds(mat);
+      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = if spool
+        .finish_type
+        .eq_ignore_ascii_case("Foaming")
+        && (canon.starts_with("TPU") || canon == "PEBA" || mat_up.contains("AIR"))
       {
-        (230, 325, 320, 120)
-      } else if mat_up.contains("PCTG") {
-        (240, 280, 272, 95)
-      } else if mat_up.contains("COPE") {
-        (205, 255, 250, 80)
-      } else if (mat_up.contains("PETG") || mat_up == "PET") && spool.finish_type == "Conductive" {
-        (220, 290, 285, 95)
-      } else if mat_up.contains("PETG") || mat_up == "PET" {
-        (215, 275, 270, 90)
-      } else if mat_up.contains("ABS")
-        || mat_up.contains("ASA")
-        || mat_up == "SBS"
-        || mat_up == "HIPS"
-      {
-        (230, 315, 310, 115)
-      } else if mat_up.contains("PEBA")
-        || mat_up.contains("FOAMING")
-        || mat_up.contains("AIR")
-        || spool.finish_type == "Foaming"
-        || mat_up.contains("TPU-CF")
-        || mat_up.contains("TPU-GF")
-        || mat_up.contains("TPU-AERO")
-      {
-        (180, 280, 276, 105)
-      } else if mat_up.contains("TPU")
-        || mat_up.contains("POLYFC")
-        || mat_up.contains("POLYFLEX")
-        || mat_up == "FLEX"
-        || mat_up == "EVA"
-      {
-        (190, 260, 255, 70)
-      } else if mat_up.contains("PCL") {
-        (70, 180, 175, 65)
-      } else if mat_up.contains("PLA")
-        || mat_up.contains("PANCHROMA")
-        || mat_up.contains("POLYTERRA")
-        || mat_up.contains("POLYLITE")
-        || mat_up.contains("POLYMAX")
-        || mat_up == "PHA"
-      {
-        (180, 245, 240, 75)
+        (180, 285, 281, 105)
+      } else if spool.finish_type.eq_ignore_ascii_case("Conductive") || mat_up.contains("ESD") {
+        let mn = (base_min_noz - 5).max(180);
+        let mx = (base_max_noz + 25).max(290).min(300);
+        (mn, mx, mx - 4, base_max_bed + 10)
       } else {
-        (180, 305, 295, 115)
+        let mn = if canon == "PCL" {
+          base_min_noz - 5
+        } else {
+          (base_min_noz - 5).max(180)
+        };
+        let mx = base_max_noz + 5;
+        let wn = base_max_noz + 1;
+        (mn, mx, wn, base_max_bed + 10)
       };
 
       if spool.print_temp < min_nozzle || spool.print_temp > max_nozzle {

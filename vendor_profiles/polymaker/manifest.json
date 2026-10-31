@@ -385,13 +385,6 @@
     "json_file": "vendor_profiles/polymaker/Polymaker_PolyTerra_PLA_.json"
   },
   {
-    "product": "Polylite ASA for TYC Americas",
-    "printer": "BBL H2C",
-    "slicer": "BambuStudio",
-    "source_path": "preset/Polylite ASA for TYC Americas/BBL/H2C/BambuStudio/Polylite ASA for TYC Americas @BBL H2C.json",
-    "json_file": "vendor_profiles/polymaker/Polymaker_Polylite_ASA_for_TYC_Americas.json"
-  },
-  {
     "product": "Polymaker ABS Max",
     "printer": "BBL H2C",
     "slicer": "BambuStudio",

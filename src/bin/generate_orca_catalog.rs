@@ -217,7 +217,6 @@ fn sanitize_orca_profile_map(raw: MapView, fallback_machine: Option<&MapView>) -
         "setting_id"
           | "filament_id"
           | "instantiation"
-          | "compatible_printers"
           | "compatible_printers_condition"
           | "compatible_prints_condition"
           | "compatible_prints"

@@ -10,6 +10,7 @@
 2. **Bazel-First Execution**:
    - Everything is Bazel-based.
    - Run all builds, tests, and execution under Bazel (`bazel build ...`, `bazel run ...`, `bazel test ...`).
+   - Always launch the web server via `HTTP_LISTEN_ADDR=0.0.0.0:8003 bazel run //server:server` (or `HTTP_LISTEN_ADDR=0.0.0.0:8003 bazel run -c opt //server:server`). Never invoke raw `./bazel-bin/server/server` binaries directly.
    - Do NOT run runaway, unmanaged `cargo` commands directly for builds or running the application.
 
 3. **Client-Side Only (Zero Server Storage)**:

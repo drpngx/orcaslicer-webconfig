@@ -742,57 +742,18 @@ impl FilamentSpool {
   /// Returns the concise suffix used in profile titles when a specialty finish is active
   /// (e.g. `"Translucent"`, `"Wood"`, `"Metal"`, `"Glow"`, `"Foaming"`, `"Conductive"`, `"Marble"`, `"Photochromic"`).
   pub fn finish_title_suffix(finish_type: &str) -> Option<&'static str> {
-    if finish_type.eq_ignore_ascii_case("Translucent") {
-      Some("Translucent")
-    } else if finish_type.eq_ignore_ascii_case("Wood-Filled")
-      || finish_type.eq_ignore_ascii_case("Wood")
-    {
-      Some("Wood")
-    } else if finish_type.eq_ignore_ascii_case("Metal-Filled")
-      || finish_type.eq_ignore_ascii_case("Metal")
-    {
-      Some("Metal")
-    } else if finish_type.eq_ignore_ascii_case("Glow-in-the-Dark")
-      || finish_type.eq_ignore_ascii_case("Glow")
-    {
-      Some("Glow")
-    } else if finish_type.eq_ignore_ascii_case("Foaming") {
-      Some("Foaming")
-    } else if finish_type.eq_ignore_ascii_case("Conductive") {
-      Some("Conductive")
-    } else if finish_type.eq_ignore_ascii_case("Marble/Stone/Terracotta")
-      || finish_type.eq_ignore_ascii_case("Marble")
-    {
-      Some("Marble")
-    } else if finish_type.eq_ignore_ascii_case("Photochromic") {
-      Some("Photochromic")
-    } else {
-      None
+    let fc = crate::constants::constants().lookup_finish(finish_type);
+    if fc.code == "Carbon Fiber" || fc.code == "Glass Fiber" {
+      return None;
     }
+    fc.title_suffix.as_deref()
   }
 
   /// Normalizes a brand label (`"Custom"`, `""` -> `"Generic"`).
   pub fn normalized_brand(raw_brand: &str) -> String {
-    let b = raw_brand.trim();
-    if b.is_empty() || b.eq_ignore_ascii_case("Custom") || b.eq_ignore_ascii_case("Generic") {
-      "Generic".to_string()
-    } else if b.eq_ignore_ascii_case("Siraya") || b.eq_ignore_ascii_case("Siraya Tech") {
-      "Siraya Tech".to_string()
-    } else if b.eq_ignore_ascii_case("SUNLU") {
-      "SUNLU".to_string()
-    } else if b.eq_ignore_ascii_case("Polymaker") {
-      "Polymaker".to_string()
-    } else if b.eq_ignore_ascii_case("Anycubic") {
-      "Anycubic".to_string()
-    } else if b.eq_ignore_ascii_case("Bambu") || b.eq_ignore_ascii_case("Bambu Lab") {
-      "Bambu Lab".to_string()
-    } else if b.eq_ignore_ascii_case("eSUN") {
-      "eSUN".to_string()
-    } else if b.eq_ignore_ascii_case("Overture") {
-      "Overture".to_string()
-    } else {
-      b.to_string()
-    }
+    crate::constants::constants()
+      .normalize_brand(raw_brand)
+      .to_string()
   }
 
   /// Builds the canonical `OC - [<Brand> ]<Material>[ <Finish>] • 0.4 <Nozzle>` preset name.
@@ -802,22 +763,43 @@ impl FilamentSpool {
     finish_type: &str,
     active_nozzle_type: &str,
   ) -> String {
-    let nt_low = active_nozzle_type.to_lowercase();
-    let short_noz = if nt_low.contains("diamondback") {
-      "Diamond"
-    } else if nt_low.contains("ruby") {
-      "Ruby"
-    } else if nt_low.contains("cht") {
-      "CHT"
-    } else if nt_low.contains("cm2") {
-      "CM2"
-    } else if nt_low.contains("hardened") {
-      "Hardened"
-    } else {
-      "Brass"
-    };
-    let mat_with_finish = if let Some(suf) = Self::finish_title_suffix(finish_type) {
+    let short_noz = &crate::constants::constants()
+      .lookup_nozzle(active_nozzle_type)
+      .short_tag;
+    let mat_with_finish = if finish_type.eq_ignore_ascii_case("Carbon Fiber") {
+      let up = base_mat_code.to_uppercase();
+      if up.contains("-CF")
+        || up.contains("-GF")
+        || up.contains("-RCF")
+        || up.contains("-RGF")
+        || up.contains("CARBON")
+        || up.contains("GLASS")
+      {
+        base_mat_code.to_string()
+      } else {
+        format!("{}-CF", base_mat_code)
+      }
+    } else if finish_type.eq_ignore_ascii_case("Glass Fiber") {
+      let up = base_mat_code.to_uppercase();
+      if up.contains("-GF")
+        || up.contains("-CF")
+        || up.contains("-RCF")
+        || up.contains("-RGF")
+        || up.contains("GLASS")
+        || up.contains("CARBON")
+      {
+        base_mat_code.to_string()
+      } else {
+        format!("{}-GF", base_mat_code)
+      }
+    } else if let Some(suf) = Self::finish_title_suffix(finish_type) {
+      let fc = crate::constants::constants().lookup_finish(finish_type);
+      let has_alias_in_name = fc
+        .aliases
+        .iter()
+        .any(|al| !al.is_empty() && base_mat_code.to_lowercase().contains(&al.to_lowercase()));
       if !base_mat_code.to_lowercase().contains(&suf.to_lowercase())
+        && !has_alias_in_name
         && !(suf == "Foaming" && base_mat_code.to_lowercase().contains("air"))
       {
         format!("{} {}", base_mat_code, suf)
@@ -901,7 +883,6 @@ impl FilamentSpool {
     } else {
       brass + 5
     };
-    let nt = new_nozzle_type.to_lowercase();
     let is_external_disk_spool = self.id.starts_with("disk_")
       && !self.name.starts_with("OC -")
       && !self.name.starts_with("OC:");
@@ -910,7 +891,13 @@ impl FilamentSpool {
       self.tuned_for_nozzle_type = new_nozzle_type.to_string();
     }
 
-    if nt.contains("hardened") || nt.contains("stainless") || nt.contains("cm2") {
+    let c = crate::constants::constants();
+    let (min_safe, mut max_safe) = Self::polymer_safe_nozzle_bounds(&self.material_type);
+    if self.is_foaming_tpu() {
+      max_safe = max_safe.max(c.hardware_limits.max_foaming_tpu_nozzle_temp_c);
+    }
+    let noz_cfg = c.lookup_nozzle(new_nozzle_type);
+    if noz_cfg.uses_hs_base_temp {
       self.base_print_temp = hs;
       // Only preserve a custom Hardened Steel disk override on an external non-OC disk profile within +15°C of `hs`
       if is_external_disk_spool
@@ -920,34 +907,17 @@ impl FilamentSpool {
       {
         // Keep external user's HS override
       } else {
-        self.print_temp = hs;
+        self.print_temp = hs.clamp(min_safe, max_safe);
       }
-    } else if nt.contains("diamondback") {
-      self.base_print_temp = brass;
-      self.print_temp = (brass - 10).max(80);
     } else {
-      // Standard Brass, Ruby Tip (Brass Body), MicroSwiss Plated Brass, or CHT:
-      // Use the uncompensated Brass baseline (NEVER the Hardened Steel _HS temperature!)
       self.base_print_temp = brass;
-      self.print_temp = brass;
+      self.print_temp = (brass + noz_cfg.temp_offset_from_brass_c).clamp(min_safe, max_safe);
     }
 
     if !is_external_disk_spool
       && (self.name.starts_with("OC -") || self.name.starts_with("OC:"))
     {
-      let new_short_noz = if nt.contains("diamondback") {
-        "Diamond"
-      } else if nt.contains("ruby") {
-        "Ruby"
-      } else if nt.contains("cht") {
-        "CHT"
-      } else if nt.contains("cm2") {
-        "CM2"
-      } else if nt.contains("hardened") {
-        "Hardened"
-      } else {
-        "Brass"
-      };
+      let new_short_noz = &noz_cfg.short_tag;
       if let Some(dot_idx) = self.name.rfind("• 0.") {
         let prefix = &self.name[..dot_idx];
         let after_dot = &self.name[dot_idx + "• ".len()..];
@@ -979,9 +949,9 @@ impl FilamentSpool {
         self.material_type, self.required_nozzle_hrc, eff_rig_hrc
       ));
     }
-    let rig_is_hs = rig_nozzle_type.contains("hardened")
-      || rig_nozzle_type.contains("stainless")
-      || rig_nozzle_type.contains("cm2");
+    let rig_is_hs = crate::constants::constants()
+      .lookup_nozzle(rig_nozzle_type)
+      .uses_hs_base_temp;
     let tuned_is_hs = self.tuned_for_nozzle_type.contains("hardened");
     if tuned_is_hs && !rig_is_hs {
       return Some(format!(
@@ -996,127 +966,62 @@ impl FilamentSpool {
   /// `"Polymaker PETG"`, `"High Speed Matte PETG"`, `"Fibreheart PETG-CF"`, `"Flex TPU 95A HF"`,
   /// `"Panchroma PLA"`, etc.) to its canonical polymer key so switching brands preserves the selected polymer.
   pub fn canonical_polymer_key(mat: &str) -> &'static str {
-    let up = mat.trim().to_uppercase();
-    if up.contains("PCTG-CF") || up.contains("PCTG-GF") {
-      "PCTG-CF"
-    } else if up.contains("PCTG") {
-      "PCTG"
-    } else if up.contains("PETG-CF") || up.contains("PETG-GF") {
-      "PETG-CF"
-    } else if up.contains("PETG") {
-      "PETG"
-    } else if up.contains("PET-CF") || up.contains("PET-GF") {
-      "PET-CF"
-    } else if up.contains("TPU-CF") || up.contains("TPU-GF") {
-      "TPU-GF"
-    } else if up.contains("TPU FOR AMS") || up.contains("TPU FOR ACE") || up.contains("TPU 64D") {
-      "TPU for AMS"
-    } else if up.contains("TPU 85A") {
-      "TPU 85A"
-    } else if up.contains("TPU 90A") {
-      "TPU 90A"
-    } else if up.contains("TPU 95A") {
-      "TPU 95A"
-    } else if up.contains("TPU") || up.contains("TPE") {
-      "TPU"
-    } else if up.contains("PEBA") {
-      "PEBA"
-    } else if up.contains("PC-CF") || up.contains("PC-GF") {
-      "PC-CF"
-    } else if up.contains("PC-ABS")
-      || up.contains("PC/ABS")
-      || up == "PC"
-      || up.contains(" PC")
-      || up.starts_with("PC ")
-    {
-      "PC"
-    } else if up.contains("ASA-CF") || up.contains("ASA-GF") {
-      "ASA-CF"
-    } else if up.contains("ASA") {
-      "ASA"
-    } else if up.contains("ABS-CF") || up.contains("ABS-GF") {
-      "ABS-CF"
-    } else if up.contains("ABS") {
-      "ABS"
-    } else if up.contains("PEEK") {
-      "PEEK"
-    } else if up.contains("PPS") {
-      "PPS"
-    } else if up.contains("PPA-CF") || up.contains("PPA-GF") || up.contains("PPA") {
-      "PPA-CF"
-    } else if up.contains("PAHT-CF") || up.contains("PAHT-GF") || up.contains("PAHT") {
-      "PAHT-CF"
-    } else if up.contains("PA6-CF") || up.contains("PA6-GF") || up.contains("PA-CF") {
-      "PA6-CF"
-    } else if up.contains("PVA") {
-      "PVA"
-    } else if up.contains("BVOH") {
-      "BVOH"
-    } else if up.contains("HIPS") {
-      "HIPS"
-    } else if up.contains("PA12-CF") || up.contains("PA12-GF") {
-      "PA12-CF"
-    } else if up.contains("PA12") || up.contains("PA6") || up == "PA" || up.contains("NYLON") {
-      "PA"
-    } else if up == "PHA" || up.starts_with("PHA ") || up.ends_with(" PHA") {
-      "PHA"
-    } else if up == "PCL" || up.starts_with("PCL ") {
-      "PCL"
-    } else if up.contains("PLA-CF") || up.contains("PLA-GF") || up.contains("PLA CARBON") {
-      "PLA-CF"
-    } else if up.contains("PLA+") || up.contains("PLA PLUS") {
-      "PLA+"
-    } else {
-      "PLA"
-    }
+    &crate::constants::constants().lookup_polymer(mat).canonical_key
   }
 
   /// Broad polymer family key for inheritance compatibility & fallback matching across brands.
   pub fn polymer_family_key(mat: &str) -> &'static str {
-    match Self::canonical_polymer_key(mat) {
-      "PCTG" | "PCTG-CF" | "PETG" | "PETG-CF" | "PET-CF" => "PETG",
-      "TPU for AMS" | "TPU 85A" | "TPU 90A" | "TPU 95A" | "TPU" | "TPU-GF" | "PEBA" => "TPU",
-      "ASA" | "ASA-CF" => "ASA",
-      "ABS" | "ABS-CF" => "ABS",
-      "PC" | "PC-CF" | "PPS" | "PEEK" => "PC",
-      "PPA-CF" | "PAHT-CF" | "PA6-CF" | "PA12-CF" | "PA" => "PA",
-      "PVA" | "BVOH" | "HIPS" => "SUPPORT",
-      "PCL" => "PCL",
-      _ => "PLA",
+    &crate::constants::constants().lookup_polymer(mat).family
+  }
+
+  /// Returns `(min_safe_nozzle_c, max_safe_nozzle_c)` for a given polymer so that stacked
+  /// nozzle-material offsets (e.g. Diamondback -10°C), surface-finish offsets (e.g. Wood -5°C),
+  /// and climate offsets (e.g. Tropical/Hot -5..-10°C or Cold +6°C) can NEVER push the final
+  /// nozzle temperature below the polymer's cold-extrusion limit or above its thermal-degradation limit.
+  pub fn polymer_safe_nozzle_bounds(material_type: &str) -> (i32, i32) {
+    let c = crate::constants::constants();
+    if material_type.to_uppercase().contains("ESD") {
+      return (
+        c.hardware_limits.esd_safe_nozzle_min_c,
+        c.hardware_limits.esd_safe_nozzle_max_c,
+      );
     }
+    let p = c.lookup_polymer(material_type);
+    (p.safe_nozzle_min_c, p.safe_nozzle_max_c)
+  }
+
+  /// Returns `(min_safe_bed_c, max_safe_bed_c)` for a given polymer on the Kobra S1 (`<= 110°C` bed ceiling)
+  /// so climate offsets never drop bed temperatures below adhesion floor (`>= 40°C`) or above `110°C`.
+  pub fn polymer_safe_bed_bounds(material_type: &str) -> (i32, i32) {
+    let p = crate::constants::constants().lookup_polymer(material_type);
+    (p.safe_bed_min_c, p.safe_bed_max_c)
   }
 
   /// Computes a multi-material-compatible `[nozzle_temperature_range_low, nozzle_temperature_range_high]`
   /// window for OrcaSlicer / AnycubicSlicerNext so single-extruder multi-material prints (ACE Pro / AMS)
   /// mixing compatible filaments (e.g. `TPU for AMS` at 220–230°C + `PETG` at 230–255°C, or `PLA` + `TPU` / `PETG` supports)
-  /// do not trigger false "Selected Nozzle Temperature are incompatible, which may result in clogging" errors.
+  /// do not trigger false "Selected Nozzle Temperature are incompatible, which may result in clogging" errors,
+  /// while never exceeding the Kobra S1's physical `300°C` hotend ceiling.
   pub fn compute_nozzle_temp_range(
     material_type: &str,
     effective_temp: i32,
     initial_temp: i32,
   ) -> (i32, i32) {
-    let canon = Self::canonical_polymer_key(material_type);
-    if canon == "PCL" {
-      return (70, 180);
+    let c = crate::constants::constants();
+    let hw = &c.hardware_limits;
+    let p = c.lookup_polymer(material_type);
+    if p.canonical_key == "PCL" {
+      return (hw.pcl_temp_range_low_c, hw.pcl_temp_range_high_c);
     }
     let max_t = effective_temp.max(initial_temp);
     let min_t = effective_temp.min(initial_temp);
-    if max_t > 265
-      || matches!(
-        canon,
-        "ABS" | "ABS-CF" | "ASA" | "ASA-CF" | "PC" | "PC-CF" | "PA" | "PA6-CF" | "PA12-CF"
-          | "PAHT-CF" | "PPA-CF" | "PET-CF"
-      )
-    {
-      let low = 215.min(min_t - 35).max(185);
-      let high = 305.max(max_t + 20).min(350);
+    if max_t > 265 || !p.standard_ams_compatible {
+      let low = hw.high_temp_range_low_c.min(min_t).max(hw.standard_ams_range_low_c);
+      let high = hw.high_temp_range_high_c.max(max_t).min(hw.max_hotend_temp_c);
       (low, high)
     } else {
-      // Standard/medium-temp ACE Pro / AMS filaments (PLA, PLA+, PHA, PVA, TPU, TPU for AMS, PEBA, PETG, PETG-CF, PCTG):
-      // Unified 185°C..270°C safe extrusion window so TPU for AMS (220–230°C), PETG (230–255°C), and PLA (200–225°C)
-      // can be loaded together on the same single-extruder toolhead without clogging range errors.
-      let low = 185.min(min_t - 15).max(175);
-      let high = 270.max(max_t + 15).min(320);
+      let low = hw.standard_ams_range_low_c.min(min_t - 10).max(hw.min_extrusion_temp_c);
+      let high = hw.standard_ams_range_high_c.max(max_t).min(hw.max_hotend_temp_c);
       (low, high)
     }
   }
@@ -1282,6 +1187,8 @@ impl FilamentSpool {
     // Preserve the user's selected brand (do NOT reset `self.brand` to "Generic" when using a generic polymer baseline)
     self.brand = norm_brand;
 
+    let c = crate::constants::constants();
+    let fallback_poly = c.lookup_polymer(new_material);
     let (brass_temp, bed_temp, max_vol, fan_pct, dry_c, dry_hr) = if let Some(m) = mat_entry {
       (
         m.base_nozzle_c as i32,
@@ -1292,16 +1199,14 @@ impl FilamentSpool {
         m.dry_hr as i32,
       )
     } else {
-      match new_material.to_uppercase().as_str() {
-        "PLA+" => (210, 60, 18.0, 100, 45, 4),
-        "PLA-CF" | "PLA-GF" => (220, 60, 14.0, 80, 50, 4),
-        "PETG" | "PETG-CF" => (235, 70, 13.0, 40, 55, 6),
-        "PCTG" => (255, 75, 16.0, 35, 60, 6),
-        "TPU" => (225, 50, 5.0, 80, 55, 6),
-        "ASA" | "ABS" => (255, 100, 16.0, 20, 65, 6),
-        "PA-CF" | "PA" => (280, 90, 12.0, 15, 70, 8),
-        _ => (215, 60, 16.0, 100, 45, 4),
-      }
+      (
+        fallback_poly.default_brass_nozzle_c,
+        fallback_poly.default_bed_c,
+        fallback_poly.default_max_volumetric_speed,
+        fallback_poly.default_fan_pct,
+        fallback_poly.default_dry_temp_c,
+        fallback_poly.default_dry_time_hr,
+      )
     };
 
     let hs_temp = if new_material.eq_ignore_ascii_case("PLA+") && self.brand == "Generic" {
@@ -1312,11 +1217,7 @@ impl FilamentSpool {
 
     let base_mat_code = mat_entry
       .map(|m| m.base_material_code().to_string())
-      .unwrap_or_else(|| match new_material {
-        "PETG Translucent" => "PETG".to_string(),
-        "PLA Matte" | "PLA Silk" => "PLA".to_string(),
-        other => other.to_string(),
-      });
+      .unwrap_or_else(|| c.base_material_code(new_material).to_string());
 
     self.material_type = base_mat_code.clone();
     self.brass_base_temp = brass_temp;
@@ -1330,11 +1231,6 @@ impl FilamentSpool {
     self.drying_temp_c = dry_c;
     self.drying_time_hr = dry_hr;
 
-    let is_abrasive = mat_entry.map(|m| m.requires_hardened).unwrap_or(false)
-      || new_material.contains("-CF")
-      || new_material.contains("-GF")
-      || new_material.contains("Glow");
-    self.required_nozzle_hrc = if is_abrasive { 55 } else { 3 };
     if let Some(m) = mat_entry {
       self.finish_type = m.default_finish.clone();
     } else if new_material.contains("-CF") {
@@ -1346,24 +1242,31 @@ impl FilamentSpool {
     } else if self.finish_type == "Carbon Fiber" || self.finish_type == "Glass Fiber" {
       self.finish_type = "Basic".to_string();
     }
-
-    if let Some(m) = mat_entry {
-      if m.default_flow_ratio > 0.45 && m.default_flow_ratio <= 1.05 {
-        self.flow_ratio = m.default_flow_ratio;
-      } else if base_mat_code.contains("PCTG") || base_mat_code.contains("PETG") {
-        self.flow_ratio = 0.95;
-      } else {
-        self.flow_ratio = 0.98;
-      }
-    } else if base_mat_code.contains("PCTG") {
-      self.flow_ratio = 0.95;
-      self.pressure_advance = 0.048;
-    } else if base_mat_code.contains("PETG") {
-      self.flow_ratio = 0.95;
-      self.pressure_advance = 0.045;
+    let is_abrasive = mat_entry.map(|m| m.requires_hardened).unwrap_or(false)
+      || Self::is_abrasive_material_or_finish(new_material, &self.finish_type);
+    self.required_nozzle_hrc = if is_abrasive {
+      c.hardware_limits.abrasive_required_hrc
     } else {
-      self.flow_ratio = 0.98;
-      self.pressure_advance = 0.035;
+      c.hardware_limits.non_abrasive_required_hrc
+    };
+
+    let poly_cfg = c.lookup_polymer(&base_mat_code);
+    self.pressure_advance = poly_cfg.default_pressure_advance;
+    if let Some(m) = mat_entry {
+      let min_valid_flow = if m.default_finish.eq_ignore_ascii_case("Foaming") {
+        c.hardware_limits.min_flow_ratio
+      } else {
+        c.hardware_limits.min_non_foaming_flow_ratio
+      };
+      if m.default_flow_ratio >= min_valid_flow
+        && m.default_flow_ratio <= c.hardware_limits.max_non_foaming_flow_ratio
+      {
+        self.flow_ratio = m.default_flow_ratio;
+      } else {
+        self.flow_ratio = poly_cfg.default_flow_ratio;
+      }
+    } else {
+      self.flow_ratio = poly_cfg.default_flow_ratio;
     }
 
     self.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(self);
@@ -1385,12 +1288,56 @@ impl FilamentSpool {
   /// and synthetic JSON so picking a base polymer (e.g. `PLA`) and flipping its finish (e.g. to `Wood-Filled` or `Foaming`)
   /// produces the exact same spool as clicking `PLA Wood` or `PLA-LW Foaming` directly in the catalog.
   pub fn apply_finish_change(&mut self, new_finish: &str, active_nozzle_type: &str) {
-    self.finish_type = new_finish.to_string();
+    let c = crate::constants::constants();
+    let mt_up = self.material_type.to_uppercase();
+    let effective_finish = if mt_up.contains("-CF")
+      || mt_up.contains("-RCF")
+      || mt_up.contains("CARBON")
+    {
+      "Carbon Fiber"
+    } else if mt_up.contains("-GF") || mt_up.contains("-RGF") || mt_up.contains("GLASS") {
+      "Glass Fiber"
+    } else if c.is_finish_compatible_with_polymer(new_finish, &self.material_type) {
+      new_finish
+    } else {
+      "Basic"
+    };
+    self.finish_type = effective_finish.to_string();
+    let new_finish = effective_finish;
+    let poly_before_upgrade = c.lookup_polymer(&self.material_type);
+    let fc = c.lookup_finish(new_finish);
+    if fc.code == "Carbon Fiber" {
+      if let Some(ref cf_code) = poly_before_upgrade.cf_upgrade_code {
+        if self
+          .material_type
+          .trim()
+          .eq_ignore_ascii_case(&poly_before_upgrade.canonical_key)
+        {
+          self.material_type = cf_code.clone();
+          self.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(self);
+        }
+      }
+    } else if fc.code == "Glass Fiber" {
+      if let Some(ref gf_code) = poly_before_upgrade.gf_upgrade_code {
+        if self
+          .material_type
+          .trim()
+          .eq_ignore_ascii_case(&poly_before_upgrade.canonical_key)
+        {
+          self.material_type = gf_code.clone();
+          self.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(self);
+        }
+      }
+    }
 
     // Look up whether the catalog has a dedicated entry for `(self.brand, self.material_type, new_finish)`
     let catalog = crate::catalog::load_merged_catalog();
     let norm_brand = Self::normalized_brand(&self.brand);
-    let variant_entry = if new_finish.eq_ignore_ascii_case("Basic") {
+    let variant_entry = if matches!(new_finish, "Basic" | "Matte" | "Silk")
+      || (Self::finish_title_suffix(new_finish).is_none()
+        && fc.code != "Carbon Fiber"
+        && fc.code != "Glass Fiber")
+    {
       None
     } else {
       catalog
@@ -1461,67 +1408,46 @@ impl FilamentSpool {
       self.fan_speed_percent = m.fan_pct as i32;
       self.drying_temp_c = m.dry_temp_c as i32;
       self.drying_time_hr = m.dry_hr as i32;
-      if m.default_flow_ratio > 0.45 && (m.default_flow_ratio - 0.98).abs() > 0.005 {
+      let min_valid_flow = if fc.code == "Foaming" {
+        c.hardware_limits.min_flow_ratio
+      } else {
+        c.hardware_limits.min_non_foaming_flow_ratio
+      };
+      if m.default_flow_ratio >= min_valid_flow
+        && m.default_flow_ratio <= c.hardware_limits.max_non_foaming_flow_ratio
+        && (m.default_flow_ratio - 0.98).abs() > 0.005
+      {
         self.flow_ratio = m.default_flow_ratio;
+      } else {
+        let poly_cfg = c.lookup_polymer(&self.material_type);
+        self.flow_ratio = poly_cfg.default_flow_ratio;
       }
       self.recompute_for_nozzle(active_nozzle_type);
     }
 
-    if new_finish == "Translucent" {
-      if self.opacity > 0.6 {
-        self.opacity = 0.35;
-      }
-      self.pigment_stickiness = 1.0;
-      if self.material_type == "PETG" {
-        self.base_bed_temp = 65;
-        self.bed_temp = 65;
-        self.max_volumetric_speed = 9.0;
-        self.fan_speed_percent = 30;
-        self.pressure_advance = 0.050;
-        self.drying_temp_c = 65;
-        self.drying_time_hr = 6;
-      }
-    } else if new_finish == "Glow-in-the-Dark" || new_finish == "Photochromic" {
-      if self.opacity > 0.75 {
-        self.opacity = 0.65;
-      }
-      self.pigment_stickiness = if new_finish == "Glow-in-the-Dark" {
-        1.25
-      } else {
-        1.05
-      };
-    } else {
-      if self.opacity < 0.7 {
-        self.opacity = 1.0;
-      }
-      self.pigment_stickiness = if new_finish == "Conductive" {
-        1.45
-      } else if new_finish == "Metal-Filled" {
-        1.30
-      } else if new_finish == "Wood-Filled" || new_finish == "Silk" {
-        1.20
-      } else if new_finish == "Carbon Fiber" || self.material_type.contains("-CF") {
-        1.15
-      } else if new_finish == "Marble/Stone/Terracotta" {
-        1.15
-      } else if new_finish == "Glass Fiber" || self.material_type.contains("-GF") {
-        1.10
-      } else {
-        1.0
-      };
-      if self.material_type == "PETG" && variant_entry.is_none() {
-        self.base_bed_temp = 70;
-        self.bed_temp = 70;
-        self.max_volumetric_speed = 12.0;
-        self.fan_speed_percent = 40;
-        self.pressure_advance = 0.045;
-        self.drying_temp_c = 60;
-        self.drying_time_hr = 6;
-      }
+    self.opacity = fc.default_opacity;
+    self.pigment_stickiness = fc.default_pigment_stickiness;
+    if fc.code == "Translucent" && self.material_type == "PETG" {
+      self.base_bed_temp = 65;
+      self.bed_temp = 65;
+      self.max_volumetric_speed = 9.0;
+      self.fan_speed_percent = 30;
+      self.pressure_advance = 0.050;
+      self.drying_temp_c = 65;
+      self.drying_time_hr = 6;
+    } else if fc.code != "Translucent" && self.material_type == "PETG" && variant_entry.is_none() {
+      let poly_cfg = c.lookup_polymer(&self.material_type);
+      self.base_bed_temp = poly_cfg.default_bed_c;
+      self.bed_temp = poly_cfg.default_bed_c;
+      self.max_volumetric_speed = poly_cfg.default_max_volumetric_speed;
+      self.fan_speed_percent = poly_cfg.default_fan_pct;
+      self.pressure_advance = poly_cfg.default_pressure_advance;
+      self.drying_temp_c = 60;
+      self.drying_time_hr = poly_cfg.default_dry_time_hr;
     }
 
-    // Flow ratio & MVS adjustments for Foaming, Wood, Metal, and Conductive finishes
-    if new_finish == "Foaming" {
+    // Flow ratio & MVS adjustments for Foaming finishes
+    if fc.code == "Foaming" {
       if self.is_foaming_tpu() {
         let shore = self.effective_foaming_shore_a();
         self.apply_foaming_shore_hardness(shore, active_nozzle_type);
@@ -1534,40 +1460,36 @@ impl FilamentSpool {
       }
     } else if self.flow_ratio < 0.80 {
       // Restore normal non-foaming flow ratio if switching away from Foaming
-      self.flow_ratio =
-        if self.material_type.contains("PCTG") || self.material_type.contains("PETG") {
-          0.95
-        } else {
-          0.98
-        };
+      self.flow_ratio = c.lookup_polymer(&self.material_type).default_flow_ratio;
     }
 
-    // Update `OC - <Material>[ <Finish>] • ...` title suffix cleanly
-    if let Some((left, right)) = self.name.split_once(" • ") {
-      let base_prefix = format!("OC - {}", self.material_type);
-      if left.starts_with(&base_prefix) {
-        let new_left = if let Some(suf) = Self::finish_title_suffix(new_finish) {
-          format!("{} {}", base_prefix, suf)
-        } else {
-          base_prefix
-        };
-        self.name = format!("{} • {}", new_left, right);
-      }
+    // Update `OC - [<Brand> ]<Material>[ <Finish>] • 0.4 <Nozzle>` title suffix cleanly
+    // (including when `self.brand != "Generic"`, where `self.name` starts with `OC - <Brand> ...`)
+    if self.name.starts_with("OC -") {
+      self.name = Self::default_oc_profile_name_with_brand(
+        &self.brand,
+        &self.material_type,
+        &self.finish_type,
+        active_nozzle_type,
+      );
     }
 
-    let is_abrasive = new_finish.contains("Carbon")
-      || new_finish.contains("Glass")
-      || new_finish.contains("Wood")
-      || new_finish.contains("Metal")
-      || new_finish.contains("Glow")
-      || new_finish.contains("Conductive")
-      || new_finish.contains("Marble")
-      || self.material_type.contains("-CF")
-      || self.material_type.contains("-GF")
-      || self.material_type.contains("Glow")
-      || self.material_type.starts_with("PA");
-    self.required_nozzle_hrc = if is_abrasive { 55 } else { 3 };
+    let is_abrasive = Self::is_abrasive_material_or_finish(&self.material_type, &self.finish_type);
+    self.required_nozzle_hrc = if is_abrasive {
+      c.hardware_limits.abrasive_required_hrc
+    } else {
+      c.hardware_limits.non_abrasive_required_hrc
+    };
     self.rebuild_synthetic_disk_json(active_nozzle_type);
+  }
+
+  /// Single source of truth for whether a material code or surface finish contains abrasive particles
+  /// (`-CF`, `-GF`, `Carbon Fiber`, `Glass Fiber`, `Wood-Filled`, `Metal-Filled`, `Glow-in-the-Dark`,
+  /// `Conductive`, `Marble/Stone/Terracotta`, `ESD`) requiring a hardened nozzle (`HRC >= 55`).
+  /// Unfilled polymers (`PLA`, `PETG`, `PCTG`, `TPU`, `PA`, `PC`, `ABS`, `ASA`, `PVA`, `BVOH`, `HIPS`, `PHA`)
+  /// with non-abrasive finishes (`Basic`, `Matte`, `Silk`, `Translucent`, `Foaming`, `Photochromic`) return `false`.
+  pub fn is_abrasive_material_or_finish(material_type: &str, finish_type: &str) -> bool {
+    crate::constants::constants().is_abrasive_material_or_finish(material_type, finish_type)
   }
 
   /// Returns true if this spool is an active-foaming flexible filament (`TPU`, `Rebound TPU`, `PEBA`, `TPE` with `Foaming` finish).
@@ -1787,29 +1709,9 @@ impl FilamentSpool {
   }
 
   pub fn rebuild_synthetic_disk_json(&mut self, active_nozzle_type: &str) {
-    let nt_low = active_nozzle_type.to_lowercase();
-    let short_noz = if nt_low.contains("diamondback") {
-      "Diamond"
-    } else if nt_low.contains("ruby") {
-      "Ruby"
-    } else if nt_low.contains("cht") {
-      "CHT"
-    } else if nt_low.contains("cm2") {
-      "CM2"
-    } else if nt_low.contains("hardened") {
-      "Hardened"
-    } else {
-      "Brass"
-    };
-    let _orca_noz = if nt_low.contains("hardened")
-      || nt_low.contains("diamondback")
-      || nt_low.contains("ruby")
-      || nt_low.contains("cm2")
-    {
-      "hardened_steel"
-    } else {
-      "brass"
-    };
+    let short_noz = &crate::constants::constants()
+      .lookup_nozzle(active_nozzle_type)
+      .short_tag;
     let is_pctg = self.material_type.contains("PCTG");
     let is_pctg_or_petg = is_pctg || self.material_type.contains("PETG");
     let is_translucent_petg =
@@ -1840,32 +1742,26 @@ impl FilamentSpool {
     let catalog = crate::catalog::load_merged_catalog();
     let vkey = format!("{}::{}", norm_brand, self.material_type);
     let vendor_base = catalog.vendor_filament_bases.get(&vkey);
+    let poly_cfg = crate::constants::constants().lookup_polymer(&self.material_type);
+    let default_ret_len_str = if (poly_cfg.default_retraction_mm - poly_cfg.default_retraction_mm.round()).abs() < 1e-6 {
+      format!("{:.1}", poly_cfg.default_retraction_mm)
+    } else {
+      format!("{:.2}", poly_cfg.default_retraction_mm)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+    };
     let ret_len_str = if self.is_siraya_foaming_air() {
       "0".to_string()
     } else if is_foaming_tpu {
       "0.35".to_string()
-    } else if let Some(vb) = vendor_base {
-      vb.get("filament_retraction_length")
-        .and_then(|v| v.as_array())
-        .and_then(|a| a.first())
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-          if is_pctg {
-            "1.0"
-          } else if is_pctg_or_petg {
-            "0.8"
-          } else {
-            "0.6"
-          }
-          .to_string()
-        })
-    } else if is_pctg {
-      "1.0".to_string()
-    } else if is_pctg_or_petg {
-      "0.8".to_string()
     } else {
-      "0.6".to_string()
+      default_ret_len_str
+    };
+    let ret_spd_str = if is_foaming_tpu {
+      "25".to_string()
+    } else {
+      poly_cfg.default_retraction_speed_mms.to_string()
     };
     let fan_max_str = if is_pctg_or_petg && self.fan_speed_percent >= 30 {
       "90".to_string()
@@ -1883,8 +1779,8 @@ impl FilamentSpool {
     }
     let (range_low, range_high) = Self::compute_nozzle_temp_range(
       &self.material_type,
-      self.print_temp,
-      (self.print_temp + init_boost).min(420),
+      self.print_temp.min(self.brass_base_temp),
+      (self.print_temp.max(self.hs_base_temp) + init_boost).min(420),
     );
     let overrides = serde_json::json!({
       "from": "User",
@@ -1908,8 +1804,18 @@ impl FilamentSpool {
       "hot_plate_temp_initial_layer": [self.bed_temp.to_string()],
       "textured_plate_temp": [self.bed_temp.to_string()],
       "textured_plate_temp_initial_layer": [self.bed_temp.to_string()],
+      "cool_plate_temp": [self.bed_temp.to_string()],
+      "cool_plate_temp_initial_layer": [self.bed_temp.to_string()],
+      "eng_plate_temp": [self.bed_temp.to_string()],
+      "eng_plate_temp_initial_layer": [self.bed_temp.to_string()],
+      "textured_cool_plate_temp": [self.bed_temp.to_string()],
+      "textured_cool_plate_temp_initial_layer": [self.bed_temp.to_string()],
+      "supertack_plate_temp": [self.bed_temp.to_string()],
+      "supertack_plate_temp_initial_layer": [self.bed_temp.to_string()],
       "filament_flow_ratio": [format!("{:.2}", self.flow_ratio)],
+      "enable_pressure_advance": ["1"],
       "pressure_advance": [format!("{:.3}", self.pressure_advance)],
+      "temperature_vitrification": [(self.bed_temp + 10).max(55).to_string()],
       "filament_max_volumetric_speed": [format!("{:.1}", self.max_volumetric_speed)],
       "fan_min_speed": [self.fan_speed_percent.to_string()],
       "fan_min_speed_BRASS": [self.fan_speed_percent.to_string()],
@@ -1918,7 +1824,7 @@ impl FilamentSpool {
       "fan_max_speed_BRASS": [fan_max_str],
       "fan_max_speed_HS": [fan_max_str],
       "filament_retraction_length": [ret_len_str],
-      "filament_retraction_speed": [if is_foaming_tpu { "25" } else if is_pctg { "45" } else if is_pctg_or_petg { "40" } else { "40" }],
+      "filament_retraction_speed": [ret_spd_str],
       "filament_z_hop": [if is_foaming_tpu { "0" } else if is_translucent_petg { "0.1" } else if is_pctg_or_petg { "0.15" } else { "0.2" }],
       "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
       "filament_retract_before_wipe": ["0%"],
@@ -1950,31 +1856,32 @@ impl FilamentSpool {
     let base_bed = mat.base_bed_c as i32;
     let hs_nozzle = (base_nozzle + 5).clamp(80, 420);
     let nt_low = active_nozzle_type.to_lowercase();
+    let (min_safe, max_safe) = Self::polymer_safe_nozzle_bounds(&base_mat_code);
     let effective_nozzle =
       if nt_low.contains("hardened") || nt_low.contains("stainless") || nt_low.contains("cm2") {
-        hs_nozzle
+        hs_nozzle.clamp(min_safe, max_safe)
       } else if nt_low.contains("diamondback") {
-        (base_nozzle - 10).max(80)
+        (base_nozzle - 10).clamp(min_safe, max_safe)
       } else {
-        base_nozzle
+        base_nozzle.clamp(min_safe, max_safe)
       };
     let is_pctg = base_mat_code.contains("PCTG");
     let is_pctg_or_petg = is_pctg || base_mat_code.contains("PETG");
-    let default_pa = if is_pctg {
-      0.048f32
-    } else if base_mat_code.contains("PETG") {
-      0.045f32
+    let poly_cfg = crate::constants::constants().lookup_polymer(&base_mat_code);
+    let default_pa = poly_cfg.default_pressure_advance;
+    let min_valid_flow = if finish_type.eq_ignore_ascii_case("Foaming") {
+      0.45
     } else {
-      0.035f32
+      0.92
     };
-    let default_flow =
-      if mat.default_flow_ratio > 0.45 && (mat.default_flow_ratio - 0.98).abs() > 0.005 {
-        mat.default_flow_ratio
-      } else if is_pctg_or_petg {
-        0.95f32
-      } else {
-        0.98f32
-      };
+    let default_flow = if mat.default_flow_ratio >= min_valid_flow
+      && mat.default_flow_ratio <= 1.04
+      && (mat.default_flow_ratio - 0.98).abs() > 0.005
+    {
+      mat.default_flow_ratio
+    } else {
+      poly_cfg.default_flow_ratio
+    };
     let base_mat_tag = match base_mat_code.as_str() {
       "PCTG" => "PETG",
       "PCTG-CF" | "PCTG-GF" | "PETG-GF" => "PETG-CF",
@@ -2003,10 +1910,7 @@ impl FilamentSpool {
       active_nozzle_type,
     );
     let is_abrasive = mat.requires_hardened
-      || finish_type.contains("Carbon")
-      || finish_type.contains("Glass")
-      || base_mat_code.contains("-CF")
-      || base_mat_code.contains("-GF");
+      || Self::is_abrasive_material_or_finish(&base_mat_code, &finish_type);
     let req_hrc: u32 = if is_abrasive { 55 } else { 3 };
     let _orca_noz = if nt_low.contains("hardened")
       || nt_low.contains("diamondback")
@@ -2024,14 +1928,15 @@ impl FilamentSpool {
       fan_pct
     };
     let init_boost = if is_pctg_or_petg { 0 } else { 5 };
-    let ret_len_str = if is_pctg {
-      "1.0"
-    } else if is_pctg_or_petg {
-      "0.8"
+    let ret_len_str = if (poly_cfg.default_retraction_mm - poly_cfg.default_retraction_mm.round()).abs() < 1e-6 {
+      format!("{:.1}", poly_cfg.default_retraction_mm)
     } else {
-      "0.6"
+      format!("{:.2}", poly_cfg.default_retraction_mm)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
     };
-    let ret_spd_str = if is_pctg { "45" } else { "40" };
+    let ret_spd_str = poly_cfg.default_retraction_speed_mms.to_string();
     let max_vol = mat.max_vol_mm3s;
     let color_hex = "#8E9299".to_string();
 
@@ -2152,16 +2057,26 @@ impl FilamentSpool {
 
   /// Generate a full descriptive note (`filament_notes`) including the WebConfig app version and tuned parameters
   pub fn generate_descriptive_notes(&self) -> String {
+    self.generate_descriptive_notes_with_effective_temps(self.print_temp, self.bed_temp)
+  }
+
+  /// Generate `filament_notes` reflecting the exact exported `effective_nozzle_c` and `effective_bed_c`
+  /// (including any active climate/weather compensation applied during export).
+  pub fn generate_descriptive_notes_with_effective_temps(
+    &self,
+    effective_nozzle_c: i32,
+    effective_bed_c: i32,
+  ) -> String {
     format!(
       "[OrcaSlicer WebConfig v{} — Filament] {} {} ({}). Nozzle: {}°C (Brass Base: {}°C, HS Base: {}°C), Bed: {}°C, Flow: {:.2}, PA: {:.3}, Max Vol: {:.1} mm³/s, Fan: {}%, Required HRC: {}, Dry: {}°C / {}h.",
       WEBCONFIG_APP_VERSION,
       Self::normalized_brand(&self.brand),
       self.material_type,
       self.finish_type,
-      self.print_temp,
+      effective_nozzle_c,
       self.brass_base_temp,
       self.hs_base_temp,
-      self.bed_temp,
+      effective_bed_c,
       self.flow_ratio,
       self.pressure_advance,
       self.max_volumetric_speed,
@@ -2334,28 +2249,9 @@ impl WebConfigStateSnapshot {
 
       sp.brand = FilamentSpool::normalized_brand(&sp.brand);
       if sp.brand == "Generic" {
-        let nm_up = sp.name.to_uppercase();
-        if nm_up.contains("SIRAYA") {
-          sp.brand = "Siraya Tech".to_string();
-        } else if nm_up.contains("SUNLU") {
-          sp.brand = "SUNLU".to_string();
-        } else if nm_up.contains("POLYMAKER")
-          || nm_up.contains("POLYLITE")
-          || nm_up.contains("POLYMAX")
-          || nm_up.contains("POLYTERRA")
-          || nm_up.contains("FIBERON")
-          || nm_up.contains("PANCHROMA")
-        {
-          sp.brand = "Polymaker".to_string();
-        } else if nm_up.contains("ANYCUBIC") {
-          sp.brand = "Anycubic".to_string();
-        } else if nm_up.contains("BAMBU") {
-          sp.brand = "Bambu Lab".to_string();
-        } else if nm_up.contains("ESUN") {
-          sp.brand = "eSUN".to_string();
-        } else if nm_up.contains("OVERTURE") {
-          sp.brand = "Overture".to_string();
-        }
+        sp.brand = crate::constants::constants()
+          .detect_brand_from_text(&sp.name)
+          .to_string();
       }
 
       // Heal any scratch/catalog/OC spool in localStorage whose base temperature, print_temp, or translucent PETG tuning was corrupted or came from an older snapshot
@@ -2446,6 +2342,9 @@ impl WebConfigStateSnapshot {
       }
 
       if is_oc_managed {
+        let (min_b, max_b) = FilamentSpool::polymer_safe_bed_bounds(&sp.material_type);
+        sp.base_bed_temp = sp.base_bed_temp.clamp(min_b, max_b);
+        sp.bed_temp = sp.bed_temp.clamp(min_b, max_b);
         if !sp.is_foaming_tpu() {
           let noz = sp.nozzle_type.clone();
           sp.recompute_for_nozzle(&noz);

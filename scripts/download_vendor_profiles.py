@@ -228,6 +228,8 @@ def download_polymaker() -> list[dict]:
 
   for product in materials:
     product = (product or "").strip()
+    if "TYC Americas" in product:
+      continue
     presets = by_mat.get(product, [])
     if not product or not presets:
       continue

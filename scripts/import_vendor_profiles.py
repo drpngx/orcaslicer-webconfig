@@ -400,11 +400,13 @@ def import_polymaker(root_dir: Path, vendor_dir: Path) -> tuple[list[dict], dict
   bases = {}
 
   for item in manifest:
+    prod = item["product"]
+    if "TYC Americas" in prod:
+      continue
     json_path = root_dir / item["json_file"]
     if not json_path.exists():
       continue
     cfg = json.loads(json_path.read_text(encoding="utf-8"))
-    prod = item["product"]
     printer = item.get("printer") or "OrcaSlicer"
     label = f"Polymaker {prod} ({printer} Preset)"
     entry, sanitized = build_entry(

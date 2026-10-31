@@ -263,6 +263,10 @@ pub fn import_scanned_directory(
           "filament_05",
           "filament_06",
           "filament_07",
+          "filament_08",
+          "filament_09",
+          "filament_10",
+          "filament_11",
         ] {
           if let Some(fnm) = preset.get(key).and_then(|v| v.as_str()) {
             let trimmed = fnm.trim();
@@ -565,14 +569,30 @@ pub fn import_scanned_directory(
       "PLA-CF".to_string()
     } else if upper_name.contains("PETG-CF") {
       "PETG-CF".to_string()
+    } else if upper_name.contains("PET-CF") {
+      "PET-CF".to_string()
+    } else if upper_name.contains("PPA-CF") {
+      "PPA-CF".to_string()
+    } else if upper_name.contains("PAHT-CF") {
+      "PAHT-CF".to_string()
+    } else if upper_name.contains("PA12-CF") {
+      "PA12-CF".to_string()
+    } else if upper_name.contains("PA6-CF") {
+      "PA6-CF".to_string()
+    } else if upper_name.contains("PC-CF") {
+      "PC-CF".to_string()
     } else if upper_name.contains("TPU-GF") || upper_name.contains("TPU-CF") {
       "Fibreheart TPU-GF".to_string()
     } else if upper_name.contains("FLEX TPU 64D HF") {
       "Flex TPU 64D HF".to_string()
-    } else if upper_name.contains("TPU FOR AMS") || upper_name.contains("TPU FOR ACE") || upper_name.contains("TPU 64D") {
+    } else if upper_name.contains("TPU FOR ACE") {
+      "TPU for ACE".to_string()
+    } else if upper_name.contains("TPU FOR AMS") || upper_name.contains("TPU 64D") {
       "TPU for AMS".to_string()
     } else if upper_name.contains("TPU 95A") {
       "TPU 95A".to_string()
+    } else if upper_name.contains("TPU 90A") {
+      "TPU 90A".to_string()
     } else if upper_name.contains("TPU 85A") {
       "TPU 85A".to_string()
     } else if upper_name.contains("FIBREHEART ABS-CF") {
@@ -581,6 +601,8 @@ pub fn import_scanned_directory(
       "ABS-CF".to_string()
     } else if upper_name.contains("ASA-CF") {
       "ASA-CF".to_string()
+    } else if upper_name.contains("APLA") {
+      "APLA".to_string()
     } else if upper_name.contains("PHA") {
       "PHA".to_string()
     } else if upper_name.contains("PVA") {
@@ -1023,14 +1045,33 @@ pub fn import_scanned_directory(
       "Carbon Fiber".to_string()
     } else if lower_name.contains("glass") || mat_type.contains("-GF") {
       "Glass Fiber".to_string()
+    } else if lower_name.contains("foaming")
+      || lower_name.contains("-lw")
+      || lower_name.contains("aero")
+      || lower_name.contains(" air ")
+    {
+      "Foaming".to_string()
+    } else if lower_name.contains("wood") {
+      "Wood-Filled".to_string()
+    } else if lower_name.contains("metal") {
+      "Metal-Filled".to_string()
+    } else if lower_name.contains("glow") {
+      "Glow-in-the-Dark".to_string()
+    } else if lower_name.contains("conductive") || lower_name.contains("esd") {
+      "Conductive".to_string()
+    } else if lower_name.contains("marble")
+      || lower_name.contains("stone")
+      || lower_name.contains("terracotta")
+    {
+      "Marble/Stone/Terracotta".to_string()
+    } else if lower_name.contains("photochromic") {
+      "Photochromic".to_string()
     } else {
       "Basic".to_string()
     };
 
-    let is_abrasive = finish_type.contains("Carbon")
-      || finish_type.contains("Glass")
-      || mat_type.contains("-CF")
-      || mat_type.contains("-GF");
+    let is_abrasive =
+      crate::models::FilamentSpool::is_abrasive_material_or_finish(&mat_type, &finish_type);
     let required_nozzle_hrc: u32 = if is_abrasive {
       55
     } else {
@@ -1053,38 +1094,14 @@ pub fn import_scanned_directory(
       1.00
     };
 
-    let vendor = extract_str(f_val, "filament_vendor")
-      .or_else(|| {
-        if is_oc_managed_filament {
-          let nm_up = name.to_uppercase();
-          if nm_up.contains("SIRAYA") {
-            Some("Siraya Tech".to_string())
-          } else if nm_up.contains("BAMBU") {
-            Some("Bambu Lab".to_string())
-          } else if nm_up.contains("POLYMAKER")
-            || nm_up.contains("POLYLITE")
-            || nm_up.contains("POLYMAX")
-            || nm_up.contains("POLYTERRA")
-            || nm_up.contains("FIBERON")
-            || nm_up.contains("PANCHROMA")
-          {
-            Some("Polymaker".to_string())
-          } else if nm_up.contains("ANYCUBIC") {
-            Some("Anycubic".to_string())
-          } else if nm_up.contains("SUNLU") {
-            Some("SUNLU".to_string())
-          } else if nm_up.contains("ESUN") {
-            Some("eSUN".to_string())
-          } else if nm_up.contains("OVERTURE") {
-            Some("Overture".to_string())
-          } else {
-            Some("Generic".to_string())
-          }
-        } else {
-          base_sys.and_then(|b| extract_str(b, "filament_vendor"))
-        }
-      })
-      .unwrap_or_else(|| "Anycubic".to_string());
+    let c = crate::constants::constants();
+    let vendor = if is_oc_managed_filament {
+      c.detect_brand_from_text(&name).to_string()
+    } else {
+      extract_str(f_val, "filament_vendor")
+        .or_else(|| base_sys.and_then(|b| extract_str(b, "filament_vendor")))
+        .unwrap_or_else(|| "Anycubic".to_string())
+    };
 
     let active_rig_noz = machines
       .iter()
@@ -1093,20 +1110,13 @@ pub fn import_scanned_directory(
       .map(|m| m.nozzle_type.as_str())
       .unwrap_or("hardened_steel");
     let detected_spool_noz = if is_oc_managed_filament {
-      if lower_name.contains("diamond") {
-        "diamondback".to_string()
-      } else if lower_name.contains("ruby") {
-        "ruby_brass".to_string()
-      } else if lower_name.contains("cm2") {
-        "cm2".to_string()
-      } else if lower_name.contains("cht") {
-        "cht".to_string()
-      } else if lower_name.contains("• 0.4 brass") || lower_name.ends_with(" brass") {
-        "orca_brass".to_string()
-      } else if lower_name.contains("hardened") {
+      let noz_cfg = c.lookup_nozzle(&name);
+      if noz_cfg.id == "orca_hardened_steel" && !lower_name.contains("hardened") {
+        active_rig_noz.to_string()
+      } else if noz_cfg.id == "orca_hardened_steel" {
         "hardened_steel".to_string()
       } else {
-        active_rig_noz.to_string()
+        noz_cfg.id.clone()
       }
     } else {
       active_rig_noz.to_string()
@@ -1122,30 +1132,61 @@ pub fn import_scanned_directory(
       "hardened_steel".to_string()
     };
 
-    let (dry_c, dry_hr) = match mat_type.as_str() {
-      "PETG" | "PETG-CF" | "PETG-GF" | "PCTG" => (55, 6),
-      "TPU" | "TPU 95A" | "PEBA" => (50, 4),
-      "ABS" | "ASA" | "PA" | "PA12" | "PA6-CF" | "PAHT-CF" | "PC" => (55, 8),
-      _ => (45, 4), // PLA, PLA+, PLA-CF, PLA Matte, Silk -> 45°C for 4h (below 45°C Tg vitrification!)
-    };
-
-    let default_fan = match FilamentSpool::canonical_polymer_key(&mat_type) {
-      "PETG" | "PETG-CF" | "PCTG" | "PCTG-CF" => 40,
-      "ABS" | "ABS-CF" | "ASA" | "ASA-CF" | "PC" | "PC-CF" | "PA" | "PA6-CF" | "PA12-CF"
-      | "PAHT-CF" | "PPA-CF" => 25,
-      _ => 100,
-    };
+    let poly_cfg = c.lookup_polymer(&mat_type);
+    let (dry_c, dry_hr) = (poly_cfg.default_dry_temp_c, poly_cfg.default_dry_time_hr);
+    let default_fan = poly_cfg.default_fan_pct;
     let disk_fan_pct = extract_str(f_val, "fan_max_speed_HS")
       .or_else(|| extract_str(f_val, "fan_max_speed"))
       .and_then(|s| s.parse::<i32>().ok())
       .unwrap_or(default_fan);
 
+    let (mut final_brand, mut final_mat_type, mut final_finish_type) =
+      (vendor, mat_type.clone(), finish_type);
+    if is_oc_managed_filament {
+      let disk_notes = extract_str(f_val, "filament_notes").unwrap_or_default();
+      if let Some((nb, nm, nf)) = c.parse_oc_filament_notes_header(&disk_notes) {
+        final_brand = nb;
+        final_mat_type = nm;
+        final_finish_type = nf;
+      } else {
+        let cat = crate::catalog::load_merged_catalog();
+        if let Some(exact_cat) = cat
+          .filaments
+          .iter()
+          .find(|f| {
+            FilamentSpool::default_oc_profile_name_with_brand(
+              &f.brand,
+              f.base_material_code(),
+              &f.default_finish,
+              &detected_spool_noz,
+            ) == name
+          })
+          .or_else(|| {
+            cat.filaments.iter().find(|f| {
+              FilamentSpool::default_oc_profile_name_with_brand(
+                &final_brand,
+                f.base_material_code(),
+                &final_finish_type,
+                &detected_spool_noz,
+              ) == name
+            })
+          })
+        {
+          if exact_cat.brand.eq_ignore_ascii_case(&final_brand) {
+            final_brand = exact_cat.brand.clone();
+            final_finish_type = exact_cat.default_finish.clone();
+          }
+          final_mat_type = exact_cat.base_material_code().to_string();
+        }
+      }
+    }
+
     filaments.push(FilamentSpool {
       id: format!("disk_spool_{}", idx + 1),
       name,
-      brand: vendor,
+      brand: final_brand,
       inherits: resolved_inherits_name,
-      material_type: mat_type.clone(),
+      material_type: final_mat_type,
       nozzle_type: detected_spool_noz,
       tuned_for_nozzle_type,
       required_nozzle_hrc,
@@ -1163,7 +1204,7 @@ pub fn import_scanned_directory(
       fan_speed_percent: disk_fan_pct,
       remaining_grams: 850,
       is_loaded: idx < 8,
-      finish_type,
+      finish_type: final_finish_type,
       opacity,
       pigment_stickiness,
       drying_temp_c: dry_c,
@@ -1350,15 +1391,36 @@ pub fn import_scanned_directory(
     }
   }
 
-  // Sort filaments so that slots listed in `AnycubicSlicerNext.conf` appear in their exact slot order first,
-  // followed by custom `- png` / `hotbed` profiles
-  filaments.sort_by_key(|s| {
-    if let Some(pos) = slot_filament_names_from_conf
+  // Build the ordered `filaments` list so every slot in `slot_filament_names_from_conf` gets its own
+  // `FilamentSpool` entry (cloning when multiple ACE Pro slots reference the same filament preset name),
+  // followed by any remaining disk profiles not referenced in `slot_filament_names_from_conf`.
+  let mut ordered_filaments = Vec::new();
+  let mut used_indices = std::collections::HashSet::new();
+  for (slot_idx, slot_fname) in slot_filament_names_from_conf.iter().enumerate() {
+    if let Some(unused_pos) = filaments
       .iter()
-      .position(|n| n == &s.name)
+      .enumerate()
+      .find(|(idx, f)| !used_indices.contains(idx) && &f.name == slot_fname)
+      .map(|(idx, _)| idx)
     {
-      pos
-    } else if s.name.contains("png") || s.name.contains("hotbed") {
+      used_indices.insert(unused_pos);
+      let mut sp = filaments[unused_pos].clone();
+      sp.id = format!("disk_spool_{}", slot_idx + 1);
+      ordered_filaments.push(sp);
+    } else if let Some(template_sp) = filaments.iter().find(|f| &f.name == slot_fname) {
+      let mut sp = template_sp.clone();
+      sp.id = format!("disk_spool_{}", slot_idx + 1);
+      ordered_filaments.push(sp);
+    }
+  }
+  let mut extra_filaments: Vec<FilamentSpool> = filaments
+    .into_iter()
+    .enumerate()
+    .filter(|(idx, _)| !used_indices.contains(idx))
+    .map(|(_, f)| f)
+    .collect();
+  extra_filaments.sort_by_key(|s| {
+    if s.name.contains("png") || s.name.contains("hotbed") {
       100
     } else if s.name.contains("CHCKX") || s.name.contains("FLASHFORGE") {
       101
@@ -1366,6 +1428,8 @@ pub fn import_scanned_directory(
       102
     }
   });
+  ordered_filaments.extend(extra_filaments);
+  let mut filaments = ordered_filaments;
 
   // Assign exact slot colors and slot labels for the leading slots from `AnycubicSlicerNext.conf`
   for (i, sp) in filaments.iter_mut().enumerate() {
@@ -2003,8 +2067,9 @@ pub fn sync_live_state_to_entries(
   // 4. Synchronize all `filaments` (including newly added `OC:` spools and edited spools)
   // into `user/<user_folder_id>/filament/<sanitized_name>.json`
   for spool in filaments {
-    let fname = crate::models::sanitize_profile_filename(&spool.name);
-    let raw_fname = format!("{}.json", spool.name);
+    let export_title = spool.format_concise_title();
+    let fname = crate::models::sanitize_profile_filename(&export_title);
+    let raw_fname = crate::models::sanitize_profile_filename(&spool.name);
     let default_rel_path = format!("user/{}/filament/{}", user_folder_id, fname);
     let fil_json = crate::threemf::export_standalone_filament_json(spool, &active_rig);
 
@@ -2015,6 +2080,8 @@ pub fn sync_live_state_to_entries(
     }) {
       // If this is a newly added/custom OC: spool or its bytes differ, update it
       if !spool.id.starts_with("disk_") || existing.bytes != fil_json.as_bytes() {
+        existing.relative_path = default_rel_path.clone();
+        existing.filename = fname;
         existing.bytes = fil_json.as_bytes().to_vec();
         modified_map.insert(existing.relative_path.clone(), fil_json);
       }
@@ -2073,7 +2140,10 @@ pub fn sync_live_state_to_entries(
       } else {
         format!("filament_{:02}", idx)
       };
-      preset_obj.insert(key, serde_json::Value::String(sp.name.clone()));
+      preset_obj.insert(
+        key,
+        serde_json::Value::String(sp.format_concise_title()),
+      );
     }
     preset_obj.insert(
       "filament_colors".to_string(),
@@ -2139,59 +2209,74 @@ pub fn sync_live_state_to_entries(
           .get_mut("anycubic_presets")
           .and_then(|a| a.as_array_mut())
         {
-          let update_preset_map = |pmap: &mut serde_json::Map<String, serde_json::Value>| {
-            pmap.insert(
-              "machine".to_string(),
-              serde_json::Value::String(active_rig.name.clone()),
-            );
-            pmap.insert(
-              "process".to_string(),
-              serde_json::Value::String(active_proc_name.clone()),
-            );
-            for idx in 0..8 {
-              let key = if idx == 0 {
-                "filament".to_string()
-              } else {
-                format!("filament_{:02}", idx)
-              };
-              if let Some(sp) = active_slots.get(idx) {
-                pmap.insert(key, serde_json::Value::String(sp.name.clone()));
-              } else {
+          arr.retain(|p| {
+            !p.get("machine")
+              .and_then(|m| m.as_str())
+              .unwrap_or("")
+              .contains(".3mf)")
+          });
+          let update_preset_map =
+            |pmap: &mut serde_json::Map<String, serde_json::Value>, target_machine: &str| {
+              pmap.insert(
+                "machine".to_string(),
+                serde_json::Value::String(target_machine.to_string()),
+              );
+              pmap.insert(
+                "process".to_string(),
+                serde_json::Value::String(active_proc_name.clone()),
+              );
+              for (idx, sp) in active_slots.iter().enumerate() {
+                let key = if idx == 0 {
+                  "filament".to_string()
+                } else {
+                  format!("filament_{:02}", idx)
+                };
+                pmap.insert(
+                  key,
+                  serde_json::Value::String(sp.format_concise_title()),
+                );
+              }
+              for idx in active_slots.len()..16 {
+                let key = if idx == 0 {
+                  "filament".to_string()
+                } else {
+                  format!("filament_{:02}", idx)
+                };
                 pmap.remove(&key);
               }
-            }
-            for idx in 8..16 {
-              pmap.remove(&format!("filament_{:02}", idx));
-            }
-            pmap.insert(
-              "filament_colors".to_string(),
-              serde_json::Value::String(colors_csv.clone()),
-            );
-            if !matrix_pipe.is_empty() {
               pmap.insert(
-                "flush_volumes_matrix".to_string(),
-                serde_json::Value::String(matrix_pipe.clone()),
+                "filament_colors".to_string(),
+                serde_json::Value::String(colors_csv.clone()),
               );
-            }
-          };
+              if !matrix_pipe.is_empty() {
+                pmap.insert(
+                  "flush_volumes_matrix".to_string(),
+                  serde_json::Value::String(matrix_pipe.clone()),
+                );
+              }
+            };
 
-          let mut matched = false;
+          let mut matched_active = false;
           for preset in arr.iter_mut() {
             let mach = preset
               .get("machine")
               .and_then(|m| m.as_str())
               .unwrap_or("")
               .to_string();
-            if mach == active_rig.name || mach.contains("Kobra S1") || mach.starts_with("OC") {
+            if mach == active_rig.name {
               if let Some(pmap) = preset.as_object_mut() {
-                update_preset_map(pmap);
-                matched = true;
+                update_preset_map(pmap, &active_rig.name);
+                matched_active = true;
+              }
+            } else if mach.contains("Kobra S1") || mach.starts_with("OC") {
+              if let Some(pmap) = preset.as_object_mut() {
+                update_preset_map(pmap, &mach);
               }
             }
           }
-          if !matched {
+          if !matched_active {
             let mut pmap = serde_json::Map::new();
-            update_preset_map(&mut pmap);
+            update_preset_map(&mut pmap, &active_rig.name);
             arr.push(serde_json::Value::Object(pmap));
           }
         }
@@ -2823,9 +2908,15 @@ mod tests {
     let rig = MachineRig::kobra_s1_hardened_steel_png();
     let exported = crate::threemf::export_standalone_filament_json(&spool, &rig);
     let val: serde_json::Value = serde_json::from_str(&exported).unwrap();
+    assert_eq!(
+      val.get("compatible_printers"),
+      Some(&serde_json::json!(["Anycubic Kobra S1 0.4 nozzle"])),
+      "OC - Anycubic PLA-CF must have compatible_printers = ['Anycubic Kobra S1 0.4 nozzle']: {}",
+      exported
+    );
     assert!(
-      val.get("compatible_printers").is_none(),
-      "OC - Anycubic PLA-CF must never emit restrictive compatible_printers: {}",
+      val.get("filament_vendor").is_none(),
+      "OC - Anycubic PLA-CF must not emit filament_vendor: {}",
       exported
     );
 

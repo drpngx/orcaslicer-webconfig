@@ -108,6 +108,11 @@ rust_binary(
     ],
 )
 
+rust_test(
+    name = "audit_random_configs_test",
+    crate = ":audit_random_configs",
+)
+
 genrule(
     name = "compiled_docs_gen",
     srcs = glob(["doc/*.md"]),
@@ -158,6 +163,7 @@ rust_library(
     aliases = aliases(),
     compile_data = glob(["transformations/**/*.lua"]) + [
         "additional_catalog.json",
+        "constants.json",
         ":compiled_docs.json",
         ":imported_vendor_catalog.json",
         ":orcaslicer_generated_catalog.json",
@@ -187,6 +193,7 @@ rust_test(
     compile_data = glob(["transformations/**/*.lua"]) + [
         "Cargo.toml",
         "additional_catalog.json",
+        "constants.json",
         "src-tauri/Cargo.toml",
         "src-tauri/tauri.conf.json",
         ":compiled_docs.json",

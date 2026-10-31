@@ -2,6 +2,7 @@
 
 pub mod catalog;
 pub mod components;
+pub mod constants;
 pub mod dir_import;
 pub mod fs_access;
 pub mod lua_engine;
@@ -490,13 +491,16 @@ pub fn App() -> Html {
       let crp = conf_relative_path.clone();
       let t = toast.clone();
 
+      let default_os_path = FsManager::detect_client_os()
+        .anycubic_slicer_path()
+        .to_string();
       ip_state.set(Some(LocalFsScanProgress {
         running: true,
         done: false,
         phase: "Starting local filesystem scan...".to_string(),
         files_read: 0,
         total_files: 0,
-        current_file: "/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext".to_string(),
+        current_file: default_os_path.clone(),
       }));
 
       spawn_local(async move {
@@ -536,7 +540,7 @@ pub fn App() -> Html {
         }));
         FsManager::sleep_ms(30).await;
 
-        let mut cfg_path = "/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext".to_string();
+        let mut cfg_path = default_os_path;
         let mut entries =
           match gloo_net::http::Request::get(&FsManager::api_url("/api/local-slicer-scan"))
             .send()

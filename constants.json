@@ -1,0 +1,2047 @@
+{
+  "hardware_limits": {
+    "min_extrusion_temp_c": 175,
+    "max_hotend_temp_c": 300,
+    "max_continuous_nozzle_temp_c": 295,
+    "max_foaming_tpu_nozzle_temp_c": 280,
+    "min_bed_temp_c": 35,
+    "max_bed_temp_c": 110,
+    "min_volumetric_speed_mm3s": 1.5,
+    "max_volumetric_speed_mm3s": 22.0,
+    "min_flow_ratio": 0.45,
+    "max_flow_ratio": 1.08,
+    "min_non_foaming_flow_ratio": 0.92,
+    "max_non_foaming_flow_ratio": 1.04,
+    "min_retraction_speed_mms": 15.0,
+    "max_retraction_speed_mms": 55.0,
+    "min_flush_volume_mm3": 70.0,
+    "max_flush_volume_mm3": 900.0,
+    "abrasive_required_hrc": 55,
+    "non_abrasive_required_hrc": 3,
+    "standard_ams_range_low_c": 185,
+    "standard_ams_range_high_c": 270,
+    "high_temp_range_low_c": 215,
+    "high_temp_range_high_c": 300,
+    "esd_safe_nozzle_min_c": 195,
+    "esd_safe_nozzle_max_c": 295,
+    "pcl_temp_range_low_c": 70,
+    "pcl_temp_range_high_c": 180
+  },
+  "finish_variant_mappings": {
+    "PETG Translucent": "PETG",
+    "PETG Glow": "PETG",
+    "PETG Conductive": "PETG",
+    "PETG Marble": "PETG",
+    "PETG Photochromic": "PETG",
+    "PLA Matte": "PLA",
+    "PLA Silk": "PLA",
+    "PLA Wood": "PLA",
+    "PLA Metal": "PLA",
+    "PLA Glow": "PLA",
+    "PLA-LW Foaming": "PLA",
+    "PLA-AERO": "PLA",
+    "PLA Conductive": "PLA",
+    "PLA Marble": "PLA",
+    "PLA Photochromic": "PLA",
+    "ABS Glow": "ABS",
+    "ABS Conductive": "ABS",
+    "ASA-LW Foaming": "ASA",
+    "ASA-AERO": "ASA",
+    "TPU Glow": "TPU",
+    "TPU Conductive": "TPU",
+    "TPU Photochromic": "TPU",
+    "TPU Foaming": "TPU",
+    "TPU-AERO": "TPU",
+    "Rebound TPU Foaming": "Rebound TPU"
+  },
+  "direct_inherits_preset_codes": [
+    "PLA+",
+    "PLA Matte",
+    "PLA Silk",
+    "PLA Glow",
+    "PLA High Speed"
+  ],
+  "anycubic_system_filament_codes": [
+    "PLA",
+    "PLA+",
+    "PLA-CF",
+    "PLA Matte",
+    "PLA Silk",
+    "PLA High Speed",
+    "PETG",
+    "PETG-CF",
+    "PET-CF",
+    "TPU",
+    "TPU 95A",
+    "ABS",
+    "ASA",
+    "PC",
+    "PA6-CF"
+  ],
+  "machines": [
+    {
+      "printer_model": "Anycubic Kobra S1",
+      "vendor_prefix": "Anycubic",
+      "default_nozzle_diameter": "0.4",
+      "max_hotend_temp_c": 300,
+      "max_continuous_nozzle_temp_c": 295,
+      "min_bed_temp_c": 35,
+      "max_bed_temp_c": 110,
+      "max_volumetric_speed_mm3s": 22.0,
+      "inherits_template": "{vendor_prefix} {base_preset_code} @{printer_model} {nozzle_diameter} nozzle"
+    },
+    {
+      "printer_model": "Bambu Lab X1 Carbon",
+      "vendor_prefix": "Bambu",
+      "default_nozzle_diameter": "0.4",
+      "max_hotend_temp_c": 300,
+      "max_continuous_nozzle_temp_c": 295,
+      "min_bed_temp_c": 35,
+      "max_bed_temp_c": 120,
+      "max_volumetric_speed_mm3s": 24.0,
+      "inherits_template": "{vendor_prefix} {base_preset_code} @{printer_model} {nozzle_diameter} nozzle"
+    },
+    {
+      "printer_model": "Bambu Lab P1S",
+      "vendor_prefix": "Bambu",
+      "default_nozzle_diameter": "0.4",
+      "max_hotend_temp_c": 300,
+      "max_continuous_nozzle_temp_c": 295,
+      "min_bed_temp_c": 35,
+      "max_bed_temp_c": 100,
+      "max_volumetric_speed_mm3s": 22.0,
+      "inherits_template": "{vendor_prefix} {base_preset_code} @{printer_model} {nozzle_diameter} nozzle"
+    },
+    {
+      "printer_model": "Voron 2.4",
+      "vendor_prefix": "Generic",
+      "default_nozzle_diameter": "0.4",
+      "max_hotend_temp_c": 320,
+      "max_continuous_nozzle_temp_c": 310,
+      "min_bed_temp_c": 35,
+      "max_bed_temp_c": 120,
+      "max_volumetric_speed_mm3s": 28.0,
+      "inherits_template": "{vendor_prefix} {base_preset_code} @{printer_model} {nozzle_diameter} nozzle"
+    },
+    {
+      "printer_model": "Creality K2 Plus",
+      "vendor_prefix": "Generic",
+      "default_nozzle_diameter": "0.4",
+      "max_hotend_temp_c": 350,
+      "max_continuous_nozzle_temp_c": 340,
+      "min_bed_temp_c": 35,
+      "max_bed_temp_c": 120,
+      "max_volumetric_speed_mm3s": 26.0,
+      "inherits_template": "{vendor_prefix} {base_preset_code} @{printer_model} {nozzle_diameter} nozzle"
+    }
+  ],
+  "brands": [
+    {
+      "name": "Generic",
+      "order": 0,
+      "aliases": [
+        "GENERIC"
+      ]
+    },
+    {
+      "name": "Siraya Tech",
+      "order": 1,
+      "aliases": [
+        "SIRAYA TECH",
+        "SIRAYA",
+        "FIBREHEART",
+        "FLEX TPU",
+        "REBOUND"
+      ]
+    },
+    {
+      "name": "SUNLU",
+      "order": 2,
+      "aliases": [
+        "SUNLU"
+      ]
+    },
+    {
+      "name": "Polymaker",
+      "order": 3,
+      "aliases": [
+        "POLYMAKER",
+        "POLYLITE",
+        "POLYMAX",
+        "POLYTERRA",
+        "FIBERON",
+        "PANCHROMA"
+      ]
+    },
+    {
+      "name": "Anycubic",
+      "order": 4,
+      "aliases": [
+        "ANYCUBIC"
+      ]
+    },
+    {
+      "name": "Bambu Lab",
+      "order": 5,
+      "aliases": [
+        "BAMBU LAB",
+        "BAMBU"
+      ]
+    },
+    {
+      "name": "eSUN",
+      "order": 6,
+      "aliases": [
+        "ESUN"
+      ]
+    },
+    {
+      "name": "Overture",
+      "order": 7,
+      "aliases": [
+        "OVERTURE"
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "name": "PLA Family",
+      "order": 0
+    },
+    {
+      "name": "PETG / PCTG / PET",
+      "order": 1
+    },
+    {
+      "name": "PC / Engineering",
+      "order": 2
+    },
+    {
+      "name": "ABS / ASA",
+      "order": 3
+    },
+    {
+      "name": "Nylon (PA / PAHT / PPA)",
+      "order": 4
+    },
+    {
+      "name": "TPU / TPE / PEBA Flex",
+      "order": 5
+    },
+    {
+      "name": "PVA / Support",
+      "order": 6
+    }
+  ],
+  "nozzles": [
+    {
+      "id": "orca_hardened_steel",
+      "short_tag": "Hardened",
+      "orca_nozzle_type": "hardened_steel",
+      "hrc": 62,
+      "temp_offset_from_brass_c": 5,
+      "uses_hs_base_temp": true,
+      "material_label": "Hardened Steel",
+      "default_name": "Hardened Steel Wear-Resistant 0.40mm",
+      "pa_multiplier": 1.0,
+      "match_tokens": [
+        "hardened",
+        "stainless"
+      ]
+    },
+    {
+      "id": "diamondback",
+      "short_tag": "Diamond",
+      "orca_nozzle_type": "hardened_steel",
+      "hrc": 100,
+      "temp_offset_from_brass_c": -10,
+      "uses_hs_base_temp": false,
+      "material_label": "MicroSwiss Diamondback (PCD)",
+      "default_name": "MicroSwiss Diamondback PCD 0.40mm",
+      "pa_multiplier": 0.85,
+      "match_tokens": [
+        "diamondback",
+        "diamond",
+        "pcd"
+      ]
+    },
+    {
+      "id": "ruby_brass",
+      "short_tag": "Ruby",
+      "orca_nozzle_type": "hardened_steel",
+      "hrc": 90,
+      "temp_offset_from_brass_c": 0,
+      "uses_hs_base_temp": false,
+      "material_label": "Ruby Tip (Brass Body)",
+      "default_name": "Brass-Body Ruby Tip 0.40mm",
+      "pa_multiplier": 1.0,
+      "match_tokens": [
+        "ruby"
+      ]
+    },
+    {
+      "id": "cm2",
+      "short_tag": "CM2",
+      "orca_nozzle_type": "hardened_steel",
+      "hrc": 68,
+      "temp_offset_from_brass_c": 5,
+      "uses_hs_base_temp": true,
+      "material_label": "MicroSwiss CM2 (Copper + M2 HSS)",
+      "default_name": "MicroSwiss CM2 Hardened Tip 0.40mm",
+      "pa_multiplier": 1.0,
+      "match_tokens": [
+        "cm2"
+      ]
+    },
+    {
+      "id": "cht",
+      "short_tag": "CHT",
+      "orca_nozzle_type": "brass",
+      "hrc": 15,
+      "temp_offset_from_brass_c": 0,
+      "uses_hs_base_temp": false,
+      "material_label": "High-Flow CHT (3-Hole Split)",
+      "default_name": "High-Flow CHT 0.40mm",
+      "pa_multiplier": 1.0,
+      "match_tokens": [
+        "cht"
+      ]
+    },
+    {
+      "id": "orca_brass",
+      "short_tag": "Brass",
+      "orca_nozzle_type": "brass",
+      "hrc": 3,
+      "temp_offset_from_brass_c": 0,
+      "uses_hs_base_temp": false,
+      "material_label": "Brass",
+      "default_name": "Standard Brass 0.40mm",
+      "pa_multiplier": 1.0,
+      "match_tokens": [
+        "brass"
+      ]
+    }
+  ],
+  "finishes": [
+    {
+      "code": "Basic",
+      "label": "Basic",
+      "title_suffix": null,
+      "requires_hardened": false,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.0,
+      "aliases": []
+    },
+    {
+      "code": "Matte",
+      "label": "Matte",
+      "title_suffix": "Matte",
+      "requires_hardened": false,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.0,
+      "aliases": [
+        "Matte",
+        "PolyTerra",
+        "CosPLA"
+      ]
+    },
+    {
+      "code": "Silk",
+      "label": "Silk",
+      "title_suffix": "Silk",
+      "requires_hardened": false,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.2,
+      "aliases": [
+        "Silk",
+        "Satin",
+        "Celestial",
+        "Galaxy",
+        "Metallic"
+      ]
+    },
+    {
+      "code": "Translucent",
+      "label": "Translucent",
+      "title_suffix": "Translucent",
+      "requires_hardened": false,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 0.35,
+      "default_pigment_stickiness": 1.0,
+      "aliases": [
+        "Translucent"
+      ]
+    },
+    {
+      "code": "Carbon Fiber",
+      "label": "Carbon Fiber (-CF)",
+      "title_suffix": "-CF",
+      "requires_hardened": true,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.15,
+      "aliases": [
+        "-CF",
+        "CF",
+        "CARBON"
+      ]
+    },
+    {
+      "code": "Glass Fiber",
+      "label": "Glass Fiber (-GF)",
+      "title_suffix": "-GF",
+      "requires_hardened": true,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.1,
+      "aliases": [
+        "-GF",
+        "GF",
+        "GLASS"
+      ]
+    },
+    {
+      "code": "Wood-Filled",
+      "label": "Wood-Filled",
+      "title_suffix": "Wood",
+      "requires_hardened": true,
+      "nozzle_temp_offset_c": -5,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.2,
+      "aliases": [
+        "Wood"
+      ]
+    },
+    {
+      "code": "Metal-Filled",
+      "label": "Metal-Filled",
+      "title_suffix": "Metal",
+      "requires_hardened": true,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.3,
+      "aliases": [
+        "Metal",
+        "Bronze",
+        "Copper",
+        "Brass",
+        "Steel"
+      ]
+    },
+    {
+      "code": "Glow-in-the-Dark",
+      "label": "Glow-in-the-Dark",
+      "title_suffix": "Glow",
+      "requires_hardened": true,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 0.65,
+      "default_pigment_stickiness": 1.25,
+      "aliases": [
+        "Glow",
+        "Luminous",
+        "Starlight"
+      ]
+    },
+    {
+      "code": "Foaming",
+      "label": "Foaming (LW / Varioshore)",
+      "title_suffix": "Foaming",
+      "requires_hardened": false,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.0,
+      "aliases": [
+        "LW",
+        "Varioshore",
+        "Aero",
+        "Air"
+      ]
+    },
+    {
+      "code": "Conductive",
+      "label": "Conductive / ESD",
+      "title_suffix": "Conductive",
+      "requires_hardened": true,
+      "nozzle_temp_offset_c": 10,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.45,
+      "aliases": [
+        "ESD",
+        "Conductive"
+      ]
+    },
+    {
+      "code": "Marble/Stone/Terracotta",
+      "label": "Marble / Stone / Terracotta",
+      "title_suffix": "Marble",
+      "requires_hardened": true,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 1.0,
+      "default_pigment_stickiness": 1.15,
+      "aliases": [
+        "Marble",
+        "Stone",
+        "Terracotta"
+      ]
+    },
+    {
+      "code": "Photochromic",
+      "label": "Photochromic (UV Color-Change)",
+      "title_suffix": "Photochromic",
+      "requires_hardened": false,
+      "nozzle_temp_offset_c": 0,
+      "default_opacity": 0.65,
+      "default_pigment_stickiness": 1.05,
+      "aliases": [
+        "UV",
+        "Temp Shift",
+        "Chameleon"
+      ]
+    }
+  ],
+  "climates": [
+    {
+      "id": "temperate",
+      "ambient_temp_c": 22,
+      "humidity_pct": 45
+    },
+    {
+      "id": "tropical",
+      "ambient_temp_c": 30,
+      "humidity_pct": 78
+    },
+    {
+      "id": "cold_dry",
+      "ambient_temp_c": 15,
+      "humidity_pct": 25
+    },
+    {
+      "id": "cold_humid",
+      "ambient_temp_c": 15,
+      "humidity_pct": 72
+    },
+    {
+      "id": "hot_dry",
+      "ambient_temp_c": 29,
+      "humidity_pct": 25
+    }
+  ],
+  "polymers": [
+    {
+      "canonical_key": "PCTG-CF",
+      "family": "PETG",
+      "match_tokens": [
+        "PCTG-CF",
+        "PCTG-GF",
+        "PCTG-RCF",
+        "PCTG-RGF"
+      ],
+      "safe_nozzle_min_c": 240,
+      "safe_nozzle_max_c": 275,
+      "safe_bed_min_c": 70,
+      "safe_bed_max_c": 90,
+      "default_brass_nozzle_c": 260,
+      "default_bed_c": 80,
+      "default_max_volumetric_speed": 14.0,
+      "default_fan_pct": 30,
+      "default_flow_ratio": 0.95,
+      "default_pressure_advance": 0.048,
+      "default_retraction_mm": 1.0,
+      "default_retraction_speed_mms": 45,
+      "default_dry_temp_c": 65,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "PCTG",
+      "requires_hardened": true,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PETG-CF",
+      "sort_priority": 2,
+      "catalog_nozzle_bounds_c": [245, 265],
+      "catalog_bed_bounds_c": [75, 90],
+      "catalog_fan_bounds_pct": [25, 50],
+      "catalog_mvs_bounds_mm3s": [6.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PCTG-GF",
+        "PCTG-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PCTG",
+      "family": "PETG",
+      "match_tokens": [
+        "PCTG"
+      ],
+      "safe_nozzle_min_c": 240,
+      "safe_nozzle_max_c": 275,
+      "safe_bed_min_c": 70,
+      "safe_bed_max_c": 90,
+      "default_brass_nozzle_c": 255,
+      "default_bed_c": 75,
+      "default_max_volumetric_speed": 16.0,
+      "default_fan_pct": 35,
+      "default_flow_ratio": 0.95,
+      "default_pressure_advance": 0.048,
+      "default_retraction_mm": 1.0,
+      "default_retraction_speed_mms": 45,
+      "default_dry_temp_c": 60,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "PCTG",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PETG",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [245, 265],
+      "catalog_bed_bounds_c": [75, 90],
+      "catalog_fan_bounds_pct": [25, 50],
+      "catalog_mvs_bounds_mm3s": [6.0, 16.0],
+      "cf_upgrade_code": "PCTG-CF",
+      "gf_upgrade_code": "PCTG-GF",
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PETG-CF",
+      "family": "PETG",
+      "match_tokens": [
+        "PETG-CF",
+        "PETG-GF",
+        "PETG-RCF",
+        "PETG-RGF"
+      ],
+      "safe_nozzle_min_c": 235,
+      "safe_nozzle_max_c": 265,
+      "safe_bed_min_c": 65,
+      "safe_bed_max_c": 85,
+      "default_brass_nozzle_c": 245,
+      "default_bed_c": 75,
+      "default_max_volumetric_speed": 13.0,
+      "default_fan_pct": 35,
+      "default_flow_ratio": 0.95,
+      "default_pressure_advance": 0.045,
+      "default_retraction_mm": 0.8,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 60,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "PETG-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PETG-CF",
+      "sort_priority": 2,
+      "catalog_nozzle_bounds_c": [235, 250],
+      "catalog_bed_bounds_c": [65, 80],
+      "catalog_fan_bounds_pct": [25, 50],
+      "catalog_mvs_bounds_mm3s": [6.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PETG-GF",
+        "PETG-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PETG",
+      "family": "PETG",
+      "match_tokens": [
+        "PETG"
+      ],
+      "safe_nozzle_min_c": 225,
+      "safe_nozzle_max_c": 260,
+      "safe_bed_min_c": 65,
+      "safe_bed_max_c": 85,
+      "default_brass_nozzle_c": 235,
+      "default_bed_c": 70,
+      "default_max_volumetric_speed": 12.0,
+      "default_fan_pct": 40,
+      "default_flow_ratio": 0.95,
+      "default_pressure_advance": 0.045,
+      "default_retraction_mm": 0.8,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 55,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "PETG",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PETG",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [225, 240],
+      "catalog_bed_bounds_c": [65, 75],
+      "catalog_fan_bounds_pct": [25, 50],
+      "catalog_mvs_bounds_mm3s": [9.0, 16.0],
+      "cf_upgrade_code": "PETG-CF",
+      "gf_upgrade_code": "PETG-GF",
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent",
+        "Glow-in-the-Dark",
+        "Conductive",
+        "Marble/Stone/Terracotta",
+        "Photochromic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PET-CF",
+      "family": "PETG",
+      "match_tokens": [
+        "PET-CF",
+        "PET-GF",
+        "PET-RCF",
+        "PET-RGF"
+      ],
+      "safe_nozzle_min_c": 260,
+      "safe_nozzle_max_c": 295,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 275,
+      "default_bed_c": 90,
+      "default_max_volumetric_speed": 12.0,
+      "default_fan_pct": 20,
+      "default_flow_ratio": 0.96,
+      "default_pressure_advance": 0.04,
+      "default_retraction_mm": 0.8,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 70,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PET-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "PETG-CF",
+      "sort_priority": 3,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PET-GF",
+        "PET-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "TPU-GF",
+      "family": "TPU",
+      "match_tokens": [
+        "TPU-CF",
+        "TPU-GF",
+        "PEBA-CF",
+        "PEBA-GF"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 250,
+      "safe_bed_min_c": 35,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 230,
+      "default_bed_c": 40,
+      "default_max_volumetric_speed": 6.0,
+      "default_fan_pct": 60,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 30,
+      "default_dry_temp_c": 55,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "TPU",
+      "requires_hardened": true,
+      "standard_ams_compatible": true,
+      "base_preset_code": "TPU",
+      "sort_priority": 4,
+      "catalog_nozzle_bounds_c": [210, 240],
+      "catalog_bed_bounds_c": [35, 50],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [3.0, 8.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "TPU-GF",
+        "PEBA-GF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "TPU for AMS",
+      "family": "TPU",
+      "match_tokens": [
+        "TPU FOR AMS",
+        "TPU FOR ACE",
+        "TPU 64D",
+        "64D"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 250,
+      "safe_bed_min_c": 35,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 225,
+      "default_bed_c": 40,
+      "default_max_volumetric_speed": 8.0,
+      "default_fan_pct": 80,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 35,
+      "default_dry_temp_c": 55,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "TPU",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "TPU",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [210, 235],
+      "catalog_bed_bounds_c": [35, 50],
+      "catalog_fan_bounds_pct": [50, 100],
+      "catalog_mvs_bounds_mm3s": [4.0, 12.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "TPU 85A",
+      "family": "TPU",
+      "match_tokens": [
+        "TPU 85A"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 250,
+      "safe_bed_min_c": 35,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 220,
+      "default_bed_c": 40,
+      "default_max_volumetric_speed": 3.5,
+      "default_fan_pct": 70,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 25,
+      "default_dry_temp_c": 50,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "TPU",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "TPU",
+      "sort_priority": 2,
+      "catalog_nozzle_bounds_c": [210, 240],
+      "catalog_bed_bounds_c": [35, 50],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [2.0, 4.5],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "TPU 90A",
+      "family": "TPU",
+      "match_tokens": [
+        "TPU 90A"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 250,
+      "safe_bed_min_c": 35,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 220,
+      "default_bed_c": 40,
+      "default_max_volumetric_speed": 4.5,
+      "default_fan_pct": 75,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 30,
+      "default_dry_temp_c": 50,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "TPU",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "TPU",
+      "sort_priority": 2,
+      "catalog_nozzle_bounds_c": [210, 240],
+      "catalog_bed_bounds_c": [35, 50],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [2.5, 6.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "TPU 95A",
+      "family": "TPU",
+      "match_tokens": [
+        "TPU 95A"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 250,
+      "safe_bed_min_c": 35,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 225,
+      "default_bed_c": 40,
+      "default_max_volumetric_speed": 6.0,
+      "default_fan_pct": 80,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 35,
+      "default_dry_temp_c": 50,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "TPU",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "TPU",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [210, 240],
+      "catalog_bed_bounds_c": [35, 50],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [3.0, 8.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "TPU",
+      "family": "TPU",
+      "match_tokens": [
+        "TPU",
+        "TPE"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 250,
+      "safe_bed_min_c": 35,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 225,
+      "default_bed_c": 40,
+      "default_max_volumetric_speed": 6.0,
+      "default_fan_pct": 80,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 35,
+      "default_dry_temp_c": 50,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "TPU",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "TPU",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [210, 240],
+      "catalog_bed_bounds_c": [35, 50],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [3.0, 8.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent",
+        "Foaming",
+        "Conductive"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PEBA",
+      "family": "TPU",
+      "match_tokens": [
+        "PEBA"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 250,
+      "safe_bed_min_c": 35,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 230,
+      "default_bed_c": 40,
+      "default_max_volumetric_speed": 8.0,
+      "default_fan_pct": 80,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 35,
+      "default_dry_temp_c": 55,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "PEBA",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "TPU",
+      "sort_priority": 3,
+      "catalog_nozzle_bounds_c": [210, 240],
+      "catalog_bed_bounds_c": [40, 55],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [4.0, 10.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Translucent"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PC-CF",
+      "family": "PC",
+      "match_tokens": [
+        "PC-CF",
+        "PC-GF",
+        "PC-RCF",
+        "PC-RGF"
+      ],
+      "safe_nozzle_min_c": 255,
+      "safe_nozzle_max_c": 295,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 275,
+      "default_bed_c": 100,
+      "default_max_volumetric_speed": 12.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 70,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PC",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PC-GF",
+        "PC-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PC",
+      "family": "PC",
+      "match_tokens": [
+        "PC-ABS",
+        "PC/ABS",
+        "PC"
+      ],
+      "safe_nozzle_min_c": 255,
+      "safe_nozzle_max_c": 295,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 270,
+      "default_bed_c": 100,
+      "default_max_volumetric_speed": 12.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 70,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PC",
+      "requires_hardened": false,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": "PC-CF",
+      "gf_upgrade_code": "PC-GF",
+      "compatible_finishes": [
+        "Basic",
+        "Translucent",
+        "Conductive"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "ASA-CF",
+      "family": "ASA",
+      "match_tokens": [
+        "ASA-CF",
+        "ASA-GF",
+        "ASA-RCF",
+        "ASA-RGF"
+      ],
+      "safe_nozzle_min_c": 240,
+      "safe_nozzle_max_c": 280,
+      "safe_bed_min_c": 85,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 260,
+      "default_bed_c": 95,
+      "default_max_volumetric_speed": 14.0,
+      "default_fan_pct": 20,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 65,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "ASA-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 2,
+      "catalog_nozzle_bounds_c": [240, 270],
+      "catalog_bed_bounds_c": [90, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [6.0, 20.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "ASA-GF",
+        "ASA-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "ASA",
+      "family": "ASA",
+      "match_tokens": [
+        "ASA"
+      ],
+      "safe_nozzle_min_c": 240,
+      "safe_nozzle_max_c": 280,
+      "safe_bed_min_c": 85,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 255,
+      "default_bed_c": 95,
+      "default_max_volumetric_speed": 16.0,
+      "default_fan_pct": 20,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 65,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "ASA",
+      "requires_hardened": false,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [240, 270],
+      "catalog_bed_bounds_c": [90, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [6.0, 20.0],
+      "cf_upgrade_code": "ASA-CF",
+      "gf_upgrade_code": "ASA-GF",
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Foaming",
+        "Conductive"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "ABS-CF",
+      "family": "ABS",
+      "match_tokens": [
+        "ABS-CF",
+        "ABS-GF",
+        "ABS-RCF",
+        "ABS-RGF"
+      ],
+      "safe_nozzle_min_c": 240,
+      "safe_nozzle_max_c": 280,
+      "safe_bed_min_c": 85,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 260,
+      "default_bed_c": 95,
+      "default_max_volumetric_speed": 14.0,
+      "default_fan_pct": 20,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 65,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "ABS",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ABS",
+      "sort_priority": 2,
+      "catalog_nozzle_bounds_c": [240, 270],
+      "catalog_bed_bounds_c": [90, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [6.0, 20.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "ABS-GF",
+        "ABS-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "ABS",
+      "family": "ABS",
+      "match_tokens": [
+        "ABS"
+      ],
+      "safe_nozzle_min_c": 240,
+      "safe_nozzle_max_c": 280,
+      "safe_bed_min_c": 85,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 255,
+      "default_bed_c": 95,
+      "default_max_volumetric_speed": 16.0,
+      "default_fan_pct": 20,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 65,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "ABS",
+      "requires_hardened": false,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ABS",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [240, 270],
+      "catalog_bed_bounds_c": [90, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [6.0, 20.0],
+      "cf_upgrade_code": "ABS-CF",
+      "gf_upgrade_code": "ABS-GF",
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Conductive"
+      ],
+      "gf_tokens": [
+        "ABS-FR"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Conductive"
+      ]
+    },
+    {
+      "canonical_key": "PPA-CF",
+      "family": "PA",
+      "match_tokens": [
+        "PPA-CF",
+        "PPA-GF",
+        "PPA-RCF",
+        "PPA-RGF",
+        "PPA"
+      ],
+      "safe_nozzle_min_c": 260,
+      "safe_nozzle_max_c": 295,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 285,
+      "default_bed_c": 95,
+      "default_max_volumetric_speed": 10.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 80,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PPA-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PPA-GF",
+        "PPA-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PAHT-CF",
+      "family": "PA",
+      "match_tokens": [
+        "PAHT-CF",
+        "PAHT-GF",
+        "PAHT",
+        "PA612-CF",
+        "PA612-GF"
+      ],
+      "safe_nozzle_min_c": 260,
+      "safe_nozzle_max_c": 295,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 280,
+      "default_bed_c": 90,
+      "default_max_volumetric_speed": 10.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 75,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PA-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PAHT-GF",
+        "PA612-GF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PA6-CF",
+      "family": "PA",
+      "match_tokens": [
+        "PA6-CF",
+        "PA6-GF",
+        "PA-CF",
+        "PA-GF",
+        "PA6-RCF",
+        "PA6-RGF"
+      ],
+      "safe_nozzle_min_c": 260,
+      "safe_nozzle_max_c": 295,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 280,
+      "default_bed_c": 90,
+      "default_max_volumetric_speed": 10.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 75,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PA-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PA6-GF",
+        "PA-GF",
+        "PA6-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PA12-CF",
+      "family": "PA",
+      "match_tokens": [
+        "PA12-CF",
+        "PA12-GF",
+        "PA12-RCF",
+        "PA12-RGF"
+      ],
+      "safe_nozzle_min_c": 260,
+      "safe_nozzle_max_c": 295,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 275,
+      "default_bed_c": 90,
+      "default_max_volumetric_speed": 11.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 75,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PA-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PA12-GF",
+        "PA12-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PA",
+      "family": "PA",
+      "match_tokens": [
+        "PA12",
+        "PA6",
+        "PA",
+        "NYLON"
+      ],
+      "safe_nozzle_min_c": 255,
+      "safe_nozzle_max_c": 290,
+      "safe_bed_min_c": 80,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 270,
+      "default_bed_c": 90,
+      "default_max_volumetric_speed": 10.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 75,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PA",
+      "requires_hardened": false,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [255, 280],
+      "catalog_bed_bounds_c": [80, 105],
+      "catalog_fan_bounds_pct": [0, 35],
+      "catalog_mvs_bounds_mm3s": [5.0, 16.0],
+      "cf_upgrade_code": "PA6-CF",
+      "gf_upgrade_code": "PA6-GF",
+      "compatible_finishes": [
+        "Basic",
+        "Translucent",
+        "Conductive"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PEEK",
+      "family": "HIGH_TEMP",
+      "match_tokens": [
+        "PEEK-CF",
+        "PEEK-GF",
+        "PEEK",
+        "PEKK"
+      ],
+      "safe_nozzle_min_c": 320,
+      "safe_nozzle_max_c": 420,
+      "safe_bed_min_c": 110,
+      "safe_bed_max_c": 150,
+      "default_brass_nozzle_c": 370,
+      "default_bed_c": 130,
+      "default_max_volumetric_speed": 6.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 100,
+      "default_dry_time_hr": 12,
+      "slicer_filament_type": "PEEK",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "PC",
+      "sort_priority": 10,
+      "catalog_nozzle_bounds_c": [330, 400],
+      "catalog_bed_bounds_c": [115, 145],
+      "catalog_fan_bounds_pct": [0, 25],
+      "catalog_mvs_bounds_mm3s": [2.0, 12.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PEEK-GF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PPS",
+      "family": "HIGH_TEMP",
+      "match_tokens": [
+        "PPS-CF",
+        "PPS-GF",
+        "PPS"
+      ],
+      "safe_nozzle_min_c": 300,
+      "safe_nozzle_max_c": 355,
+      "safe_bed_min_c": 95,
+      "safe_bed_max_c": 125,
+      "default_brass_nozzle_c": 325,
+      "default_bed_c": 105,
+      "default_max_volumetric_speed": 8.0,
+      "default_fan_pct": 15,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 90,
+      "default_dry_time_hr": 8,
+      "slicer_filament_type": "PPS-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": false,
+      "base_preset_code": "PC",
+      "sort_priority": 10,
+      "catalog_nozzle_bounds_c": [305, 345],
+      "catalog_bed_bounds_c": [100, 120],
+      "catalog_fan_bounds_pct": [0, 25],
+      "catalog_mvs_bounds_mm3s": [2.0, 14.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PPS-GF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PP",
+      "family": "PP",
+      "match_tokens": [
+        "PP-CF",
+        "PP-GF",
+        "PP"
+      ],
+      "safe_nozzle_min_c": 205,
+      "safe_nozzle_max_c": 265,
+      "safe_bed_min_c": 50,
+      "safe_bed_max_c": 105,
+      "default_brass_nozzle_c": 230,
+      "default_bed_c": 85,
+      "default_max_volumetric_speed": 10.0,
+      "default_fan_pct": 50,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 55,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "PP",
+      "requires_hardened": false,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 10,
+      "catalog_nozzle_bounds_c": [205, 265],
+      "catalog_bed_bounds_c": [50, 105],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [3.0, 18.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PP-GF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PVA",
+      "family": "SUPPORT",
+      "match_tokens": [
+        "PVA",
+        "SUPPORT"
+      ],
+      "safe_nozzle_min_c": 195,
+      "safe_nozzle_max_c": 225,
+      "safe_bed_min_c": 45,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 205,
+      "default_bed_c": 55,
+      "default_max_volumetric_speed": 6.0,
+      "default_fan_pct": 80,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 45,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "PVA",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PLA",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [195, 215],
+      "catalog_bed_bounds_c": [45, 60],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [2.0, 14.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "BVOH",
+      "family": "SUPPORT",
+      "match_tokens": [
+        "BVOH"
+      ],
+      "safe_nozzle_min_c": 195,
+      "safe_nozzle_max_c": 225,
+      "safe_bed_min_c": 45,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 205,
+      "default_bed_c": 55,
+      "default_max_volumetric_speed": 6.0,
+      "default_fan_pct": 80,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 45,
+      "default_dry_time_hr": 6,
+      "slicer_filament_type": "BVOH",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PLA",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [195, 215],
+      "catalog_bed_bounds_c": [45, 60],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [2.0, 14.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "HIPS",
+      "family": "SUPPORT",
+      "match_tokens": [
+        "HIPS"
+      ],
+      "safe_nozzle_min_c": 225,
+      "safe_nozzle_max_c": 255,
+      "safe_bed_min_c": 85,
+      "safe_bed_max_c": 110,
+      "default_brass_nozzle_c": 235,
+      "default_bed_c": 95,
+      "default_max_volumetric_speed": 12.0,
+      "default_fan_pct": 30,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 60,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "HIPS",
+      "requires_hardened": false,
+      "standard_ams_compatible": false,
+      "base_preset_code": "ASA",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [225, 255],
+      "catalog_bed_bounds_c": [85, 110],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [4.0, 18.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PHA",
+      "family": "PLA",
+      "match_tokens": [
+        "PHA"
+      ],
+      "safe_nozzle_min_c": 195,
+      "safe_nozzle_max_c": 235,
+      "safe_bed_min_c": 45,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 205,
+      "default_bed_c": 50,
+      "default_max_volumetric_speed": 14.0,
+      "default_fan_pct": 100,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 45,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "PLA",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PLA",
+      "sort_priority": 15,
+      "catalog_nozzle_bounds_c": [200, 225],
+      "catalog_bed_bounds_c": [45, 60],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [4.0, 22.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "APLA",
+      "family": "PLA",
+      "match_tokens": [
+        "APLA"
+      ],
+      "safe_nozzle_min_c": 195,
+      "safe_nozzle_max_c": 240,
+      "safe_bed_min_c": 45,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 215,
+      "default_bed_c": 60,
+      "default_max_volumetric_speed": 15.0,
+      "default_fan_pct": 100,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 45,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "PLA",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PLA",
+      "sort_priority": 16,
+      "catalog_nozzle_bounds_c": [195, 240],
+      "catalog_bed_bounds_c": [45, 65],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [4.0, 22.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PCL",
+      "family": "PCL",
+      "match_tokens": [
+        "PCL"
+      ],
+      "safe_nozzle_min_c": 75,
+      "safe_nozzle_max_c": 140,
+      "safe_bed_min_c": 30,
+      "safe_bed_max_c": 50,
+      "default_brass_nozzle_c": 95,
+      "default_bed_c": 35,
+      "default_max_volumetric_speed": 4.0,
+      "default_fan_pct": 100,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 30,
+      "default_dry_temp_c": 35,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "PLA",
+      "requires_hardened": false,
+      "standard_ams_compatible": false,
+      "base_preset_code": "PLA",
+      "sort_priority": 20,
+      "catalog_nozzle_bounds_c": [75, 140],
+      "catalog_bed_bounds_c": [30, 50],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [1.5, 10.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Translucent",
+        "Wood-Filled"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PLA-CF",
+      "family": "PLA",
+      "match_tokens": [
+        "PLA-CF",
+        "PLA-GF",
+        "PLA-RCF",
+        "PLA-RGF",
+        "PLA CARBON"
+      ],
+      "safe_nozzle_min_c": 195,
+      "safe_nozzle_max_c": 240,
+      "safe_bed_min_c": 45,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 220,
+      "default_bed_c": 60,
+      "default_max_volumetric_speed": 14.0,
+      "default_fan_pct": 80,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 45,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "PLA-CF",
+      "requires_hardened": true,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PLA-CF",
+      "sort_priority": 3,
+      "catalog_nozzle_bounds_c": [200, 225],
+      "catalog_bed_bounds_c": [45, 65],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [6.0, 22.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Carbon Fiber"
+      ],
+      "gf_tokens": [
+        "PLA-GF",
+        "PLA-RGF"
+      ],
+      "compatible_finishes_gf": [
+        "Basic",
+        "Glass Fiber"
+      ]
+    },
+    {
+      "canonical_key": "PLA+",
+      "family": "PLA",
+      "match_tokens": [
+        "PLA+",
+        "PLA PLUS",
+        "HIGH SPEED PLA",
+        "PLA HIGH SPEED"
+      ],
+      "safe_nozzle_min_c": 195,
+      "safe_nozzle_max_c": 240,
+      "safe_bed_min_c": 45,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 210,
+      "default_bed_c": 60,
+      "default_max_volumetric_speed": 18.0,
+      "default_fan_pct": 100,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 45,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "PLA+",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PLA+",
+      "sort_priority": 1,
+      "catalog_nozzle_bounds_c": [200, 225],
+      "catalog_bed_bounds_c": [45, 65],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [6.0, 22.0],
+      "cf_upgrade_code": null,
+      "gf_upgrade_code": null,
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Silk",
+        "Translucent",
+        "Glow-in-the-Dark",
+        "Conductive",
+        "Photochromic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    },
+    {
+      "canonical_key": "PLA",
+      "family": "PLA",
+      "match_tokens": [
+        "PLA"
+      ],
+      "safe_nozzle_min_c": 195,
+      "safe_nozzle_max_c": 240,
+      "safe_bed_min_c": 45,
+      "safe_bed_max_c": 65,
+      "default_brass_nozzle_c": 215,
+      "default_bed_c": 60,
+      "default_max_volumetric_speed": 16.0,
+      "default_fan_pct": 100,
+      "default_flow_ratio": 0.98,
+      "default_pressure_advance": 0.035,
+      "default_retraction_mm": 0.6,
+      "default_retraction_speed_mms": 40,
+      "default_dry_temp_c": 45,
+      "default_dry_time_hr": 4,
+      "slicer_filament_type": "PLA",
+      "requires_hardened": false,
+      "standard_ams_compatible": true,
+      "base_preset_code": "PLA",
+      "sort_priority": 0,
+      "catalog_nozzle_bounds_c": [200, 225],
+      "catalog_bed_bounds_c": [45, 65],
+      "catalog_fan_bounds_pct": [0, 100],
+      "catalog_mvs_bounds_mm3s": [6.0, 22.0],
+      "cf_upgrade_code": "PLA-CF",
+      "gf_upgrade_code": "PLA-GF",
+      "compatible_finishes": [
+        "Basic",
+        "Matte",
+        "Silk",
+        "Translucent",
+        "Wood-Filled",
+        "Metal-Filled",
+        "Glow-in-the-Dark",
+        "Foaming",
+        "Conductive",
+        "Marble/Stone/Terracotta",
+        "Photochromic"
+      ],
+      "gf_tokens": [],
+      "compatible_finishes_gf": []
+    }
+  ]
+}

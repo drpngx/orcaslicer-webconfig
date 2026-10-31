@@ -126,10 +126,17 @@ pub fn find_asset(relative_path: &str) -> Option<Vec<u8>> {
   None
 }
 
-/// Resolves the OS AppData/Roaming (Windows), Application Support (macOS), or ~/.config (Linux) directory.
+/// Resolves the OS AppData/Roaming (Windows / WSL), Application Support (macOS), or ~/.config (Linux) directory
+/// dynamically using the current user / home directory without hardcoding any username.
 pub fn resolve_os_roaming_dir() -> Option<PathBuf> {
   if let Ok(appdata) = std::env::var("APPDATA") {
     let p = PathBuf::from(appdata);
+    if p.exists() {
+      return Some(p);
+    }
+  }
+  if let Ok(userprofile) = std::env::var("USERPROFILE") {
+    let p = PathBuf::from(userprofile).join("AppData").join("Roaming");
     if p.exists() {
       return Some(p);
     }
@@ -141,36 +148,115 @@ pub fn resolve_os_roaming_dir() -> Option<PathBuf> {
     if mac_sup.exists() {
       return Some(mac_sup);
     }
-    let wsl_roaming = PathBuf::from("/mnt/c/Users/drpng/AppData/Roaming");
-    if wsl_roaming.exists() {
-      return Some(wsl_roaming);
+  }
+  let wsl_users = Path::new("/mnt/c/Users");
+  if wsl_users.is_dir() {
+    for env_key in ["WINUSER", "USERNAME", "USER", "LOGNAME"] {
+      if let Ok(u) = std::env::var(env_key) {
+        if !u.trim().is_empty() {
+          let candidate = wsl_users.join(u.trim()).join("AppData").join("Roaming");
+          if candidate.is_dir() {
+            return Some(candidate);
+          }
+        }
+      }
     }
-    let linux_cfg = PathBuf::from(&home).join(".config");
-    return Some(linux_cfg);
+    if let Ok(entries) = std::fs::read_dir(wsl_users) {
+      let mut fallback_roaming: Option<PathBuf> = None;
+      for entry in entries.flatten() {
+        let uname = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+          uname.as_str(),
+          "Public" | "Default" | "Default User" | "All Users" | "desktop.ini"
+        ) {
+          continue;
+        }
+        let roaming = entry.path().join("AppData").join("Roaming");
+        if roaming.is_dir() {
+          if roaming.join("AnycubicSlicerNext").is_dir() || roaming.join("OrcaSlicer").is_dir() {
+            return Some(roaming);
+          }
+          if fallback_roaming.is_none() {
+            fallback_roaming = Some(roaming);
+          }
+        }
+      }
+      if fallback_roaming.is_some() {
+        return fallback_roaming;
+      }
+    }
+  }
+  if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+    let p = PathBuf::from(xdg);
+    if p.exists() {
+      return Some(p);
+    }
+  }
+  if let Ok(home) = std::env::var("HOME") {
+    return Some(PathBuf::from(home).join(".config"));
   }
   None
 }
 
+fn derive_windows_equivalent_path(resolved_dir: &Path, fallback: &str) -> String {
+  let s = resolved_dir.to_string_lossy();
+  if let Some(rest) = s.strip_prefix("/mnt/c/") {
+    return format!(r"C:\{}", rest.replace('/', r"\"));
+  }
+  if s.contains(r":\") {
+    return s.to_string();
+  }
+  if !fallback.trim().is_empty() && fallback != "auto" {
+    return fallback.to_string();
+  }
+  r"%APPDATA%\AnycubicSlicerNext".to_string()
+}
+
 pub fn load_local_slicer_config() -> LocalSlicerConfigFile {
+  if let Ok(env_dir) = std::env::var("ORCASLICER_LOCAL_DIR") {
+    if !env_dir.trim().is_empty() {
+      let p = PathBuf::from(env_dir.trim());
+      return LocalSlicerConfigFile {
+        windows_equivalent_path: derive_windows_equivalent_path(&p, ""),
+        local_slicer_directory: p.to_string_lossy().to_string(),
+      };
+    }
+  }
+
   let raw_str = find_asset("local_slicer_config.json")
     .and_then(|b| String::from_utf8(b).ok())
     .unwrap_or_else(|| include_str!("../../local_slicer_config.json").to_string());
 
   let mut cfg =
     serde_json::from_str::<LocalSlicerConfigFile>(&raw_str).unwrap_or(LocalSlicerConfigFile {
-      local_slicer_directory: "/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext".to_string(),
-      windows_equivalent_path: r"C:\Users\drpng\AppData\Roaming\AnycubicSlicerNext".to_string(),
+      local_slicer_directory: "auto".to_string(),
+      windows_equivalent_path: r"%APPDATA%\AnycubicSlicerNext".to_string(),
     });
 
-  // If running as a portable Tauri binary on Windows or macOS where the WSL path doesn't exist,
-  // automatically fall back to the native OS AppData/Roaming/AnycubicSlicerNext directory!
-  if !Path::new(&cfg.local_slicer_directory).exists() {
+  let needs_auto = cfg.local_slicer_directory.trim().is_empty()
+    || cfg.local_slicer_directory == "auto"
+    || cfg.local_slicer_directory.contains('%')
+    || cfg.local_slicer_directory.starts_with('~')
+    || !Path::new(&cfg.local_slicer_directory).exists();
+
+  if needs_auto {
     if let Some(roaming) = resolve_os_roaming_dir() {
-      let candidate = roaming.join("AnycubicSlicerNext");
-      if candidate.exists() {
-        cfg.local_slicer_directory = candidate.to_string_lossy().to_string();
-      }
+      let anycubic = roaming.join("AnycubicSlicerNext");
+      let orca = roaming.join("OrcaSlicer");
+      let chosen = if anycubic.exists() || !orca.exists() {
+        anycubic
+      } else {
+        orca
+      };
+      cfg.windows_equivalent_path =
+        derive_windows_equivalent_path(&chosen, &cfg.windows_equivalent_path);
+      cfg.local_slicer_directory = chosen.to_string_lossy().to_string();
     }
+  } else {
+    cfg.windows_equivalent_path = derive_windows_equivalent_path(
+      Path::new(&cfg.local_slicer_directory),
+      &cfg.windows_equivalent_path,
+    );
   }
 
   cfg

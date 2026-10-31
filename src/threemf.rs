@@ -129,72 +129,86 @@ pub fn extract_file_from_zip(zip_bytes: &[u8], target_name: &str) -> Option<Stri
   None
 }
 
-/// Resolve a guaranteed-valid system filament preset name for Anycubic Kobra S1 0.4 nozzle
-pub fn resolve_kobra_s1_filament_inherits(spool: &FilamentSpool) -> String {
+/// Resolve a guaranteed-valid system filament preset name for the active MachineRig (or default machine)
+pub fn resolve_filament_inherits_for_rig(
+  spool: &FilamentSpool,
+  rig_opt: Option<&MachineRig>,
+) -> String {
   let is_oc = spool.name.starts_with("OC -") || spool.name.starts_with("OC:");
   if spool.id.starts_with("disk_")
     && !is_oc
     && !spool.inherits.trim().is_empty()
-    && !spool.inherits.contains("TPU for ACE @Anycubic Kobra S1 ")
-    && !spool.inherits.contains("TPU 95A @Anycubic Kobra S1 ")
-    && !spool.inherits.contains("PCTG @Anycubic Kobra S1 ")
+    && !spool.inherits.contains("TPU for ACE @")
+    && !spool.inherits.contains("TPU 95A @")
+    && !spool.inherits.contains("PCTG @")
   {
     return spool.inherits.clone();
   }
-  match spool.material_type.trim() {
-    "PLA+" => return "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA Matte" => return "Anycubic PLA Matte @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA Silk" => return "Anycubic PLA Silk @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA Glow" => return "Anycubic PLA Glow @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA High Speed" => return "Anycubic PLA High Speed @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    _ => {}
-  }
-  match FilamentSpool::canonical_polymer_key(&spool.material_type) {
-    "PLA+" => "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PLA-CF" => "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PETG-CF" | "PCTG-CF" => "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PET-CF" => "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PETG" | "PCTG" => "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" => {
-      "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle".to_string()
-    }
-    "PEBA" => "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "ASA" | "ASA-CF" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "ABS" | "ABS-CF" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PC" | "PC-CF" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle".to_string(),
-    "PA" | "PA6-CF" | "PA12-CF" | "PAHT-CF" | "PPA-CF" => {
-      "Anycubic PA6-CF @Anycubic Kobra S1 0.4 nozzle".to_string()
-    }
-    _ => "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle".to_string(),
-  }
+  let (model, noz) = if let Some(r) = rig_opt {
+    (r.printer_model.clone(), r.formatted_nozzle_diameter())
+  } else {
+    let mc = &crate::constants::constants().machines[0];
+    (mc.printer_model.clone(), mc.default_nozzle_diameter.clone())
+  };
+  crate::constants::constants().resolve_filament_inherits(&model, &noz, &spool.material_type)
+}
+
+pub fn resolve_kobra_s1_filament_inherits(spool: &FilamentSpool) -> String {
+  resolve_filament_inherits_for_rig(spool, None)
 }
 
 /// Map internal material codes to OrcaSlicer / AnycubicSlicerNext valid `filament_type` enum strings
 pub fn resolve_orca_filament_type(material_type: &str) -> String {
-  match FilamentSpool::canonical_polymer_key(material_type) {
-    "PLA+" => "PLA".to_string(),
-    "PLA-CF" => "PLA-CF".to_string(),
-    "PCTG" | "PETG" => "PETG".to_string(),
-    "PCTG-CF" | "PETG-CF" => "PETG-CF".to_string(),
-    "PET-CF" => "PET-CF".to_string(),
-    "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" => "TPU".to_string(),
-    "PEBA" => "PEBA".to_string(),
-    "ASA" | "ASA-CF" => "ASA".to_string(),
-    "ABS" | "ABS-CF" => "ABS".to_string(),
-    "PC" | "PC-CF" => "PC".to_string(),
-    "PA6-CF" | "PA12-CF" => "PA6-CF".to_string(),
-    "PAHT-CF" | "PPA-CF" => "PAHT-CF".to_string(),
-    "PA" => "PA".to_string(),
-    "PVA" => "PVA".to_string(),
-    "BVOH" => "BVOH".to_string(),
-    "HIPS" => "HIPS".to_string(),
-    "PHA" => "PHA".to_string(),
-    "PCL" => "PCL".to_string(),
-    other => other.to_string(),
-  }
+  crate::constants::constants()
+    .lookup_polymer(material_type)
+    .slicer_filament_type
+    .clone()
 }
 
-const FILAMENT_DIFF_KEYS: &str = "default_filament_colour;fan_max_speed;fan_max_speed_BRASS;fan_max_speed_HS;fan_min_speed;fan_min_speed_BRASS;fan_min_speed_HS;filament_deretraction_speed;filament_diameter;filament_flow_ratio;filament_max_volumetric_speed;filament_notes;filament_retract_before_wipe;filament_retraction_length;filament_retraction_speed;filament_type;filament_wipe;filament_wipe_distance;filament_z_hop;filament_z_hop_types;hot_plate_temp;hot_plate_temp_initial_layer;nozzle_temperature;nozzle_temperature_BRASS;nozzle_temperature_HS;nozzle_temperature_initial_layer;nozzle_temperature_initial_layer_BRASS;nozzle_temperature_initial_layer_HS;nozzle_temperature_range_high;nozzle_temperature_range_low;pressure_advance;required_nozzle_HRC;textured_plate_temp;textured_plate_temp_initial_layer";
+pub const FILAMENT_SETTING_KEYS: &[&str] = &[
+  "cool_plate_temp",
+  "cool_plate_temp_initial_layer",
+  "default_filament_colour",
+  "eng_plate_temp",
+  "eng_plate_temp_initial_layer",
+  "fan_max_speed",
+  "fan_max_speed_BRASS",
+  "fan_max_speed_HS",
+  "fan_min_speed",
+  "fan_min_speed_BRASS",
+  "fan_min_speed_HS",
+  "filament_deretraction_speed",
+  "filament_diameter",
+  "filament_flow_ratio",
+  "filament_max_volumetric_speed",
+  "filament_notes",
+  "filament_retract_before_wipe",
+  "filament_retraction_length",
+  "filament_retraction_speed",
+  "filament_type",
+  "filament_wipe",
+  "filament_wipe_distance",
+  "filament_z_hop",
+  "filament_z_hop_types",
+  "hot_plate_temp",
+  "hot_plate_temp_initial_layer",
+  "nozzle_temperature",
+  "nozzle_temperature_BRASS",
+  "nozzle_temperature_HS",
+  "nozzle_temperature_initial_layer",
+  "nozzle_temperature_initial_layer_BRASS",
+  "nozzle_temperature_initial_layer_HS",
+  "nozzle_temperature_range_high",
+  "nozzle_temperature_range_low",
+  "pressure_advance",
+  "required_nozzle_HRC",
+  "supertack_plate_temp",
+  "supertack_plate_temp_initial_layer",
+  "textured_cool_plate_temp",
+  "textured_cool_plate_temp_initial_layer",
+  "textured_plate_temp",
+  "textured_plate_temp_initial_layer",
+];
 
 fn first_str_from_map(
   map: &serde_json::Map<String, serde_json::Value>,
@@ -315,29 +329,54 @@ pub fn resolve_spool_orca_filament_map_with_rig(
   } else {
     (base_init - base_noz).clamp(0, 10)
   };
-  let effective_temp = (spool.print_temp + climate_noz_delta).clamp(175, 350);
-  let initial_temp = (effective_temp + init_delta).clamp(175, 350);
-  let effective_bed = (spool.bed_temp + climate_bed_delta).clamp(35, 120);
-  let initial_bed = (effective_bed + climate_init_bed_extra).clamp(35, 120);
+  let (min_safe_noz, mut max_safe_noz) =
+    FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type);
+  if spool.is_foaming_tpu() {
+    max_safe_noz = max_safe_noz.max(280);
+  }
+  let (min_safe_bed, max_safe_bed) = FilamentSpool::polymer_safe_bed_bounds(&spool.material_type);
+  let climate_min_bed = if let Some(rig) = rig_opt {
+    if rig.ambient_temp_c >= 26 || rig.climate_preset == "tropical" || rig.climate_preset == "hot_dry" {
+      min_safe_bed.max((rig.ambient_temp_c + 15).clamp(45, 50))
+    } else {
+      min_safe_bed
+    }
+  } else {
+    min_safe_bed
+  };
+  let effective_temp = (spool.print_temp + climate_noz_delta).clamp(min_safe_noz, max_safe_noz);
+  let initial_temp = (effective_temp + init_delta).clamp(min_safe_noz, max_safe_noz);
+  let effective_bed = (spool.bed_temp + climate_bed_delta).clamp(climate_min_bed, max_safe_bed);
+  let initial_bed = (effective_bed + climate_init_bed_extra).clamp(climate_min_bed, max_safe_bed);
   let export_name = spool.format_concise_title();
-  let inherits = resolve_kobra_s1_filament_inherits(spool);
+  let inherits = resolve_filament_inherits_for_rig(spool, rig_opt);
 
   // Ensure retraction, wipe, z-hop, and fan_min_speed / fan_max_speed are always populated cleanly
-  let base_ret_len = first_str_from_map(&base_map, "filament_retraction_length")
-    .and_then(|s| s.parse::<f64>().ok())
-    .unwrap_or(if is_pctg {
-      1.00
-    } else if is_pctg_or_petg {
-      0.80
-    } else {
-      0.60
-    });
-  let effective_ret_len = if is_pctg && base_ret_len < 1.00 {
+  let poly_cfg = crate::constants::constants().lookup_polymer(&spool.material_type);
+  let is_external_disk_spool = spool.id.starts_with("disk_")
+    && !spool.name.starts_with("OC -")
+    && !spool.name.starts_with("OC:");
+  let base_ret_len = if is_external_disk_spool {
+    first_str_from_map(&base_map, "filament_retraction_length")
+      .and_then(|s| s.parse::<f64>().ok())
+      .unwrap_or(poly_cfg.default_retraction_mm as f64)
+  } else if spool.is_siraya_foaming_air() {
+    0.0
+  } else if spool.is_foaming_tpu() {
+    0.35
+  } else {
+    poly_cfg.default_retraction_mm as f64
+  };
+  let effective_ret_len = if spool.is_siraya_foaming_air() {
+    0.0
+  } else if is_pctg && base_ret_len < 1.00 {
     (1.00 + climate_retract_delta).clamp(0.30, 1.45)
   } else {
     (base_ret_len + climate_retract_delta).clamp(0.30, 1.45)
   };
-  let ret_len_str = if (effective_ret_len - effective_ret_len.round()).abs() < 1e-6 {
+  let ret_len_str = if effective_ret_len == 0.0 {
+    "0".to_string()
+  } else if (effective_ret_len - effective_ret_len.round()).abs() < 1e-6 {
     format!("{:.1}", effective_ret_len)
   } else {
     format!("{:.2}", effective_ret_len)
@@ -345,28 +384,34 @@ pub fn resolve_spool_orca_filament_map_with_rig(
       .trim_end_matches('.')
       .to_string()
   };
-  let ret_spd_str = if is_pctg {
-    "45".to_string()
-  } else {
+  let ret_spd_str = if is_external_disk_spool {
     first_str_from_map(&base_map, "filament_retraction_speed")
-      .unwrap_or_else(|| if is_pctg_or_petg { "40" } else { "40" }.to_string())
+      .unwrap_or_else(|| poly_cfg.default_retraction_speed_mms.to_string())
+  } else if spool.is_foaming_tpu() {
+    "25".to_string()
+  } else {
+    poly_cfg.default_retraction_speed_mms.to_string()
   };
   let fan_min_pct = spool.fan_speed_percent.clamp(0, 100);
   let fan_max_pct = if is_pctg_or_petg && fan_min_pct >= 30 {
-    90
+    90.max(fan_min_pct)
   } else {
     fan_min_pct
   };
 
-  if spool.name.starts_with("OC -") || spool.name.starts_with("OC:") {
-    base_map.remove("compatible_printers");
-  }
+  let compat_printer = rig_opt
+    .map(|r| format!("{} {} nozzle", r.printer_model, r.formatted_nozzle_diameter()))
+    .unwrap_or_else(|| {
+      let mc = &crate::constants::constants().machines[0];
+      format!("{} {} nozzle", mc.printer_model, mc.default_nozzle_diameter)
+    });
+  base_map.remove("filament_vendor");
+  base_map.insert(
+    "compatible_printers".to_string(),
+    serde_json::json!([compat_printer]),
+  );
   base_map.insert("inherits".to_string(), serde_json::json!(inherits));
   base_map.insert("name".to_string(), serde_json::json!(export_name));
-  base_map.insert(
-    "filament_vendor".to_string(),
-    serde_json::json!([FilamentSpool::normalized_brand(&spool.brand)]),
-  );
   base_map.insert(
     "filament_settings_id".to_string(),
     serde_json::json!([export_name]),
@@ -417,29 +462,38 @@ pub fn resolve_spool_orca_filament_map_with_rig(
     "nozzle_temperature_range_high".to_string(),
     serde_json::json!([range_high.to_string()]),
   );
-  base_map.insert(
-    "hot_plate_temp".to_string(),
-    serde_json::json!([effective_bed.to_string()]),
-  );
-  base_map.insert(
-    "hot_plate_temp_initial_layer".to_string(),
-    serde_json::json!([initial_bed.to_string()]),
-  );
-  base_map.insert(
-    "textured_plate_temp".to_string(),
-    serde_json::json!([effective_bed.to_string()]),
-  );
-  base_map.insert(
-    "textured_plate_temp_initial_layer".to_string(),
-    serde_json::json!([initial_bed.to_string()]),
-  );
+  for plate_key in [
+    "hot_plate_temp",
+    "textured_plate_temp",
+    "cool_plate_temp",
+    "eng_plate_temp",
+    "textured_cool_plate_temp",
+    "supertack_plate_temp",
+  ] {
+    base_map.insert(
+      plate_key.to_string(),
+      serde_json::json!([effective_bed.to_string()]),
+    );
+    base_map.insert(
+      format!("{}_initial_layer", plate_key),
+      serde_json::json!([initial_bed.to_string()]),
+    );
+  }
   base_map.insert(
     "filament_flow_ratio".to_string(),
     serde_json::json!([format!("{:.2}", spool.flow_ratio)]),
   );
   base_map.insert(
+    "enable_pressure_advance".to_string(),
+    serde_json::json!(["1"]),
+  );
+  base_map.insert(
     "pressure_advance".to_string(),
     serde_json::json!([format!("{:.3}", spool.pressure_advance)]),
+  );
+  base_map.insert(
+    "temperature_vitrification".to_string(),
+    serde_json::json!([(effective_bed + 10).max(55).to_string()]),
   );
   base_map.insert(
     "filament_max_volumetric_speed".to_string(),
@@ -500,10 +554,35 @@ pub fn resolve_spool_orca_filament_map_with_rig(
         serde_json::json!(["Spiral Lift"]),
       );
     }
+  } else {
+    for (fallback_key, fallback_val) in [
+      ("filament_diameter", "1.75"),
+      ("filament_retract_before_wipe", "0%"),
+      ("filament_deretraction_speed", "0"),
+      ("filament_wipe", "1"),
+      ("filament_wipe_distance", "2"),
+      ("filament_z_hop", "0.2"),
+      ("filament_z_hop_types", "Normal Lift"),
+    ] {
+      if !base_map.contains_key(fallback_key) {
+        base_map.insert(
+          fallback_key.to_string(),
+          serde_json::json!([fallback_val]),
+        );
+      }
+    }
+  }
+  if !base_map.contains_key("filament_diameter") {
+    base_map.insert(
+      "filament_diameter".to_string(),
+      serde_json::json!(["1.75"]),
+    );
   }
   base_map.insert(
     "filament_notes".to_string(),
-    serde_json::json!([spool.generate_descriptive_notes()]),
+    serde_json::json!([
+      spool.generate_descriptive_notes_with_effective_temps(effective_temp, effective_bed)
+    ]),
   );
   base_map.insert(
     "version".to_string(),
@@ -523,51 +602,18 @@ fn build_filament_preset_json_with_source(
   out.insert("from".to_string(), serde_json::json!(from_src));
   out.insert("is_custom_defined".to_string(), serde_json::json!("0"));
 
-  for key in [
-    "inherits",
-    "name",
-    "filament_vendor",
-    "filament_settings_id",
-    "compatible_printers",
-    "filament_type",
-    "filament_diameter",
-    "required_nozzle_HRC",
-    "default_filament_colour",
-    "nozzle_temperature",
-    "nozzle_temperature_BRASS",
-    "nozzle_temperature_HS",
-    "nozzle_temperature_initial_layer",
-    "nozzle_temperature_initial_layer_BRASS",
-    "nozzle_temperature_initial_layer_HS",
-    "nozzle_temperature_range_low",
-    "nozzle_temperature_range_high",
-    "hot_plate_temp",
-    "hot_plate_temp_initial_layer",
-    "textured_plate_temp",
-    "textured_plate_temp_initial_layer",
-    "filament_flow_ratio",
-    "pressure_advance",
-    "filament_max_volumetric_speed",
-    "fan_min_speed",
-    "fan_min_speed_BRASS",
-    "fan_min_speed_HS",
-    "fan_max_speed",
-    "fan_max_speed_BRASS",
-    "fan_max_speed_HS",
-    "filament_retraction_length",
-    "filament_retraction_speed",
-    "filament_z_hop",
-    "filament_z_hop_types",
-    "filament_retract_before_wipe",
-    "filament_deretraction_speed",
-    "filament_wipe",
-    "filament_wipe_distance",
-    "filament_notes",
-    "version",
-  ] {
+  for meta_key in ["inherits", "name", "filament_settings_id", "compatible_printers"] {
+    if let Some(v) = resolved.get(meta_key) {
+      out.insert(meta_key.to_string(), v.clone());
+    }
+  }
+  for &key in FILAMENT_SETTING_KEYS {
     if let Some(v) = resolved.get(key) {
       out.insert(key.to_string(), v.clone());
     }
+  }
+  if let Some(v) = resolved.get("version") {
+    out.insert("version".to_string(), v.clone());
   }
 
   serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_else(|_| "{}".to_string())
@@ -725,6 +771,11 @@ pub fn build_process_preset_json(
     rig.printer_model,
     rig.formatted_nozzle_diameter()
   );
+  let proc_name = if process.name.trim().is_empty() {
+    process.format_concise_title(&rig.short_model_tag())
+  } else {
+    process.name.clone()
+  };
 
   let mut out = serde_json::Map::new();
   out.insert("type".to_string(), serde_json::json!("process"));
@@ -735,10 +786,10 @@ pub fn build_process_preset_json(
     "compatible_printers".to_string(),
     serde_json::json!([compat_printer]),
   );
-  out.insert("name".to_string(), serde_json::json!(process.name));
+  out.insert("name".to_string(), serde_json::json!(proc_name));
   out.insert(
     "print_settings_id".to_string(),
-    serde_json::json!(process.name),
+    serde_json::json!(proc_name),
   );
 
   for (k, base_val) in &cat.default_process_base {
@@ -753,6 +804,7 @@ pub fn build_process_preset_json(
         | "print_settings_id"
         | "notes"
         | "version"
+        | "filename_format"
     ) {
       continue;
     }
@@ -813,6 +865,17 @@ pub fn build_process_preset_json(
   serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_else(|_| "{}".to_string())
 }
 
+fn format_retraction_length_str(ret_len: f64) -> String {
+  if (ret_len - ret_len.round()).abs() < 1e-6 {
+    format!("{:.1}", ret_len)
+  } else {
+    format!("{:.2}", ret_len)
+      .trim_end_matches('0')
+      .trim_end_matches('.')
+      .to_string()
+  }
+}
+
 /// Builds a user Machine `.json` preset from the imported OrcaSlicer machine base + rig settings
 pub fn build_machine_preset_json(rig: &MachineRig) -> String {
   let cat = crate::catalog::load_merged_catalog();
@@ -823,6 +886,11 @@ pub fn build_machine_preset_json(rig: &MachineRig) -> String {
   } else {
     rig.notes.clone()
   };
+  let mach_name = if rig.name.trim().is_empty() {
+    rig.format_concise_title()
+  } else {
+    rig.name.clone()
+  };
   let mut out = serde_json::Map::new();
   out.insert("type".to_string(), serde_json::json!("machine"));
   out.insert("from".to_string(), serde_json::json!("User"));
@@ -831,10 +899,10 @@ pub fn build_machine_preset_json(rig: &MachineRig) -> String {
     "inherits".to_string(),
     serde_json::json!(format!("{} {} nozzle", rig.printer_model, noz_diam_str)),
   );
-  out.insert("name".to_string(), serde_json::json!(rig.name));
+  out.insert("name".to_string(), serde_json::json!(mach_name));
   out.insert(
     "printer_settings_id".to_string(),
-    serde_json::json!(rig.name),
+    serde_json::json!(mach_name),
   );
   out.insert(
     "printer_model".to_string(),
@@ -850,14 +918,7 @@ pub fn build_machine_preset_json(rig: &MachineRig) -> String {
     "nozzle_diameter".to_string(),
     serde_json::json!([noz_diam_str]),
   );
-  let ret_len_str = if (rig.base_retraction_length - rig.base_retraction_length.round()).abs() < 1e-6 {
-    format!("{:.1}", rig.base_retraction_length)
-  } else {
-    format!("{:.2}", rig.base_retraction_length)
-      .trim_end_matches('0')
-      .trim_end_matches('.')
-      .to_string()
-  };
+  let ret_len_str = format_retraction_length_str(rig.base_retraction_length);
   out.insert(
     "retraction_length".to_string(),
     serde_json::json!([ret_len_str]),
@@ -901,10 +962,49 @@ pub fn build_project_settings_config_json(
   } else {
     process.notes.clone()
   };
+  let mach_name = if rig.name.trim().is_empty() {
+    rig.format_concise_title()
+  } else {
+    rig.name.clone()
+  };
+  let proc_name = if process.name.trim().is_empty() {
+    process.format_concise_title(&rig.short_model_tag())
+  } else {
+    process.name.clone()
+  };
 
-  let slot_maps: Vec<serde_json::Map<String, serde_json::Value>> = active_slots
+  let raw_slot_maps: Vec<serde_json::Map<String, serde_json::Value>> = active_slots
     .iter()
     .map(|sp| resolve_spool_orca_filament_map_with_rig(sp, Some(rig)))
+    .collect();
+  // When multiple slots share the same `filament_settings_id` (`OC - *.json`), the file on disk
+  // corresponds to the last slot with that `filament_settings_id`. Ensure all preset-level keys
+  // (`FILAMENT_SETTING_KEYS`, including `default_filament_colour`) match that canonical disk file
+  // so OrcaSlicer's `profile_print_params_same` returns true for every slot, while `filament_colour`
+  // preserves each slot's individual spool color.
+  let mut canonical_by_id: std::collections::HashMap<
+    String,
+    serde_json::Map<String, serde_json::Value>,
+  > = std::collections::HashMap::new();
+  for m in &raw_slot_maps {
+    if let Some(fid) = first_str_from_map(m, "filament_settings_id") {
+      canonical_by_id.insert(fid, m.clone());
+    }
+  }
+  let slot_maps: Vec<serde_json::Map<String, serde_json::Value>> = raw_slot_maps
+    .iter()
+    .map(|m| {
+      if let Some(fid) = first_str_from_map(m, "filament_settings_id") {
+        if let Some(canon) = canonical_by_id.get(&fid) {
+          return canon.clone();
+        }
+      }
+      m.clone()
+    })
+    .collect();
+  let slot_extruder_colours: Vec<String> = raw_slot_maps
+    .iter()
+    .map(|m| first_str_from_map(m, "default_filament_colour").unwrap_or_default())
     .collect();
 
   let collect_slot_vec = |key: &str| -> Vec<String> {
@@ -944,12 +1044,12 @@ pub fn build_project_settings_config_json(
   );
   out.insert(
     "printer_settings_id".to_string(),
-    serde_json::json!(rig.format_concise_title()),
+    serde_json::json!(mach_name),
   );
   out.insert("printer_notes".to_string(), serde_json::json!(rig_notes));
   out.insert(
     "print_settings_id".to_string(),
-    serde_json::json!(process.format_concise_title(&rig.short_model_tag())),
+    serde_json::json!(proc_name),
   );
   out.insert("notes".to_string(), serde_json::json!(proc_notes));
   out.insert(
@@ -966,8 +1066,14 @@ pub fn build_project_settings_config_json(
   );
   out.insert(
     "retraction_length".to_string(),
-    serde_json::json!([format!("{:.2}", rig.base_retraction_length)]),
+    serde_json::json!([format_retraction_length_str(rig.base_retraction_length)]),
   );
+  if rig.ace_pro_units > 0 {
+    out.insert(
+      "retraction_distances_when_cut".to_string(),
+      serde_json::json!(["18"]),
+    );
+  }
   for mach_key in ["retraction_speed", "printable_area", "printable_height"] {
     if let Some(v) = cat
       .default_machine_base
@@ -982,49 +1088,17 @@ pub fn build_project_settings_config_json(
     serde_json::json!([compat_printer]),
   );
 
-  let fil_array_keys = [
-    "filament_settings_id",
-    "filament_type",
-    "filament_diameter",
-    "required_nozzle_HRC",
-    "default_filament_colour",
-    "nozzle_temperature",
-    "nozzle_temperature_BRASS",
-    "nozzle_temperature_HS",
-    "nozzle_temperature_initial_layer",
-    "nozzle_temperature_initial_layer_BRASS",
-    "nozzle_temperature_initial_layer_HS",
-    "nozzle_temperature_range_low",
-    "nozzle_temperature_range_high",
-    "hot_plate_temp",
-    "hot_plate_temp_initial_layer",
-    "textured_plate_temp",
-    "textured_plate_temp_initial_layer",
-    "filament_flow_ratio",
-    "pressure_advance",
-    "filament_max_volumetric_speed",
-    "fan_min_speed",
-    "fan_min_speed_BRASS",
-    "fan_min_speed_HS",
-    "fan_max_speed",
-    "fan_max_speed_BRASS",
-    "fan_max_speed_HS",
-    "filament_retraction_length",
-    "filament_retraction_speed",
-    "filament_z_hop",
-    "filament_z_hop_types",
-    "filament_retract_before_wipe",
-    "filament_deretraction_speed",
-    "filament_wipe",
-    "filament_wipe_distance",
-    "filament_notes",
-  ];
-  for fk in fil_array_keys {
+  let slot_ids = collect_slot_vec("filament_settings_id");
+  out.insert(
+    "filament_settings_id".to_string(),
+    serde_json::json!(slot_ids),
+  );
+  for &fk in FILAMENT_SETTING_KEYS {
     let vals = collect_slot_vec(fk);
     if fk == "default_filament_colour" {
       out.insert(
         "filament_colour".to_string(),
-        serde_json::json!(vals.clone()),
+        serde_json::json!(slot_extruder_colours.clone()),
       );
     }
     out.insert(fk.to_string(), serde_json::json!(vals));
@@ -1094,15 +1168,19 @@ pub fn build_project_settings_config_json(
     }
   }
 
+  let filament_diff_str = FILAMENT_SETTING_KEYS.join(";");
+  let machine_diff_str = if rig.ace_pro_units > 0 {
+    "nozzle_diameter;nozzle_hrc;nozzle_type;printer_notes;retraction_distances_when_cut;retraction_length;retraction_speed"
+  } else {
+    "nozzle_diameter;nozzle_hrc;nozzle_type;printer_notes;retraction_length;retraction_speed"
+  };
+
   let mut different_settings_to_system: Vec<String> = Vec::with_capacity(active_slots.len() + 2);
   different_settings_to_system.push(proc_diff_keys.into_iter().collect::<Vec<_>>().join(";"));
   for _ in active_slots {
-    different_settings_to_system.push(FILAMENT_DIFF_KEYS.to_string());
+    different_settings_to_system.push(filament_diff_str.clone());
   }
-  different_settings_to_system.push(
-    "nozzle_diameter;nozzle_hrc;nozzle_type;printer_notes;retraction_length;retraction_speed"
-      .to_string(),
-  );
+  different_settings_to_system.push(machine_diff_str.to_string());
 
   out.insert(
     "inherits_group".to_string(),
@@ -1352,45 +1430,80 @@ pub fn parse_ace_loadout_from_bytes_or_json(data: &[u8]) -> Result<ImportedAceLo
       .map(|f| f as f32)
       .unwrap_or(1.0);
 
-    let brand = name
-      .split(&['-', ' '][..])
-      .find(|part| !part.is_empty() && *part != "Kobra")
-      .unwrap_or("Anycubic")
-      .to_string();
+    let c = crate::constants::constants();
+    let detected_b = c.detect_brand_from_text(&name);
+    let brand = if detected_b != "Generic" {
+      detected_b.to_string()
+    } else if name.starts_with("OC -") || name.starts_with("OC:") {
+      "Generic".to_string()
+    } else {
+      "Anycubic".to_string()
+    };
 
-    let brass_base = (print_temp - 5).max(190);
-    spools.push(FilamentSpool {
+    let noz_cfg = c.lookup_nozzle(&name);
+    let detected_noz = noz_cfg.id.clone();
+    let poly_cfg = c.lookup_polymer(&mat);
+
+    let hrcs = val.get("required_nozzle_HRC").and_then(|v| v.as_array());
+    let req_hrc = hrcs
+      .and_then(|a| a.get(idx))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<u32>().ok())
+      .unwrap_or_else(|| {
+        if FilamentSpool::is_abrasive_material_or_finish(&mat, &finish_type) {
+          c.hardware_limits.abrasive_required_hrc
+        } else {
+          c.hardware_limits.non_abrasive_required_hrc
+        }
+      });
+
+    let fan_mins = val.get("fan_min_speed").and_then(|v| v.as_array());
+    let fan_pct = fan_mins
+      .and_then(|a| a.get(idx))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<i32>().ok())
+      .unwrap_or(poly_cfg.default_fan_pct);
+
+    let brass_base = if noz_cfg.uses_hs_base_temp {
+      (print_temp - 5).max(190)
+    } else {
+      print_temp - noz_cfg.temp_offset_from_brass_c
+    };
+    let hs_base = brass_base + 5;
+    let mut sp = FilamentSpool {
       id: format!("imported_slot_{}", idx + 1),
       name,
       brand,
-      inherits: format!("Anycubic {} @Anycubic Kobra S1 0.4 nozzle", mat),
+      inherits: String::new(),
       material_type: mat.clone(),
-      nozzle_type: "hardened_steel".to_string(),
-      tuned_for_nozzle_type: "hardened_steel".to_string(),
-      required_nozzle_hrc: 3,
+      nozzle_type: detected_noz.clone(),
+      tuned_for_nozzle_type: detected_noz,
+      required_nozzle_hrc: req_hrc,
       color_hex: color_hex.clone(),
       color_name: format!("Slot #{} ({})", idx + 1, color_hex),
       brass_base_temp: brass_base,
-      hs_base_temp: print_temp,
+      hs_base_temp: hs_base,
       base_print_temp: brass_base,
       print_temp,
-      base_bed_temp: (bed_temp - 5).max(45),
+      base_bed_temp: bed_temp,
       bed_temp,
       flow_ratio,
       pressure_advance,
       max_volumetric_speed: max_vol,
-      fan_speed_percent: if mat == "PETG" { 40 } else { 100 },
+      fan_speed_percent: fan_pct,
       remaining_grams: 850,
-      is_loaded: true,
+      is_loaded: idx < 8,
       finish_type,
       opacity,
       pigment_stickiness,
-      drying_temp_c: if mat == "PETG" { 55 } else { 45 },
-      drying_time_hr: if mat == "PETG" { 6 } else { 4 },
+      drying_temp_c: poly_cfg.default_dry_temp_c,
+      drying_time_hr: poly_cfg.default_dry_time_hr,
       is_rfid_synced: true,
       deltas_from_base: Vec::new(),
       raw_disk_json: None,
-    });
+    };
+    sp.inherits = resolve_kobra_s1_filament_inherits(&sp);
+    spools.push(sp);
   }
 
   let flush_matrix = val

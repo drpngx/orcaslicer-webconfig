@@ -63,9 +63,9 @@ impl DetectedClientOs {
 
   pub fn anycubic_slicer_path(&self) -> &'static str {
     match self {
-      DetectedClientOs::Windows => r"C:\Users\drpng\AppData\Roaming\AnycubicSlicerNext",
+      DetectedClientOs::Windows => r"%APPDATA%\AnycubicSlicerNext",
       DetectedClientOs::MacOs => "~/Library/Application Support/AnycubicSlicerNext",
-      DetectedClientOs::Linux => "/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext",
+      DetectedClientOs::Linux => "~/.config/AnycubicSlicerNext",
     }
   }
 

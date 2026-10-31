@@ -194,17 +194,7 @@ impl CatalogFilament {
   /// `"PLA Matte"` -> `"PLA"`, `"PLA Silk"` -> `"PLA"`, `"PLA Wood"` -> `"PLA"`, etc.), so finish variants
   /// are modeled as `base_material_code() + default_finish` (e.g., `PLA` / `Wood-Filled`).
   pub fn base_material_code(&self) -> &str {
-    match self.code.as_str() {
-      "PETG Translucent" | "PETG Glow" | "PETG Conductive" | "PETG Marble"
-      | "PETG Photochromic" => "PETG",
-      "PLA Matte" | "PLA Silk" | "PLA Wood" | "PLA Metal" | "PLA Glow" | "PLA-LW Foaming"
-      | "PLA-AERO" | "PLA Conductive" | "PLA Marble" | "PLA Photochromic" => "PLA",
-      "ABS Glow" | "ABS Conductive" => "ABS",
-      "ASA-LW Foaming" | "ASA-AERO" => "ASA",
-      "TPU Glow" | "TPU Conductive" | "TPU Photochromic" | "TPU Foaming" | "TPU-AERO" => "TPU",
-      "Rebound TPU Foaming" => "Rebound TPU",
-      other => other,
-    }
+    crate::constants::constants().base_material_code(&self.code)
   }
   /// Returns a unique key `"<brand>::<code>"` for catalog lookup.
   pub fn catalog_key(&self) -> String {
@@ -213,67 +203,23 @@ impl CatalogFilament {
 }
 
 fn brand_order(brand: &str) -> usize {
-  match brand {
-    "Generic" => 0,
-    "Siraya Tech" => 1,
-    "SUNLU" => 2,
-    "Polymaker" => 3,
-    "Anycubic" => 4,
-    "Bambu Lab" => 5,
-    "eSUN" => 6,
-    "Overture" => 7,
-    _ => 20,
-  }
+  crate::constants::constants().brand_order(brand)
 }
 
 fn category_order(cat: &str) -> usize {
-  match cat {
-    "PLA Family" => 0,
-    "PETG / PCTG / PET" => 1,
-    "PC / Engineering" => 2,
-    "ABS / ASA" => 3,
-    "Nylon (PA / PAHT / PPA)" => 4,
-    "TPU / TPE / PEBA Flex" => 5,
-    "PVA / Support" => 6,
-    _ => 10,
-  }
+  crate::constants::constants().category_order(cat)
 }
 
-/// Priority within a `(brand, category)` bucket so the foundational polymers (`PLA`, `PLA+`,
-/// `PETG`, `PCTG`, `TPU`, `ASA`, `ABS`, `PC`, `PA`, `PVA`) always sort before specialty/niche
-/// variants (`PHA`, `APLA`, `PCL`, `ESD`, `CF`, etc.).
 fn polymer_priority(code: &str) -> usize {
-  match code.trim().to_uppercase().as_str() {
-    "PLA" => 0,
-    "PLA+" | "PLA PLUS" | "PLA HIGH SPEED" | "HIGH SPEED PLA" => 1,
-    "PLA MATTE" | "PLA SILK" | "POLYLITE PLA" | "POLYTERRA PLA" | "PANCHROMA PLA" | "PLA BASIC"
-    | "PLA CLASSIC" => 2,
-    "PLA-CF" | "PLA-GF" => 3,
-    "PETG" | "POLYMAKER PETG" | "POLYLITE PETG" | "HIGH SPEED MATTE PETG" | "PETG HF"
-    | "PETG TRANSLUCENT" => 0,
-    "PCTG" => 1,
-    "PETG-CF" | "PETG-GF" | "PCTG-CF" | "PCTG-GF" | "FIBREHEART PETG-CF" => 2,
-    "PET-CF" | "PET-GF" | "FIBREHEART PET-CF" => 3,
-    "TPU" | "TPU 95A" | "TPU 95A HF" | "FLEX TPU 95A HF" => 0,
-    "TPU FOR AMS" | "TPU 64D" => 1,
-    "TPU 90A" | "TPU 85A" | "FLEX TPU 85A" | "REBOUND TPU" => 2,
-    "PEBA" | "PEBA 90A" | "PEBA AIR" | "TPE" => 3,
-    "ASA" | "POLYLITE ASA" => 0,
-    "ABS" | "POLYLITE ABS" => 1,
-    "ASA-CF" | "ASA-GF" | "ABS-CF" | "ABS-GF" | "FIBREHEART ABS-CF" | "FIBREHEART ABS-GF" => 2,
-    "PC" | "POLYLITE PC" | "POLYMAX PC" => 0,
-    "PC-CF" | "PC-GF" => 1,
-    "PA" | "PA6" | "PA12" => 0,
-    "PA6-CF" | "PA-CF" | "PA12-CF" | "PAHT-CF" | "PPA-CF" => 1,
-    "PVA" | "BVOH" | "HIPS" => 0,
-    "PHA" => 15,
-    "APLA" => 16,
-    "PCL" => 20,
-    _ => 10,
-  }
+  crate::constants::constants().polymer_sort_priority(code)
 }
 
 pub fn load_merged_catalog() -> CombinedCatalog {
+  static MERGED_CATALOG: std::sync::OnceLock<CombinedCatalog> = std::sync::OnceLock::new();
+  MERGED_CATALOG.get_or_init(build_merged_catalog).clone()
+}
+
+fn build_merged_catalog() -> CombinedCatalog {
   let generated: CombinedCatalog =
     serde_json::from_str(ORCA_GENERATED_JSON).expect("Invalid generated OrcaSlicer catalog JSON");
   let additional: CombinedCatalog =
@@ -342,36 +288,19 @@ pub fn load_merged_catalog() -> CombinedCatalog {
   for f in imported_vendor.filaments {
     fil_map.insert(f.catalog_key(), f);
   }
-  // Ensure all official Anycubic Kobra S1 filaments (including Anycubic PLA-CF, PETG-CF, PET-CF, PA6-CF, PC, PLA+, TPU 95A)
-  // are available under `brand: "Anycubic"` in the catalog and dropdowns.
-  for ac_code in [
-    "PLA",
-    "PLA+",
-    "PLA-CF",
-    "PLA Matte",
-    "PLA Silk",
-    "PLA High Speed",
-    "PETG",
-    "PETG-CF",
-    "PET-CF",
-    "TPU",
-    "TPU 95A",
-    "ABS",
-    "ASA",
-    "PC",
-    "PA6-CF",
-  ] {
+  let c = crate::constants::constants();
+  for ac_code in &c.anycubic_system_filament_codes {
     let ac_key = format!("Anycubic::{}", ac_code);
     if !fil_map.contains_key(&ac_key) {
       let gen_key = format!("Generic::{}", ac_code);
       if let Some(mut base_f) = fil_map.get(&gen_key).cloned() {
+        let poly = c.lookup_polymer(ac_code);
         base_f.brand = "Anycubic".to_string();
         base_f.label = format!("Anycubic {} (@Anycubic Kobra S1 0.4 nozzle)", ac_code);
         base_f.source = "AnycubicSlicerNext System".to_string();
-        if ac_code == "PLA-CF" {
-          base_f.base_nozzle_c = 210;
-          base_f.base_bed_c = 55;
-          base_f.requires_hardened = true;
+        base_f.requires_hardened =
+          c.is_abrasive_material_or_finish(ac_code, &base_f.default_finish);
+        if poly.requires_hardened && base_f.default_finish == "Basic" {
           base_f.default_finish = "Carbon Fiber".to_string();
         }
         fil_map.insert(ac_key, base_f);
@@ -381,61 +310,27 @@ pub fn load_merged_catalog() -> CombinedCatalog {
   let mut filaments: Vec<CatalogFilament> = fil_map
     .into_values()
     .map(|mut f| {
-      let up = f.code.to_uppercase();
-      let canon = crate::models::FilamentSpool::canonical_polymer_key(&f.code);
-      if !up.contains("ESD") && !f.default_finish.eq_ignore_ascii_case("Foaming") {
-        match canon {
-          "PETG" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(225, 245);
-            f.base_bed_c = f.base_bed_c.clamp(65, 80);
-          }
-          "PETG-CF" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(235, 250);
-            f.base_bed_c = f.base_bed_c.clamp(65, 80);
-          }
-          "PCTG" | "PCTG-CF" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(245, 265);
-            f.base_bed_c = f.base_bed_c.clamp(75, 90);
-          }
-          "PLA" | "PLA+" | "PLA-CF" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(200, 225);
-            f.base_bed_c = f.base_bed_c.clamp(45, 65);
-          }
-          "PHA" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(200, 225);
-            f.base_bed_c = f.base_bed_c.clamp(45, 60);
-          }
-          "PVA" | "BVOH" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(195, 215);
-            f.base_bed_c = f.base_bed_c.clamp(45, 60);
-          }
-          "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" | "TPU-GF" | "PEBA" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(210, 240);
-            f.base_bed_c = f.base_bed_c.clamp(40, 65);
-          }
-          "ABS" | "ABS-CF" | "ASA" | "ASA-CF" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(240, 270);
-            f.base_bed_c = f.base_bed_c.clamp(90, 110);
-            f.fan_pct = f.fan_pct.min(35);
-          }
-          "PEEK" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(330, 400);
-            f.base_bed_c = f.base_bed_c.clamp(115, 145);
-            f.fan_pct = f.fan_pct.min(25);
-          }
-          "PPS" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(305, 345);
-            f.base_bed_c = f.base_bed_c.clamp(100, 120);
-            f.fan_pct = f.fan_pct.min(25);
-          }
-          "PC" | "PC-CF" | "PET-CF" | "PA" | "PA6-CF" | "PA12-CF" | "PAHT-CF" | "PPA-CF" => {
-            f.base_nozzle_c = f.base_nozzle_c.clamp(255, 305);
-            f.base_bed_c = f.base_bed_c.clamp(80, 110);
-            f.fan_pct = f.fan_pct.min(35);
-          }
-          _ => {}
-        }
+      let poly = c.lookup_polymer(&f.code);
+      f.requires_hardened =
+        crate::models::FilamentSpool::is_abrasive_material_or_finish(&f.code, &f.default_finish);
+      if !c.is_esd_or_foaming(&f.code, &f.default_finish) {
+        f.base_nozzle_c = f
+          .base_nozzle_c
+          .clamp(poly.catalog_nozzle_bounds_c[0], poly.catalog_nozzle_bounds_c[1]);
+        f.base_bed_c = f
+          .base_bed_c
+          .clamp(poly.catalog_bed_bounds_c[0], poly.catalog_bed_bounds_c[1]);
+        f.fan_pct = f
+          .fan_pct
+          .clamp(poly.catalog_fan_bounds_pct[0], poly.catalog_fan_bounds_pct[1]);
+        f.max_vol_mm3s = f
+          .max_vol_mm3s
+          .clamp(poly.catalog_mvs_bounds_mm3s[0], poly.catalog_mvs_bounds_mm3s[1]);
       }
+      f.base_nozzle_c = f.base_nozzle_c.max(poly.safe_nozzle_min_c as u16);
+      f.base_bed_c = f
+        .base_bed_c
+        .clamp(poly.safe_bed_min_c as u16, poly.safe_bed_max_c as u16);
       f
     })
     .collect();
@@ -449,7 +344,10 @@ pub fn load_merged_catalog() -> CombinedCatalog {
 
   let mut default_filament_bases = generated.default_filament_bases;
   for base_map in default_filament_bases.values_mut() {
-    base_map.remove("compatible_printers");
+    base_map.insert(
+      "compatible_printers".to_string(),
+      serde_json::json!(["Anycubic Kobra S1 0.4 nozzle"]),
+    );
   }
 
   let mut vendor_filament_bases = generated.vendor_filament_bases;
@@ -457,7 +355,10 @@ pub fn load_merged_catalog() -> CombinedCatalog {
     vendor_filament_bases.insert(k, v);
   }
   for base_map in vendor_filament_bases.values_mut() {
-    base_map.remove("compatible_printers");
+    base_map.insert(
+      "compatible_printers".to_string(),
+      serde_json::json!(["Anycubic Kobra S1 0.4 nozzle"]),
+    );
   }
 
   CombinedCatalog {
@@ -799,5 +700,122 @@ mod tests {
     assert_eq!(pet_cf.brand, "SUNLU");
     pet_cf.apply_material_change("PETG-CF", "e3d_obxidian_04");
     assert!(pet_cf.name.contains("SUNLU"));
+  }
+
+  #[test]
+  fn test_every_catalog_filament_exports_valid_kobra_s1_dropdown_json_and_roundtrips() {
+    let cat = load_merged_catalog();
+    let rig = crate::models::MachineRig::kobra_s1_hardened_steel_png();
+    let procs = crate::models::ProcessProfile::get_default_processes();
+    let valid_kobra_s1_inherits = [
+      "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA Matte @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA Silk @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA Glow @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA High Speed @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PC @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PA6-CF @Anycubic Kobra S1 0.4 nozzle",
+    ];
+
+    // 1. Verify default_filament_bases and vendor_filament_bases always carry Kobra S1 compatible_printers
+    for (k, base_map) in &cat.default_filament_bases {
+      assert_eq!(
+        base_map.get("compatible_printers"),
+        Some(&serde_json::json!(["Anycubic Kobra S1 0.4 nozzle"])),
+        "default_filament_bases['{}'] must have compatible_printers = ['Anycubic Kobra S1 0.4 nozzle']",
+        k
+      );
+    }
+    for (k, base_map) in &cat.vendor_filament_bases {
+      assert_eq!(
+        base_map.get("compatible_printers"),
+        Some(&serde_json::json!(["Anycubic Kobra S1 0.4 nozzle"])),
+        "vendor_filament_bases['{}'] must have compatible_printers = ['Anycubic Kobra S1 0.4 nozzle']",
+        k
+      );
+    }
+
+    // 2. Verify every single CatalogFilament entry exports with compatible_printers = ["Anycubic Kobra S1 0.4 nozzle"], no filament_vendor, inherits a valid Kobra S1 base, and round-trips through AnycubicSlicerNext.conf
+    for (idx, fil) in cat.filaments.iter().enumerate() {
+      let spool = crate::models::FilamentSpool::from_catalog_entry(1, fil, "hardened_steel");
+      assert!(
+        spool.name.starts_with("OC - "),
+        "Catalog filament {:?} produced non-OC name '{}'",
+        fil,
+        spool.name
+      );
+      let json_str = crate::threemf::export_standalone_filament_json(&spool, &rig);
+      let val: serde_json::Value =
+        serde_json::from_str(&json_str).expect("Valid exported filament JSON");
+      assert_eq!(
+        val.get("compatible_printers"),
+        Some(&serde_json::json!(["Anycubic Kobra S1 0.4 nozzle"])),
+        "Exported filament '{}' ({} / {}) must have compatible_printers = ['Anycubic Kobra S1 0.4 nozzle']!",
+        spool.name,
+        fil.brand,
+        fil.code
+      );
+      assert!(
+        val.get("filament_vendor").is_none(),
+        "Exported filament '{}' ({} / {}) must NOT contain filament_vendor (causes 3MF slot mismatch)!",
+        spool.name,
+        fil.brand,
+        fil.code
+      );
+      let inherits = val["inherits"].as_str().unwrap_or("");
+      assert!(
+        valid_kobra_s1_inherits.contains(&inherits),
+        "Exported filament '{}' has invalid Kobra S1 inherits '{}'",
+        spool.name,
+        inherits
+      );
+
+      // Test round-trip save & re-import for all Anycubic filaments and every 15th vendor filament
+      if fil.brand == "Anycubic" || idx % 15 == 0 {
+        let mut entries = vec![crate::fs_access::ScannedFileEntry {
+          relative_path: "AnycubicSlicerNext.conf".to_string(),
+          filename: "AnycubicSlicerNext.conf".to_string(),
+          bytes: br#"{
+            "app": { "preset_folder": "434139", "version": "2.0.0.3", "flush_multiplier": "1.000000" },
+            "models": [{ "model": "Anycubic Kobra S1", "nozzle_diameter": "0.4", "vendor": "Anycubic" }],
+            "presets": { "machine": "Anycubic Kobra S1 0.4 nozzle" },
+            "anycubic_presets": [{
+              "machine": "Anycubic Kobra S1 0.4 nozzle",
+              "process": "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle",
+              "filament": "Anycubic PLA @Anycubic Kobra S1 0.4 nozzle"
+            }]
+          }"#
+            .to_vec(),
+        }];
+        let _ = crate::dir_import::sync_live_state_to_entries(
+          &mut entries,
+          std::slice::from_ref(&rig),
+          &rig.id,
+          std::slice::from_ref(&spool),
+          &procs,
+          &procs[0].id,
+          &["0".to_string()],
+          1.0,
+          "AnycubicSlicerNext.conf",
+          &[],
+          &serde_json::Map::new(),
+        );
+        let reimported = crate::dir_import::import_scanned_directory(&entries).unwrap();
+        assert_eq!(
+          reimported.filaments[0].name, spool.name,
+          "Round-trip failed for {} ({}): expected '{}', got '{}'",
+          fil.brand, fil.code, spool.name, reimported.filaments[0].name
+        );
+      }
+    }
   }
 }
