@@ -579,6 +579,18 @@ impl TransformationEngine {
         scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
+        id: "line_width_geometry".to_string(),
+        name: "Nozzle-Proportional Line Width & Extrusion Geometry Optimizer".to_string(),
+        description: "Sets every per-feature line width as a % of the active nozzle diameter: Initial Layer 125% (wide adhesion bead), Outer Wall 105%, Top Surface 95% (crisp tops & lettering), Inner Wall & Sparse Infill 125% (thicker, stronger, faster internal ribs). Rescales automatically on 0.2–1.0mm nozzle swaps.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "📏".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/line_width_geometry.lua").to_string(),
+        priority: 15,
+        scope: crate::transformations::RuleScopeFilter::default(),
+      },
+      TransformationRule {
         id: "volumetric_speed_ceiling".to_string(),
         name: "Volumetric Speed Ceiling Rule".to_string(),
         description: "Caps outer wall, inner wall, and infill speeds dynamically to min(Hotend_max_flow, Filament_max_flow) / (Layer_Height * Line_Width) so a wider nozzle or faster process never outruns the melt zone.".to_string(),
@@ -788,6 +800,18 @@ impl TransformationEngine {
   /// Curated rule templates for the interactive "Create / Add New Lua Rule" builder in `WizardTab`.
   pub fn get_rule_templates() -> Vec<TransformationRule> {
     vec![
+      TransformationRule {
+        id: "line_width_geometry".to_string(),
+        name: "Nozzle-Proportional Line Width & Extrusion Geometry Optimizer".to_string(),
+        description: "Per-feature line widths as % of nozzle diameter: Initial 125%, Outer 105%, Top 95%, Inner Wall & Sparse Infill 125% (Balanced / Strength / Fine Detail presets).".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "📏".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/line_width_geometry.lua").to_string(),
+        priority: 15,
+        scope: crate::transformations::RuleScopeFilter::default(),
+      },
       TransformationRule {
         id: "support_tuning".to_string(),
         name: "Support Detachability & Tree Tuning Pack".to_string(),
@@ -1074,6 +1098,7 @@ end
       match rule.id.as_str() {
         "thermal_conductivity"
         | "rig_addons_cooling"
+        | "line_width_geometry"
         | "volumetric_speed_ceiling"
         | "flush_volumes_matrix"
         | "symptom_bed_adhesion_petg"
@@ -1494,7 +1519,6 @@ end
                     | "inner_wall_speed"
                     | "sparse_infill_speed"
                     | "default_acceleration"
-                    | "sparse_infill_line_width"
                 ) {
                   if let (Ok(b_num), Ok(a_num)) = (
                     before_str.trim().parse::<f64>(),
@@ -2490,6 +2514,10 @@ end
         include_str!("../transformations/parametric/bridge_overhang_tuning.lua"),
       ),
       (
+        "line_width_geometry",
+        include_str!("../transformations/parametric/line_width_geometry.lua"),
+      ),
+      (
         "mach_fast_start_gcode",
         include_str!("../transformations/parametric/mach_fast_start_gcode.lua"),
       ),
@@ -2608,6 +2636,7 @@ impl ParameterizedCalibrationTemplate {
       || matches!(
         self.id.as_str(),
         "support_tuning" | "ironing_tuning" | "dimensional_precision" | "bridge_overhang_tuning"
+          | "line_width_geometry"
       )
   }
 
@@ -2753,7 +2782,7 @@ mod tests {
   #[test]
   fn test_parameterized_calibration_templates_build_and_execute() {
     let templates = TransformationEngine::get_parameterized_calibration_templates();
-    assert_eq!(templates.len(), 41);
+    assert_eq!(templates.len(), 42);
 
     // Verify transparent glass wizard generates and executes cleanly on both filament and process JSON
     let glass = templates
@@ -4015,5 +4044,101 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     let legacy = r#"{"id":"x","name":"x","description":"","category":"c","icon":"i","enabled":true,"condition_expr":"all","lua_code":"","priority":10}"#;
     let parsed: TransformationRule = serde_json::from_str(legacy).unwrap();
     assert!(parsed.scope.is_all());
+  }
+
+  #[test]
+  fn test_line_width_geometry_default_on_nozzle_proportional_and_exported() {
+    // 1. Enabled by default in the default stack, right after the hardware rules
+    let defaults = TransformationEngine::get_default_rules();
+    let lw_rule = defaults
+      .iter()
+      .find(|r| r.id == "line_width_geometry")
+      .expect("line_width_geometry default rule exists");
+    assert!(lw_rule.enabled, "line_width_geometry must be default-on");
+    let bed_rule = defaults
+      .iter()
+      .find(|r| r.id == "symptom_bed_adhesion_petg")
+      .unwrap();
+    assert!(lw_rule.priority < bed_rule.priority);
+
+    // 2. Nozzle-proportional widths on 0.4mm and 0.6mm nozzles
+    let (cfg_04, _, _) = execute_transformation_lua(
+      &lw_rule.lua_code,
+      &json!({}),
+      &json!({ "nozzle_diameter": "0.4" }),
+    )
+    .expect("0.4mm executes");
+    assert_eq!(cfg_04["initial_layer_line_width"], "0.50");
+    assert_eq!(cfg_04["outer_wall_line_width"], "0.42");
+    assert_eq!(cfg_04["top_surface_line_width"], "0.38");
+    assert_eq!(cfg_04["inner_wall_line_width"], "0.50");
+    assert_eq!(cfg_04["sparse_infill_line_width"], "0.50");
+    assert_eq!(cfg_04["internal_solid_infill_line_width"], "0.42");
+
+    let (cfg_06, _, _) = execute_transformation_lua(
+      &lw_rule.lua_code,
+      &json!({}),
+      &json!({ "nozzle_diameter": 0.6 }),
+    )
+    .expect("0.6mm executes");
+    assert_eq!(cfg_06["initial_layer_line_width"], "0.75");
+    assert_eq!(cfg_06["outer_wall_line_width"], "0.63");
+    assert_eq!(cfg_06["top_surface_line_width"], "0.57");
+    assert_eq!(cfg_06["inner_wall_line_width"], "0.75");
+    assert_eq!(cfg_06["sparse_infill_line_width"], "0.75");
+
+    // 3. Strength preset & validation
+    let tpl = TransformationEngine::get_parameterized_calibration_templates()
+      .into_iter()
+      .find(|t| t.id == "line_width_geometry")
+      .expect("line_width_geometry template");
+    let mut ans = tpl.default_answers();
+    tpl.apply_answer_change(&mut ans, "geometry_preset", "strength".to_string());
+    assert_eq!(ans.get("inner_pct").map(|s| s.as_str()), Some("135"));
+    let (_, _, _, strength_lua) = tpl.generate_from_answers(&ans, "all");
+    let (cfg_str, _, _) =
+      execute_transformation_lua(&strength_lua, &json!({}), &json!({ "nozzle_diameter": "0.4" }))
+        .unwrap();
+    assert_eq!(cfg_str["inner_wall_line_width"], "0.54");
+    ans.insert("inner_pct".to_string(), "100".to_string());
+    ans.insert("outer_pct".to_string(), "110".to_string());
+    assert!(tpl.validate_answers(&ans, "all").is_err());
+
+    // 4. Full default stack: bed-adhesion rule still widens the 125% first layer by +10% (0.55mm),
+    // and widths land in every exported process preset without double-scaling.
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let mut rules = defaults.clone();
+    TransformationEngine::sync_rules_for_rig(
+      &mut rules,
+      &rig.nozzle_type,
+      &rig.nozzle_material,
+      rig.ace_pro_units,
+    );
+    let base = OrcaProfile::get_stock_kobra_s1();
+    let ctx = json!({
+      "printer_model": rig.printer_model,
+      "nozzle_type": rig.nozzle_type,
+      "nozzle_material": rig.nozzle_material,
+      "nozzle_diameter": rig.nozzle_diameter,
+      "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "filament_max_flow": 16.0,
+      "filament_type": "PETG",
+    });
+    let processes = crate::models::ProcessProfile::get_default_processes();
+    let per_proc = TransformationEngine::evaluate_stack_per_process(&base, &rules, &ctx, &processes);
+    for proc in &processes {
+      let ov = &per_proc[&proc.id];
+      assert_eq!(
+        ov.get("initial_layer_line_width").and_then(|v| v.as_str()),
+        Some("0.55"),
+        "process {}",
+        proc.name
+      );
+      let proc_json = crate::threemf::build_process_preset_json(proc, &rig, ov);
+      let val: serde_json::Value = serde_json::from_str(&proc_json).unwrap();
+      assert_eq!(val["inner_wall_line_width"].as_str(), Some("0.50"), "process {}", proc.name);
+      assert_eq!(val["sparse_infill_line_width"].as_str(), Some("0.50"), "process {}", proc.name);
+      assert_eq!(val["top_surface_line_width"].as_str(), Some("0.38"), "process {}", proc.name);
+    }
   }
 }

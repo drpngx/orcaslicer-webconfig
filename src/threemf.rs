@@ -796,8 +796,6 @@ pub fn resolve_effective_orca_profile_values(
         "layer_height"
           | "line_width"
           | "outer_wall_line_width"
-          | "inner_wall_line_width"
-          | "sparse_infill_line_width"
           | "outer_wall_speed"
           | "inner_wall_speed"
           | "sparse_infill_speed"
@@ -857,18 +855,8 @@ pub fn resolve_effective_orca_profile_values(
       let scaled_spd = (raw_spd * scale).round().max(15.0);
       effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", scaled_spd)));
     }
-    let infill_lw_scale = get_user_scale("sparse_infill_line_width");
-    if (infill_lw_scale - 1.0).abs() > 1e-4 {
-      let base_infill_lw = effective
-        .get("sparse_infill_line_width")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(process.line_width * 1.07);
-      effective.insert(
-        "sparse_infill_line_width".to_string(),
-        serde_json::json!(format!("{:.2}", base_infill_lw * infill_lw_scale)),
-      );
-    }
+    // `inner_wall_line_width` / `sparse_infill_line_width` now flow straight through from the
+    // Lua stack (nozzle-proportional Line Width Geometry pack + relative symptom wizards).
     if !has_wet_filament_first_layer {
       effective.insert(
         "initial_layer_speed".to_string(),

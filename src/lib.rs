@@ -185,10 +185,32 @@ pub fn App() -> Html {
       .unwrap_or_else(OrcaProfile::get_stock_kobra_s1)
   });
   let rules = use_state(|| {
-    (*saved_state)
+    let mut list = (*saved_state)
       .as_ref()
       .map(|s| s.rules.clone())
-      .unwrap_or_default()
+      .unwrap_or_default();
+    // Migration: inject newly added default-on rules into previously saved stacks
+    // (e.g. the Nozzle-Proportional Line Width Geometry pack), right after the hardware rules.
+    if !list.is_empty() {
+      for new_id in ["line_width_geometry"] {
+        if !list.iter().any(|r| r.id == new_id) {
+          if let Some(def) = TransformationEngine::get_default_rules()
+            .into_iter()
+            .find(|r| r.id == new_id)
+          {
+            TransformationEngine::normalize_stack_order(&mut list);
+            let insert_at = list
+              .iter()
+              .rposition(|r| r.id == "rig_addons_cooling" || r.id == "thermal_conductivity")
+              .map(|p| p + 1)
+              .unwrap_or(0);
+            list.insert(insert_at.min(list.len()), def);
+            TransformationEngine::reindex_priorities(&mut list);
+          }
+        }
+      }
+    }
+    list
   });
 
   // Local Disk & ZIP Source Metadata State

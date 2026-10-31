@@ -27,14 +27,21 @@ function apply(config, ctx)
   local inner_spd = tonumber(config["inner_wall_speed"]) or 300
   local infill_spd = tonumber(config["sparse_infill_speed"]) or 350
 
+  -- Wider inner walls / sparse infill (e.g. 125% Line Width Geometry pack) carry more plastic per mm,
+  -- so each feature gets its own ceiling from its own line width.
+  local inner_w = tonumber(config["inner_wall_line_width"]) or line_w
+  local infill_w = tonumber(config["sparse_infill_line_width"]) or line_w
+  local inner_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * inner_w))
+  local infill_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * infill_w))
+
   if outer_spd > safe_ceiling then
     config["outer_wall_speed"] = tostring(safe_ceiling)
   end
-  if inner_spd > safe_ceiling then
-    config["inner_wall_speed"] = tostring(safe_ceiling)
+  if inner_spd > inner_ceiling then
+    config["inner_wall_speed"] = tostring(inner_ceiling)
   end
-  if infill_spd > safe_ceiling then
-    config["sparse_infill_speed"] = tostring(safe_ceiling)
+  if infill_spd > infill_ceiling then
+    config["sparse_infill_speed"] = tostring(infill_ceiling)
   end
 
   print("[VolumetricCeiling] min(" .. string.format("%.1f", hotend_flow) .. ", " .. string.format("%.1f", filament_flow) .. ") / (" .. string.format("%.2f", layer_h) .. " * " .. string.format("%.2f", line_w) .. ") = " .. tostring(safe_ceiling) .. " mm/s safe speed ceiling")
