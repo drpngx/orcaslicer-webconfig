@@ -650,13 +650,24 @@ pub fn resolve_effective_orca_profile_values(
       .get("sparse_infill_density")
       .and_then(|v| v.as_str())
       == Some("100%");
+  let has_wet_filament_first_layer = derived_overrides
+    .get("_wet_filament_init_bed_boost_c")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<i32>().ok())
+    .unwrap_or(0)
+    > 0;
 
   for (k, v) in derived_overrides {
+    if k.starts_with('_') {
+      continue;
+    }
     // Do not let single-process/single-filament speed caps from `derived_overrides` overwrite
     // each distinct ProcessProfile's own speeds (`outer_wall_speed`, `inner_wall_speed`, `sparse_infill_speed`,
-    // `internal_solid_infill_speed`, `initial_layer_speed`, `default_acceleration`), unless Optical Glass mode is active.
-    // Also prevent low travel_acceleration (< 8000 mm/s²) from causing stringing during travel departures.
+    // `internal_solid_infill_speed`, `initial_layer_speed`, `default_acceleration`), unless Optical Glass mode
+    // or Wet Filament first-layer recovery is active.
     if !is_optical_glass_mode
+      && !(has_wet_filament_first_layer
+        && matches!(k.as_str(), "initial_layer_speed" | "initial_layer_infill_speed"))
       && matches!(
         k.as_str(),
         "layer_height"
@@ -695,10 +706,15 @@ pub fn resolve_effective_orca_profile_values(
       ("outer_wall_speed", process.outer_wall_speed),
       ("inner_wall_speed", process.inner_wall_speed),
       ("sparse_infill_speed", process.sparse_infill_speed),
-      ("initial_layer_speed", process.initial_layer_speed),
       ("default_acceleration", process.default_acceleration),
     ] {
       effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", raw_spd)));
+    }
+    if !has_wet_filament_first_layer {
+      effective.insert(
+        "initial_layer_speed".to_string(),
+        serde_json::json!(format!("{:.0}", process.initial_layer_speed)),
+      );
     }
   }
   if effective.get("seam_slope_type").and_then(|v| v.as_str()) == Some("contour") {

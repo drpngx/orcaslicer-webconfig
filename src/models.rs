@@ -2390,7 +2390,15 @@ impl WebConfigStateSnapshot {
     }
 
     for default_rule in crate::transformations::TransformationEngine::get_default_rules() {
-      if !self.rules.iter().any(|r| r.id == default_rule.id) {
+      if let Some(existing_rule) = self.rules.iter_mut().find(|r| r.id == default_rule.id) {
+        if existing_rule.id == "sym_wet_filament"
+          && !existing_rule.lua_code.contains("humidity_pct")
+        {
+          existing_rule.name = default_rule.name;
+          existing_rule.description = default_rule.description;
+          existing_rule.lua_code = default_rule.lua_code;
+        }
+      } else {
         self.rules.push(default_rule);
       }
     }

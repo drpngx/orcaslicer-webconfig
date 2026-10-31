@@ -322,12 +322,34 @@ impl TransformationEngine {
         lua_code: include_str!("../transformations/parametric/sym_weather_climate.lua").to_string(),
         priority: 54,
       },
+      TransformationRule {
+        id: "sym_wet_filament".to_string(),
+        name: "Wet / Damp Filament — Humidity (% RH) Auto-Tuner (1st-Layer Holes, Mis-Adhesion & Stringing)".to_string(),
+        description: "Set your ACE Pro / drybox hygrometer humidity (% RH, e.g. 40% RH) to automatically lower upper-layer nozzle temp (-3°C at 40% RH while keeping 1st layer at full temp), seal 1st-layer steam pinholes (+4°C 1st-layer bed, 0.56mm width @ 35 mm/s, 1.04× bottom flow), trim upper flow (-0.01), and add +0.15mm anti-steam retraction (45% pre-wipe, Spiral Z-Hop).".to_string(),
+        category: "Filament Tuning Rule".to_string(),
+        icon: "💧".to_string(),
+        enabled: false,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/sym_wet_filament.lua").to_string(),
+        priority: 55,
+      },
     ]
   }
 
   /// Curated rule templates for the interactive "Create / Add New Lua Rule" builder in `WizardTab`.
   pub fn get_rule_templates() -> Vec<TransformationRule> {
     vec![
+      TransformationRule {
+        id: "sym_wet_filament".to_string(),
+        name: "Wet / Damp Filament — Humidity (% RH) Auto-Tuner (1st-Layer Holes, Mis-Adhesion & Stringing)".to_string(),
+        description: "Set your ACE Pro / drybox hygrometer humidity (% RH, e.g. 40% RH) to automatically lower upper-layer nozzle temp (-3°C at 40% RH while keeping 1st layer at full temp), seal 1st-layer steam pinholes (+4°C 1st-layer bed, 0.56mm width @ 35 mm/s, 1.04× bottom flow), trim upper flow (-0.01), and add +0.15mm anti-steam retraction (45% pre-wipe, Spiral Z-Hop).".to_string(),
+        category: "Filament Tuning Rule".to_string(),
+        icon: "💧".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/sym_wet_filament.lua").to_string(),
+        priority: 55,
+      },
       TransformationRule {
         id: "tpu_foaming_shore".to_string(),
         name: "Active-Foaming TPU Shore Hardness & Expansion Tuner (60A–92A)".to_string(),

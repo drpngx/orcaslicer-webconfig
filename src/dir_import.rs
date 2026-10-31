@@ -1890,12 +1890,131 @@ pub fn sync_live_state_to_entries(
 
   // 4. Synchronize all `filaments` (including newly added `OC:` spools and edited spools)
   // into `user/<user_folder_id>/filament/<sanitized_name>.json`
+  let wet_rh = derived_overrides
+    .get("_wet_filament_rh")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<i32>().ok())
+    .unwrap_or(0);
+  let wet_temp_drop = derived_overrides
+    .get("_wet_filament_temp_drop_c")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<i32>().ok())
+    .unwrap_or(0);
+  let wet_init_bed_boost = derived_overrides
+    .get("_wet_filament_init_bed_boost_c")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<i32>().ok())
+    .unwrap_or(0);
+  let wet_flow_trim = derived_overrides
+    .get("_wet_filament_flow_trim")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<f64>().ok())
+    .unwrap_or(0.0);
+  let wet_retract_add = derived_overrides
+    .get("_wet_filament_retract_add_mm")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<f64>().ok())
+    .unwrap_or(0.0);
+  let wet_retract_before_wipe = derived_overrides
+    .get("_wet_filament_retract_before_wipe_pct")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<i32>().ok());
+
   for spool in filaments {
     let export_title = spool.format_concise_title();
     let fname = crate::models::sanitize_profile_filename(&export_title);
     let raw_fname = crate::models::sanitize_profile_filename(&spool.name);
     let default_rel_path = format!("user/{}/filament/{}", user_folder_id, fname);
-    let fil_json = crate::threemf::export_standalone_filament_json(spool, &active_rig);
+    let mut fil_json = crate::threemf::export_standalone_filament_json(spool, &active_rig);
+    if wet_rh > 20 && !spool.is_foaming_tpu() {
+      if let Ok(serde_json::Value::Object(mut fmap)) =
+        serde_json::from_str::<serde_json::Value>(&fil_json)
+      {
+        let (min_noz, max_noz) =
+          FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type);
+        let (_, max_bed) = FilamentSpool::polymer_safe_bed_bounds(&spool.material_type);
+        for noz_key in [
+          "nozzle_temperature",
+          "nozzle_temperature_BRASS",
+          "nozzle_temperature_HS",
+        ] {
+          if let Some(cur_t) = fmap
+            .get(noz_key)
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<i32>().ok())
+          {
+            let new_t = (cur_t + wet_temp_drop).clamp(min_noz, max_noz);
+            fmap.insert(noz_key.to_string(), serde_json::json!([new_t.to_string()]));
+          }
+        }
+        if wet_init_bed_boost > 0 {
+          for plate_init_key in [
+            "hot_plate_temp_initial_layer",
+            "textured_plate_temp_initial_layer",
+            "cool_plate_temp_initial_layer",
+            "eng_plate_temp_initial_layer",
+            "textured_cool_plate_temp_initial_layer",
+            "supertack_plate_temp_initial_layer",
+          ] {
+            if let Some(cur_b) = fmap
+              .get(plate_init_key)
+              .and_then(|v| v.as_array())
+              .and_then(|a| a.first())
+              .and_then(|x| x.as_str())
+              .and_then(|s| s.parse::<i32>().ok())
+            {
+              let new_b = (cur_b + wet_init_bed_boost).min(max_bed);
+              fmap.insert(
+                plate_init_key.to_string(),
+                serde_json::json!([new_b.to_string()]),
+              );
+            }
+          }
+        }
+        if wet_flow_trim.abs() > 1e-6 {
+          if let Some(cur_f) = fmap
+            .get("filament_flow_ratio")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+          {
+            let new_f = (cur_f + wet_flow_trim).clamp(0.85, 1.05);
+            fmap.insert(
+              "filament_flow_ratio".to_string(),
+              serde_json::json!([format!("{:.2}", new_f)]),
+            );
+          }
+        }
+        if wet_retract_add > 0.0 {
+          if let Some(cur_r) = fmap
+            .get("filament_retraction_length")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+          {
+            let new_r = (cur_r + wet_retract_add).clamp(0.30, 1.45);
+            let r_str = crate::constants::PolymerConstants::format_retraction_mm(new_r);
+            fmap.insert(
+              "filament_retraction_length".to_string(),
+              serde_json::json!([r_str]),
+            );
+          }
+        }
+        if let Some(rbw_pct) = wet_retract_before_wipe {
+          fmap.insert(
+            "filament_retract_before_wipe".to_string(),
+            serde_json::json!([format!("{}%", rbw_pct)]),
+          );
+        }
+        if let Ok(pretty) = serde_json::to_string_pretty(&serde_json::Value::Object(fmap)) {
+          fil_json = pretty;
+        }
+      }
+    }
 
     if let Some(existing) = entries.iter_mut().find(|e| {
       e.relative_path == default_rel_path
