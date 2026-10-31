@@ -286,7 +286,7 @@ impl TransformationEngine {
         enabled: true,
         condition_expr: "all".to_string(),
         lua_code: include_str!("../transformations/volumetric_speed_ceiling.lua").to_string(),
-        priority: 15,
+        priority: 98,
       },
       TransformationRule {
         id: "flush_volumes_matrix".to_string(),
@@ -870,6 +870,7 @@ end
     let mut active_rule_count = 0;
     let mut rule_sources: HashMap<String, String> = HashMap::new();
     let mut rule_changes: Vec<RuleBeforeAfterChange> = Vec::new();
+    let mut user_rule_scales: HashMap<String, f64> = HashMap::new();
 
     let extract_scalar = |v: &serde_json::Value| -> String {
       match v {
@@ -961,6 +962,32 @@ end
                 };
                 let after_fmt = format!("{}{}", after_str, unit_suffix);
                 let delta_summary = compute_delta_summary(&before_str, &after_str, unit);
+                if !matches!(
+                  rule.id.as_str(),
+                  "volumetric_speed_ceiling"
+                    | "rule_volumetric_speed_ceiling"
+                    | "weather_climate_adjustment"
+                    | "rule_weather_climate"
+                    | "tpu_foaming_shore"
+                    | "transparent_optical_glass"
+                ) && matches!(
+                  k.as_str(),
+                  "outer_wall_speed"
+                    | "inner_wall_speed"
+                    | "sparse_infill_speed"
+                    | "default_acceleration"
+                    | "sparse_infill_line_width"
+                ) {
+                  if let (Ok(b_num), Ok(a_num)) = (
+                    before_str.trim().parse::<f64>(),
+                    after_str.trim().parse::<f64>(),
+                  ) {
+                    if b_num > 0.0 && a_num > 0.0 {
+                      let entry = user_rule_scales.entry(k.clone()).or_insert(1.0);
+                      *entry *= a_num / b_num;
+                    }
+                  }
+                }
                 execution_logs.push(format!(
                   "   ↳ [Before → After] {} ({}): {} → {} [{}]",
                   label, k, before_fmt, after_fmt, delta_summary
@@ -1078,7 +1105,21 @@ end
       Self::build_parameter_provenance(&diff_items, &rule_changes, &origin_source_name);
 
     let mut res_profile = base_profile.clone();
-    if let serde_json::Value::Object(map) = current_values {
+    if let serde_json::Value::Object(mut map) = current_values {
+      if let Some(eval_lh) = base_profile.get_str("layer_height") {
+        map.insert(
+          "_evaluated_for_layer_height".to_string(),
+          serde_json::Value::String(eval_lh),
+        );
+      }
+      for (k, scale) in user_rule_scales {
+        if (scale - 1.0).abs() > 1e-4 {
+          map.insert(
+            format!("_user_rule_scale_{}", k),
+            serde_json::Value::String(format!("{:.6}", scale)),
+          );
+        }
+      }
       res_profile.values = map;
     }
 

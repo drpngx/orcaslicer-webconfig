@@ -1944,7 +1944,8 @@ pub fn sync_live_state_to_entries(
   let active_slots: Vec<&FilamentSpool> = filaments.iter().take(ams_slots).collect();
   let active_proc_name = processes
     .iter()
-    .find(|p| p.id == active_process_id)
+    .find(|p| (p.layer_height - 0.20).abs() < 0.01 && p.quality_tier() == "standard")
+    .or_else(|| processes.iter().find(|p| p.id == active_process_id))
     .or_else(|| processes.first())
     .map(|p| p.name.clone())
     .unwrap_or_else(|| "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string());

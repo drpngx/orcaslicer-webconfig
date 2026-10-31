@@ -766,6 +766,19 @@ pub fn resolve_effective_orca_profile_values(
     .unwrap_or(0)
     > 0;
 
+  let eval_lh = derived_overrides
+    .get("_evaluated_for_layer_height")
+    .and_then(|v| v.as_str())
+    .and_then(|s| s.parse::<f64>().ok())
+    .unwrap_or(process.layer_height);
+  let get_user_scale = |key: &str| -> f64 {
+    derived_overrides
+      .get(&format!("_user_rule_scale_{}", key))
+      .and_then(|v| v.as_str())
+      .and_then(|s| s.parse::<f64>().ok())
+      .unwrap_or(1.0)
+  };
+
   for (k, v) in derived_overrides {
     if k.starts_with('_') {
       continue;
@@ -806,18 +819,54 @@ pub fn resolve_effective_orca_profile_values(
         }
       }
     }
+    // Scale layer-height-dependent overrides (`support_top_z_distance`, `support_bottom_z_distance`,
+    // `top_shell_thickness`, `bottom_shell_thickness`) accurately for this specific `process.layer_height`.
+    if (process.layer_height - eval_lh).abs() > 1e-4 && eval_lh > 0.01 {
+      if matches!(k.as_str(), "support_top_z_distance" | "support_bottom_z_distance") {
+        if let Some(zd_val) = v.as_str().and_then(|s| s.parse::<f64>().ok()) {
+          if zd_val > 0.01 {
+            let zd_offset = zd_val - eval_lh;
+            let adjusted = (process.layer_height + zd_offset).max(0.04);
+            effective.insert(k.clone(), serde_json::json!(format!("{:.2}", adjusted)));
+            continue;
+          }
+        }
+      } else if matches!(k.as_str(), "top_shell_thickness" | "bottom_shell_thickness") {
+        if let Some(th_val) = v.as_str().and_then(|s| s.parse::<f64>().ok()) {
+          if th_val > 0.01 {
+            let adjusted = th_val * (process.layer_height / eval_lh);
+            effective.insert(k.clone(), serde_json::json!(format!("{:.2}", adjusted)));
+            continue;
+          }
+        }
+      }
+    }
     effective.insert(k.clone(), v.clone());
   }
   if !is_optical_glass_mode {
-    // Preserve each ProcessProfile's exact configured speeds and acceleration without artificial hotend clamping
-    // (OrcaSlicer enforces each filament's `filament_max_volumetric_speed` dynamically at slice time).
+    // Preserve each ProcessProfile's exact configured speeds and acceleration without artificial hotend clamping,
+    // while applying any explicit user-enabled speed/acceleration/line-width Lua rule scale factors!
     for (key, raw_spd) in [
       ("outer_wall_speed", process.outer_wall_speed),
       ("inner_wall_speed", process.inner_wall_speed),
       ("sparse_infill_speed", process.sparse_infill_speed),
       ("default_acceleration", process.default_acceleration),
     ] {
-      effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", raw_spd)));
+      let scale = get_user_scale(key);
+      let scaled_spd = (raw_spd * scale).round().max(15.0);
+      effective.insert(key.to_string(), serde_json::json!(format!("{:.0}", scaled_spd)));
+    }
+    let infill_lw_scale = get_user_scale("sparse_infill_line_width");
+    if (infill_lw_scale - 1.0).abs() > 1e-4 {
+      let base_infill_lw = effective
+        .get("sparse_infill_line_width")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(process.line_width * 1.07);
+      effective.insert(
+        "sparse_infill_line_width".to_string(),
+        serde_json::json!(format!("{:.2}", base_infill_lw * infill_lw_scale)),
+      );
     }
     if !has_wet_filament_first_layer {
       effective.insert(
@@ -2331,5 +2380,89 @@ mod tests {
       "OC - PHA • 0.4 Hardened must not trigger any safety warnings at export: {:?}",
       warnings
     );
+  }
+
+  #[test]
+  fn test_per_process_lua_layer_height_and_speed_scaling_across_all_5_presets() {
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let procs = ProcessProfile::get_default_processes();
+    let active_proc = &procs[0]; // 0.20mm Standard @Kobra S1 (layer_height=0.20, outer_wall_speed=200, sparse_infill_speed=270)
+
+    let mut base = crate::orca_profile::OrcaProfile::get_stock_kobra_s1();
+    base.set_str("layer_height", &format!("{:.2}", active_proc.layer_height));
+    base.set_str(
+      "outer_wall_speed",
+      &format!("{:.0}", active_proc.outer_wall_speed),
+    );
+    base.set_str(
+      "inner_wall_speed",
+      &format!("{:.0}", active_proc.inner_wall_speed),
+    );
+    base.set_str(
+      "sparse_infill_speed",
+      &format!("{:.0}", active_proc.sparse_infill_speed),
+    );
+
+    let mut rules = crate::transformations::TransformationEngine::get_default_rules();
+    rules.push(crate::transformations::TransformationRule {
+      id: "rule_test_support_and_speed".to_string(),
+      name: "Test Support Z-Gap & Speed Scaling".to_string(),
+      description: "Scales outer_wall_speed by 0.75x, sparse_infill_speed by 0.80x, and sets support_top_z_distance = layer_height + 0.04".to_string(),
+      category: "Process".to_string(),
+      icon: "tune".to_string(),
+      enabled: true,
+      priority: 95,
+      condition_expr: "true".to_string(),
+      lua_code: r#"
+function apply(config, ctx)
+  local lh = tonumber(config["layer_height"]) or 0.20
+  config["support_top_z_distance"] = string.format("%.2f", lh + 0.04)
+  config["top_shell_thickness"] = string.format("%.2f", lh * 6.0)
+  local ow = tonumber(config["outer_wall_speed"]) or 200
+  config["outer_wall_speed"] = tostring(math.floor(ow * 0.75 + 0.5))
+  local si = tonumber(config["sparse_infill_speed"]) or 270
+  config["sparse_infill_speed"] = tostring(math.floor(si * 0.80 + 0.5))
+end
+"#.to_string(),
+    });
+
+    let ctx = serde_json::json!({
+      "printer_model": rig.printer_model,
+      "nozzle_type": rig.nozzle_type,
+      "nozzle_material": rig.nozzle_material,
+      "nozzle_diameter": rig.nozzle_diameter,
+      "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "filament_max_flow": 18.0,
+      "layer_height": active_proc.layer_height,
+      "line_width": active_proc.line_width,
+    });
+
+    let eval_res =
+      crate::transformations::TransformationEngine::evaluate_stack(&base, &rules, &ctx);
+    let derived_overrides = &eval_res.resulting_profile.values;
+
+    // 1. 0.20mm Standard (base outer=200 -> 150, base infill=270 -> 216, lh=0.20 -> zd=0.24, top_thick=1.20)
+    let p_020_std: serde_json::Value =
+      serde_json::from_str(&build_process_preset_json(&procs[0], &rig, derived_overrides)).unwrap();
+    assert_eq!(p_020_std["support_top_z_distance"], serde_json::json!("0.24"));
+    assert_eq!(p_020_std["top_shell_thickness"], serde_json::json!("1.20"));
+    assert_eq!(p_020_std["outer_wall_speed"], serde_json::json!("150"));
+    assert_eq!(p_020_std["sparse_infill_speed"], serde_json::json!("216"));
+
+    // 2. 0.12mm Quality (base outer=60 -> 45, base infill=200 -> 160, lh=0.12 -> zd=0.16, top_thick=0.72)
+    let p_012_hq: serde_json::Value =
+      serde_json::from_str(&build_process_preset_json(&procs[3], &rig, derived_overrides)).unwrap();
+    assert_eq!(p_012_hq["support_top_z_distance"], serde_json::json!("0.16"));
+    assert_eq!(p_012_hq["top_shell_thickness"], serde_json::json!("0.72"));
+    assert_eq!(p_012_hq["outer_wall_speed"], serde_json::json!("45"));
+    assert_eq!(p_012_hq["sparse_infill_speed"], serde_json::json!("160"));
+
+    // 3. 0.28mm Speed (base outer=250 -> 188, base infill=320 -> 256, lh=0.28 -> zd=0.32, top_thick=1.68)
+    let p_028_spd: serde_json::Value =
+      serde_json::from_str(&build_process_preset_json(&procs[4], &rig, derived_overrides)).unwrap();
+    assert_eq!(p_028_spd["support_top_z_distance"], serde_json::json!("0.32"));
+    assert_eq!(p_028_spd["top_shell_thickness"], serde_json::json!("1.68"));
+    assert_eq!(p_028_spd["outer_wall_speed"], serde_json::json!("188"));
+    assert_eq!(p_028_spd["sparse_infill_speed"], serde_json::json!("256"));
   }
 }

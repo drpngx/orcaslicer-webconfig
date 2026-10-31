@@ -142,44 +142,6 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
         </div>
 
         <div class="flex flex-wrap items-center gap-space-md">
-          // 3-Way High Quality / Standard / High Speed Toggle
-          <div class="flex items-center bg-surface-container-lowest p-1 rounded-lg border border-outline-variant font-mono text-xs">
-            {for [
-              ("high_quality", "🎯 High Quality"),
-              ("standard", "⚖️ Standard"),
-              ("high_speed", "🚀 High Speed"),
-            ].into_iter().map(|(tier_id, tier_label)| {
-              let matching_proc = props
-                .processes
-                .iter()
-                .find(|p| p.quality_tier() == tier_id)
-                .or_else(|| props.processes.first());
-              let is_sel = active_proc.quality_tier() == tier_id;
-              let target_pid = matching_proc.map(|p| p.id.clone()).unwrap_or_default();
-              let cb = on_select_process.clone();
-
-              html! {
-                <button
-                  class={format!(
-                    "px-space-md py-1.5 rounded transition-all cursor-pointer {}",
-                    if is_sel {
-                      "bg-primary text-on-primary font-bold shadow"
-                    } else {
-                      "text-on-surface-variant hover:text-on-surface"
-                    }
-                  )}
-                  onclick={Callback::from(move |_| {
-                    if !target_pid.is_empty() {
-                      cb.emit(target_pid.clone());
-                    }
-                  })}
-                >
-                  {tier_label}
-                </button>
-              }
-            })}
-          </div>
-
           <button
             class="flex items-center gap-space-xs bg-surface-container-high hover:bg-surface-bright text-on-surface px-space-md py-space-sm rounded-lg text-xs font-semibold transition-colors cursor-pointer"
             onclick={
@@ -216,6 +178,38 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
             </h2>
           </div>
           <div class="flex items-center gap-space-sm flex-wrap">
+            <div class="flex items-center gap-1.5 bg-surface-container-lowest px-2 py-1 rounded-lg border border-outline-variant font-mono text-[11px]">
+              <span class="text-on-surface-variant">{"Previewing Process Preset:"}</span>
+              {for props.processes.iter().map(|proc_item| {
+                let is_sel = proc_item.id == active_proc.id;
+                let target_pid = proc_item.id.clone();
+                let cb = on_select_process.clone();
+                let short_label = format!("{:.2} {}", proc_item.layer_height, match proc_item.quality_tier() {
+                  "high_quality" => "HQ",
+                  "high_speed" => "Spd",
+                  _ => "Std",
+                });
+                html! {
+                  <button
+                    class={format!(
+                      "px-1.5 py-0.5 rounded transition-colors cursor-pointer {}",
+                      if is_sel {
+                        "bg-primary text-on-primary font-bold"
+                      } else {
+                        "text-on-surface-variant hover:text-on-surface"
+                      }
+                    )}
+                    onclick={Callback::from(move |_| {
+                      if !target_pid.is_empty() {
+                        cb.emit(target_pid.clone());
+                      }
+                    })}
+                  >
+                    {short_label}
+                  </button>
+                }
+              })}
+            </div>
             <div class="flex items-center bg-surface-container-lowest p-0.5 rounded-lg border border-outline-variant font-mono text-xs">
               <button
                 class={format!(

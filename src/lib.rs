@@ -1755,9 +1755,14 @@ pub fn App() -> Html {
       } else {
         active_slots.clone()
       };
+      let default_3mf_proc = processes
+        .iter()
+        .find(|p| (p.layer_height - 0.20).abs() < 0.01 && p.quality_tier() == "standard")
+        .cloned()
+        .unwrap_or_else(|| active_proc.clone());
       let zip_bytes = build_3mf_project_container(
         &active_rig,
-        &active_proc,
+        &default_3mf_proc,
         &slots,
         &flush_matrix,
         &derived_overrides,
