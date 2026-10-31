@@ -884,6 +884,40 @@ pub fn resolve_effective_orca_profile_values(
   effective
 }
 
+pub const EXTRA_PROCESS_OVERRIDE_KEYS: &[&str] = &[
+  "seam_slope_inner_walls",
+  "avoid_crossing_perimeters",
+  "enable_support",
+  "support_type",
+  "support_style",
+  "support_top_z_distance",
+  "support_bottom_z_distance",
+  "support_interface_top_layers",
+  "support_interface_bottom_layers",
+  "support_interface_spacing",
+  "support_interface_speed",
+  "ironing_type",
+  "ironing_flow",
+  "ironing_speed",
+  "ironing_spacing",
+  "top_surface_pattern",
+  "only_one_wall_top",
+  "wall_sequence",
+  "precise_outer_wall",
+  "xy_hole_compensation",
+  "xy_contour_compensation",
+  "elefant_foot_compensation",
+  "bridge_flow",
+  "bridge_speed",
+  "enable_overhang_speed",
+  "detect_overhang_wall",
+  "overhang_1_4_speed",
+  "overhang_2_4_speed",
+  "overhang_3_4_speed",
+  "overhang_4_4_speed",
+  "overhang_fan_speed",
+];
+
 /// Builds a user Process `.json` preset from the imported OrcaSlicer process base + Lua-evaluated overrides
 pub fn build_process_preset_json(
   process: &ProcessProfile,
@@ -970,8 +1004,11 @@ pub fn build_process_preset_json(
       }
     }
   }
-  for extra_key in ["seam_slope_inner_walls", "avoid_crossing_perimeters"] {
-    if !out.contains_key(extra_key) {
+  for &extra_key in EXTRA_PROCESS_OVERRIDE_KEYS {
+    if !out.contains_key(extra_key)
+      && (derived_overrides.contains_key(extra_key)
+        || matches!(extra_key, "seam_slope_inner_walls" | "avoid_crossing_perimeters"))
+    {
       if let Some(v) = effective.get(extra_key).filter(|v| v.is_string()) {
         out.insert(extra_key.to_string(), v.clone());
       }
@@ -1316,8 +1353,11 @@ pub fn build_project_settings_config_json(
       }
     }
   }
-  for extra_key in ["seam_slope_inner_walls", "avoid_crossing_perimeters"] {
-    if !out.contains_key(extra_key) {
+  for &extra_key in EXTRA_PROCESS_OVERRIDE_KEYS {
+    if !out.contains_key(extra_key)
+      && (derived_overrides.contains_key(extra_key)
+        || matches!(extra_key, "seam_slope_inner_walls" | "avoid_crossing_perimeters"))
+    {
       if let Some(v) = effective.get(extra_key).filter(|v| v.is_string()) {
         out.insert(extra_key.to_string(), v.clone());
         proc_diff_keys.insert(extra_key.to_string());

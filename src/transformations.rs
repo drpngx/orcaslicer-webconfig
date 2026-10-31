@@ -366,6 +366,50 @@ impl TransformationEngine {
         priority: 48,
       },
       TransformationRule {
+        id: "support_tuning".to_string(),
+        name: "Support Detachability & Tree Tuning Pack".to_string(),
+        description: "Layer-height & polymer-aware `support_top_z_distance` (`layer_height + 0.02mm` PLA vs. `layer_height + 0.06mm` sticky PETG/PCTG/TPU, or `0.00mm` dissimilar PLA↔PETG), `support_type` (`tree(auto)` / `normal(auto)`), `support_style` (`tree_slim`, `tree_hybrid`, `snug`), and 3-layer roof interface (`0.15mm` spacing @ `60 mm/s`).".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "🏔️".to_string(),
+        enabled: false,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/support_tuning.lua").to_string(),
+        priority: 49,
+      },
+      TransformationRule {
+        id: "ironing_tuning".to_string(),
+        name: "Top Surface Ironing & Gloss Pack".to_string(),
+        description: "Polymer-aware `ironing_flow` (`12%` PLA, `18%` PETG/PCTG, `22%` ASA/ABS/PC), `ironing_type` (`topmost` / `top` / `all solid`), `ironing_speed` (`30–40 mm/s`), `ironing_spacing` (`0.12–0.15mm`), `top_surface_pattern = monotonicline`, and `only_one_wall_top = 1`.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "✨".to_string(),
+        enabled: false,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/ironing_tuning.lua").to_string(),
+        priority: 50,
+      },
+      TransformationRule {
+        id: "dimensional_precision".to_string(),
+        name: "Dimensional Tolerance & Mechanical Fit Pack".to_string(),
+        description: "Tunes mechanical tolerances for bearings, dowels, and M3/M5 hardware: `wall_sequence` (`inner-outer-inner` or `outer-inner`), `precise_outer_wall = 1`, `xy_hole_compensation` (`+0.08mm`), `xy_contour_compensation` (`-0.02mm`), and `elefant_foot_compensation` (`0.15mm`).".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "📐".to_string(),
+        enabled: false,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/dimensional_precision.lua").to_string(),
+        priority: 51,
+      },
+      TransformationRule {
+        id: "bridge_overhang_tuning".to_string(),
+        name: "Bridges & Steep Overhangs Pack".to_string(),
+        description: "Anti-sag `bridge_flow` (`0.92×` strand tension), `bridge_speed` (`28 mm/s`), progressive 4-stage overhang speed curve (`50 → 35 → 22 → 15 mm/s` across `10–25%`..`75–100%` overhangs), `detect_overhang_wall = 1`, and `overhang_fan_speed = 100%`.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "🌉".to_string(),
+        enabled: false,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/bridge_overhang_tuning.lua").to_string(),
+        priority: 56,
+      },
+      TransformationRule {
         id: "transparent_optical_glass".to_string(),
         name: "Transparent / Glass-Like Optical Clarity Mode (Rygar1432 / CNC Kitchen)".to_string(),
         description: "Tunes translucent PETG/PCTG/PLA for maximum optical clarity ('How to Print Glass'): 20 mm/s print speeds (5.0 mm³/s MVS ceiling), +0.05 (+5%) flow ratio boost to flood inter-bead micro-voids, 0% part cooling fan, 0.12mm layer height with 1.25× nozzle line width, 100% Aligned Rectilinear infill at 0°, 1 perimeter wall, 0 top/bottom shells, and 65°C Textured PEI easy-release bed temp.".to_string(),
@@ -426,6 +470,50 @@ impl TransformationEngine {
   /// Curated rule templates for the interactive "Create / Add New Lua Rule" builder in `WizardTab`.
   pub fn get_rule_templates() -> Vec<TransformationRule> {
     vec![
+      TransformationRule {
+        id: "support_tuning".to_string(),
+        name: "Support Detachability & Tree Tuning Pack".to_string(),
+        description: "Layer-height & polymer-aware `support_top_z_distance` (`layer_height + 0.02mm` PLA vs. `layer_height + 0.06mm` sticky PETG/PCTG/TPU, or `0.00mm` dissimilar PLA↔PETG), `support_type` (`tree(auto)` / `normal(auto)`), `support_style` (`tree_slim`, `tree_hybrid`, `snug`), and 3-layer roof interface.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "🏔️".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/support_tuning.lua").to_string(),
+        priority: 49,
+      },
+      TransformationRule {
+        id: "ironing_tuning".to_string(),
+        name: "Top Surface Ironing & Gloss Pack".to_string(),
+        description: "Polymer-aware `ironing_flow` (`12%` PLA, `18%` PETG/PCTG, `22%` ASA/ABS/PC), `ironing_type` (`topmost` / `top` / `all solid`), `ironing_speed`, `ironing_spacing`, and `top_surface_pattern = monotonicline`.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "✨".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/ironing_tuning.lua").to_string(),
+        priority: 50,
+      },
+      TransformationRule {
+        id: "dimensional_precision".to_string(),
+        name: "Dimensional Tolerance & Mechanical Fit Pack".to_string(),
+        description: "Tunes mechanical fit: `wall_sequence` (`inner-outer-inner` or `outer-inner`), `precise_outer_wall = 1`, `xy_hole_compensation` (`+0.08mm`), `xy_contour_compensation` (`-0.02mm`), and `elefant_foot_compensation` (`0.15mm`).".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "📐".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/dimensional_precision.lua").to_string(),
+        priority: 51,
+      },
+      TransformationRule {
+        id: "bridge_overhang_tuning".to_string(),
+        name: "Bridges & Steep Overhangs Pack".to_string(),
+        description: "Anti-sag `bridge_flow` (`0.92×`), `bridge_speed` (`28 mm/s`), progressive 4-stage overhang speed curve (`50 → 35 → 22 → 15 mm/s`), and `overhang_fan_speed = 100%`.".to_string(),
+        category: "Core Slicer Config Pack".to_string(),
+        icon: "🌉".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/parametric/bridge_overhang_tuning.lua").to_string(),
+        priority: 56,
+      },
       TransformationRule {
         id: "mach_fast_start_gcode".to_string(),
         name: "⚠️ Fast-Start & Unpacked G9111 / Bambu Machine G-Code (POTENTIALLY DANGEROUS)".to_string(),
@@ -1947,6 +2035,22 @@ end
         include_str!("../transformations/parametric/sym_weather_climate.lua"),
       ),
       (
+        "support_tuning",
+        include_str!("../transformations/parametric/support_tuning.lua"),
+      ),
+      (
+        "ironing_tuning",
+        include_str!("../transformations/parametric/ironing_tuning.lua"),
+      ),
+      (
+        "dimensional_precision",
+        include_str!("../transformations/parametric/dimensional_precision.lua"),
+      ),
+      (
+        "bridge_overhang_tuning",
+        include_str!("../transformations/parametric/bridge_overhang_tuning.lua"),
+      ),
+      (
         "mach_fast_start_gcode",
         include_str!("../transformations/parametric/mach_fast_start_gcode.lua"),
       ),
@@ -2060,7 +2164,12 @@ impl ParameterizedCalibrationTemplate {
   }
 
   pub fn is_symptom_wizard(&self) -> bool {
-    self.id.starts_with("sym_") || self.id.starts_with("mach_")
+    self.id.starts_with("sym_")
+      || self.id.starts_with("mach_")
+      || matches!(
+        self.id.as_str(),
+        "support_tuning" | "ironing_tuning" | "dimensional_precision" | "bridge_overhang_tuning"
+      )
   }
 
   /// Returns the 7 top-level categories in the Print Quality & Troubleshooting Category Tree:
@@ -2205,7 +2314,7 @@ mod tests {
   #[test]
   fn test_parameterized_calibration_templates_build_and_execute() {
     let templates = TransformationEngine::get_parameterized_calibration_templates();
-    assert_eq!(templates.len(), 37);
+    assert_eq!(templates.len(), 41);
 
     // Verify transparent glass wizard generates and executes cleanly on both filament and process JSON
     let glass = templates
@@ -3138,5 +3247,212 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       "net_delta_summary: {}",
       temp_prov.net_delta_summary
     );
+  }
+
+  #[test]
+  fn test_four_core_slicer_config_transformation_packs_and_per_process_export() {
+    let templates = TransformationEngine::get_parameterized_calibration_templates();
+
+    // 1. Pack #1: Support Detachability & Tree Tuning (`support_tuning.lua`)
+    let support_tpl = templates
+      .iter()
+      .find(|t| t.id == "support_tuning")
+      .expect("support_tuning template exists");
+    let mut sup_ans = support_tpl.default_answers();
+    assert_eq!(
+      sup_ans.get("support_preset").map(|s| s.as_str()),
+      Some("auto_polymer")
+    );
+    let (_, _, _, sup_lua) = support_tpl.generate_from_answers(&sup_ans, "all");
+
+    // In auto_polymer mode at 0.20mm LH: PLA gets 0.20 + 0.02 = 0.22mm; PETG gets 0.20 + 0.06 = 0.26mm
+    let (sup_pla, _, _) = execute_transformation_lua(
+      &sup_lua,
+      &json!({ "layer_height": "0.20" }),
+      &json!({ "filament_type": "PLA", "layer_height": 0.20 }),
+    )
+    .expect("support_tuning PLA executes");
+    assert_eq!(sup_pla["enable_support"], "1");
+    assert_eq!(sup_pla["support_type"], "tree(auto)");
+    assert_eq!(sup_pla["support_style"], "tree_slim");
+    assert_eq!(sup_pla["support_top_z_distance"], "0.22");
+    assert_eq!(sup_pla["support_bottom_z_distance"], "0.22");
+    assert_eq!(sup_pla["support_interface_top_layers"], "3");
+    assert_eq!(sup_pla["support_interface_spacing"], "0.15");
+    assert_eq!(sup_pla["support_interface_speed"], "60");
+
+    let (sup_petg, _, _) = execute_transformation_lua(
+      &sup_lua,
+      &json!({ "layer_height": "0.20" }),
+      &json!({ "filament_type": "PETG", "layer_height": 0.20 }),
+    )
+    .expect("support_tuning PETG executes");
+    assert_eq!(sup_petg["support_top_z_distance"], "0.26");
+
+    // Zero-gap dissimilar interface preset snaps top_z_offset_mm and interface_spacing_mm to 0.00
+    support_tpl.apply_answer_change(
+      &mut sup_ans,
+      "support_preset",
+      "zero_gap_dissimilar".to_string(),
+    );
+    assert_eq!(
+      sup_ans.get("top_z_offset_mm").map(|s| s.as_str()),
+      Some("0.00")
+    );
+    assert_eq!(
+      sup_ans.get("interface_spacing_mm").map(|s| s.as_str()),
+      Some("0.00")
+    );
+    let (_, _, _, sup_zero_lua) = support_tpl.generate_from_answers(&sup_ans, "all");
+    let (sup_zero, _, _) = execute_transformation_lua(
+      &sup_zero_lua,
+      &json!({ "layer_height": "0.20" }),
+      &json!({ "filament_type": "PETG", "layer_height": 0.20 }),
+    )
+    .expect("support_tuning zero_gap executes");
+    assert_eq!(sup_zero["support_top_z_distance"], "0.00");
+    assert_eq!(sup_zero["support_interface_spacing"], "0.00");
+
+    // Incompatible tree(auto) + snug is blocked by validate()
+    sup_ans.insert("support_type".to_string(), "tree(auto)".to_string());
+    sup_ans.insert("support_style".to_string(), "snug".to_string());
+    assert!(support_tpl.validate_answers(&sup_ans, "all").is_err());
+
+    // 2. Pack #2: Top Surface Ironing & Gloss (`ironing_tuning.lua`)
+    let ironing_tpl = templates
+      .iter()
+      .find(|t| t.id == "ironing_tuning")
+      .expect("ironing_tuning template exists");
+    let mut iron_ans = ironing_tpl.default_answers();
+    let (_, _, _, iron_lua) = ironing_tpl.generate_from_answers(&iron_ans, "all");
+
+    // Polymer-aware auto_polymer: 12% PLA @ 35mm/s, 18% PETG @ 30mm/s, 22% ASA @ 40mm/s
+    let (iron_pla, _, _) = execute_transformation_lua(
+      &iron_lua,
+      &json!({}),
+      &json!({ "filament_type": "PLA" }),
+    )
+    .expect("ironing PLA executes");
+    assert_eq!(iron_pla["ironing_type"], "topmost");
+    assert_eq!(iron_pla["ironing_flow"], "12%");
+    assert_eq!(iron_pla["ironing_speed"], "35");
+    assert_eq!(iron_pla["ironing_spacing"], "0.15");
+    assert_eq!(iron_pla["top_surface_pattern"], "monotonicline");
+    assert_eq!(iron_pla["only_one_wall_top"], "1");
+
+    let (iron_petg, _, _) = execute_transformation_lua(
+      &iron_lua,
+      &json!({}),
+      &json!({ "filament_type": "PETG" }),
+    )
+    .expect("ironing PETG executes");
+    assert_eq!(iron_petg["ironing_flow"], "18%");
+    assert_eq!(iron_petg["ironing_speed"], "30");
+
+    let (iron_asa, _, _) = execute_transformation_lua(
+      &iron_lua,
+      &json!({}),
+      &json!({ "filament_type": "ASA" }),
+    )
+    .expect("ironing ASA executes");
+    assert_eq!(iron_asa["ironing_flow"], "22%");
+    assert_eq!(iron_asa["ironing_speed"], "40");
+    assert_eq!(iron_asa["ironing_spacing"], "0.12");
+
+    // Excessive flow (>25%) at slow speed (<25 mm/s) is blocked by validate()
+    iron_ans.insert("ironing_flow_pct".to_string(), "30".to_string());
+    iron_ans.insert("ironing_speed_mms".to_string(), "20".to_string());
+    assert!(ironing_tpl.validate_answers(&iron_ans, "all").is_err());
+
+    // 3. Pack #3: Dimensional Tolerance & Mechanical Fit (`dimensional_precision.lua`)
+    let dim_tpl = templates
+      .iter()
+      .find(|t| t.id == "dimensional_precision")
+      .expect("dimensional_precision template exists");
+    let mut dim_ans = dim_tpl.default_answers();
+    dim_tpl.apply_answer_change(&mut dim_ans, "fit_preset", "mechanical_exact".to_string());
+    assert_eq!(
+      dim_ans.get("wall_sequence").map(|s| s.as_str()),
+      Some("outer-inner")
+    );
+    let (_, _, _, dim_lua) = dim_tpl.generate_from_answers(&dim_ans, "all");
+    let (dim_cfg, _, _) =
+      execute_transformation_lua(&dim_lua, &json!({}), &json!({})).expect("dimensional_precision executes");
+    assert_eq!(dim_cfg["wall_sequence"], "outer-inner");
+    assert_eq!(dim_cfg["precise_outer_wall"], "1");
+    assert_eq!(dim_cfg["xy_hole_compensation"], "0.080");
+    assert_eq!(dim_cfg["xy_contour_compensation"], "-0.020");
+    assert_eq!(dim_cfg["elefant_foot_compensation"], "0.15");
+
+    // 4. Pack #4: Bridges & Steep Overhangs (`bridge_overhang_tuning.lua`)
+    let br_tpl = templates
+      .iter()
+      .find(|t| t.id == "bridge_overhang_tuning")
+      .expect("bridge_overhang_tuning template exists");
+    let mut br_ans = br_tpl.default_answers();
+    let (_, _, _, br_lua) = br_tpl.generate_from_answers(&br_ans, "all");
+    let (br_cfg, _, _) =
+      execute_transformation_lua(&br_lua, &json!({}), &json!({})).expect("bridge_overhang_tuning executes");
+    assert_eq!(br_cfg["bridge_flow"], "0.92");
+    assert_eq!(br_cfg["bridge_speed"], "28");
+    assert_eq!(br_cfg["enable_overhang_speed"], "1");
+    assert_eq!(br_cfg["detect_overhang_wall"], "1");
+    assert_eq!(br_cfg["overhang_1_4_speed"], "50");
+    assert_eq!(br_cfg["overhang_2_4_speed"], "35");
+    assert_eq!(br_cfg["overhang_3_4_speed"], "22");
+    assert_eq!(br_cfg["overhang_4_4_speed"], "15");
+    assert_eq!(br_cfg["overhang_fan_speed"], "100");
+
+    // Non-monotonic overhang speed curve is blocked by validate()
+    br_ans.insert("overhang_2_4_speed".to_string(), "60".to_string());
+    assert!(br_tpl.validate_answers(&br_ans, "all").is_err());
+
+    // 5. Verify all 4 packs export cleanly across all 5 Process profiles (`0.12mm HQ` .. `0.28mm Speed`)!
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let processes = crate::models::ProcessProfile::get_default_processes();
+    let mut rules = TransformationEngine::get_default_rules();
+    for r in &mut rules {
+      if matches!(
+        r.id.as_str(),
+        "support_tuning" | "ironing_tuning" | "dimensional_precision" | "bridge_overhang_tuning"
+      ) {
+        r.enabled = true;
+      }
+    }
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("layer_height", "0.20");
+    let eval = TransformationEngine::evaluate_stack(
+      &base,
+      &rules,
+      &json!({
+        "printer_model": rig.printer_model,
+        "nozzle_type": rig.nozzle_type,
+        "nozzle_material": rig.nozzle_material,
+        "nozzle_diameter": rig.nozzle_diameter,
+        "hotend_max_flow": rig.max_volumetric_flow_limit,
+        "filament_max_flow": 16.0,
+        "filament_type": "PETG",
+        "layer_height": 0.20,
+        "line_width": 0.42,
+      }),
+    );
+
+    for proc in &processes {
+      let proc_json =
+        crate::threemf::build_process_preset_json(proc, &rig, &eval.resulting_profile.values);
+      let val: serde_json::Value = serde_json::from_str(&proc_json).unwrap();
+      let expected_zd = format!("{:.2}", proc.layer_height + 0.06);
+      assert_eq!(
+        val["support_top_z_distance"].as_str(),
+        Some(expected_zd.as_str()),
+        "process {}",
+        proc.name
+      );
+      assert_eq!(val["ironing_flow"].as_str(), Some("18%"));
+      assert_eq!(val["precise_outer_wall"].as_str(), Some("1"));
+      assert_eq!(val["xy_hole_compensation"].as_str(), Some("0.080"));
+      assert_eq!(val["bridge_flow"].as_str(), Some("0.92"));
+      assert_eq!(val["overhang_4_4_speed"].as_str(), Some("15"));
+    }
   }
 }
