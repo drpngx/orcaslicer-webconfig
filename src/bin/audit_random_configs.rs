@@ -1,5 +1,8 @@
 use orcaslicer_webconfig::catalog::{load_merged_catalog, FILAMENT_BRAND_OPTIONS, FINISH_OPTIONS};
-use orcaslicer_webconfig::dir_import::{import_scanned_directory, sync_live_state_to_entries};
+use orcaslicer_webconfig::dir_import::{
+  import_scanned_directory, sync_live_state_to_entries,
+  sync_live_state_to_entries_with_process_overrides,
+};
 use orcaslicer_webconfig::fs_access::ScannedFileEntry;
 use orcaslicer_webconfig::models::{
   FilamentSpool, MachineRig, ProcessProfile, WebConfigStateSnapshot, WEBCONFIG_APP_VERSION,
@@ -9,7 +12,9 @@ use orcaslicer_webconfig::threemf::{
   build_3mf_project_container, build_project_settings_config_json,
   parse_ace_loadout_from_bytes_or_json,
 };
-use orcaslicer_webconfig::transformations::{SafetySeverity, TransformationEngine};
+use orcaslicer_webconfig::transformations::{
+  RuleScopeFilter, SafetySeverity, TransformationEngine,
+};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -344,6 +349,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       rig.ace_pro_units,
     );
     // Toggle combinations of optional Lua symptom/filament/process rules across configs
+    let templates = TransformationEngine::get_parameterized_calibration_templates();
     for r in &mut rules {
       if r.id == "sym_wet_filament" && rng.next_usize(2) == 0 {
         r.enabled = true;
@@ -354,19 +360,107 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           orcaslicer_webconfig::lua_engine::embed_param_defaults_in_lua(&r.lua_code, &params);
       } else if matches!(
         r.id.as_str(),
+        "line_width_geometry" | "outer_wall_consistency"
+      ) && rng.next_usize(2) == 0
+      {
+        if let Some(tpl) = templates.iter().find(|t| t.id == r.id) {
+          let mut ans = tpl.default_answers();
+          if r.id == "line_width_geometry" {
+            let preset = *rng.choose(&["balanced", "strength", "fine_detail"]);
+            tpl.apply_answer_change(&mut ans, "geometry_preset", preset.to_string());
+          } else if r.id == "outer_wall_consistency" {
+            let preset = *rng.choose(&["auto_guard", "sub_resonance_gloss", "spire_safe"]);
+            tpl.apply_answer_change(&mut ans, "consistency_mode", preset.to_string());
+          }
+          let (title, desc, _badge, lua_src) = tpl.generate_from_answers(&ans, &r.condition_expr);
+          r.name = title;
+          r.description = desc;
+          r.lua_code = lua_src;
+        }
+      } else if matches!(
+        r.id.as_str(),
         "symptom_bed_adhesion_petg"
           | "symptom_spaghetti_pla"
           | "symptom_stringing_diamondback"
           | "symptom_clog_ace_pro"
           | "filament_pctg_antistringing"
           | "process_scarf_seams_arachne"
+          | "support_tuning"
+          | "ironing_tuning"
+          | "dimensional_precision"
+          | "bridge_overhang_tuning"
+          | "structural_strength"
       ) && rng.next_usize(3) == 0
       {
         r.enabled = true;
+        if let Some(tpl) = templates.iter().find(|t| t.id == r.id) {
+          let mut ans = tpl.default_answers();
+          match r.id.as_str() {
+            "support_tuning" => {
+              let preset = *rng.choose(&["auto_polymer", "snug_mechanical", "zero_gap_dissimilar"]);
+              tpl.apply_answer_change(&mut ans, "support_preset", preset.to_string());
+            }
+            "ironing_tuning" => {
+              let preset = *rng.choose(&[
+                "auto_polymer",
+                "pla_matte_satin",
+                "petg_gloss_seal",
+                "asa_abs_dense",
+              ]);
+              tpl.apply_answer_change(&mut ans, "ironing_preset", preset.to_string());
+            }
+            "dimensional_precision" => {
+              let preset = *rng.choose(&[
+                "surface_and_overhang",
+                "mechanical_exact",
+                "clearance_slip_fit",
+                "press_fit_tight",
+              ]);
+              tpl.apply_answer_change(&mut ans, "fit_preset", preset.to_string());
+            }
+            "bridge_overhang_tuning" => {
+              let preset = *rng.choose(&[
+                "tensioned_anti_sag",
+                "steep_overhang_max",
+                "high_speed_functional",
+              ]);
+              tpl.apply_answer_change(&mut ans, "bridge_preset", preset.to_string());
+            }
+            "structural_strength" => {
+              let preset = *rng.choose(&["functional", "load_bearing", "stiff_crosshatch"]);
+              tpl.apply_answer_change(&mut ans, "strength_preset", preset.to_string());
+            }
+            _ => {}
+          }
+          let (title, desc, _badge, lua_src) = tpl.generate_from_answers(&ans, &r.condition_expr);
+          r.name = title;
+          r.description = desc;
+          r.lua_code = lua_src;
+        }
+        // Exercise declarative RuleScopeFilters (Item #2) on some enabled core packs
+        if r.id == "ironing_tuning" && rng.next_usize(2) == 0 {
+          r.scope = RuleScopeFilter {
+            polymers: vec!["PLA".to_string(), "PETG".to_string()],
+            nozzle_diameters: Vec::new(),
+            nozzle_materials: Vec::new(),
+            process_tiers: vec!["fine".to_string(), "quality".to_string()],
+          };
+        } else if r.id == "structural_strength" && rng.next_usize(2) == 0 {
+          r.scope = RuleScopeFilter {
+            polymers: Vec::new(),
+            nozzle_diameters: vec!["0.4".to_string(), "0.6".to_string()],
+            nozzle_materials: Vec::new(),
+            process_tiers: vec![
+              "standard".to_string(),
+              "speed".to_string(),
+              "draft".to_string(),
+            ],
+          };
+        }
       }
     }
 
-    // Evaluate the real Lua transformation stack (including `flush_volumes_matrix.lua` and `sym_wet_filament.lua`)
+    // Evaluate the real Lua transformation stack (including `flush_volumes_matrix.lua`, per-process evaluation, and new TODO packs)
     let n = spools.len();
     let slots_json: Vec<Value> = spools
       .iter()
@@ -380,6 +474,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         })
       })
       .collect();
+    let all_filament_types: Vec<String> = spools.iter().map(|s| s.material_type.clone()).collect();
     let eval_ctx = serde_json::json!({
       "printer_model": rig.printer_model,
       "hotend": rig.hotend,
@@ -387,20 +482,35 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       "nozzle_material": rig.nozzle_material,
       "nozzle_diameter": rig.nozzle_diameter,
       "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "filament_max_flow": spools[0].max_volumetric_speed as f64,
       "melt_zone_multiplier": rig.melt_zone_multiplier,
       "flush_multiplier": 1.0,
       "layer_height": active_proc.layer_height,
       "line_width": active_proc.line_width,
       "filament_type": spools[0].material_type,
+      "filament_finish": spools[0].finish_type,
+      "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&spools[0].material_type).1,
+      "all_filament_types": all_filament_types,
       "addons": rig.addons,
       "climate_preset": rig.climate_preset,
       "ambient_temp_c": rig.ambient_temp_c,
       "humidity_pct": rig.humidity_pct,
       "slots": slots_json,
     });
-    let stack_eval = TransformationEngine::evaluate_stack(&base_profile, &rules, &eval_ctx);
+    let (seeded_base, seeded_ctx) =
+      TransformationEngine::seed_process_inputs(&base_profile, &eval_ctx, active_proc);
+    let stack_eval = TransformationEngine::evaluate_stack(&seeded_base, &rules, &seeded_ctx);
     let flush_matrix = stack_eval.flush_matrix;
-    let derived_overrides = stack_eval.resulting_profile.values;
+    let per_proc_overrides = TransformationEngine::evaluate_stack_per_process(
+      &base_profile,
+      &rules,
+      &eval_ctx,
+      &processes,
+    );
+    let derived_overrides = per_proc_overrides
+      .get(&active_proc.id)
+      .cloned()
+      .unwrap_or(stack_eval.resulting_profile.values);
 
     // Seed half of the configs with a pre-existing stale `AnycubicSlicerNext.conf` referencing stock Anycubic PLA-CF
     // so we verify `sync_live_state_to_entries` overwrites pre-existing `AnycubicSlicerNext.conf` with `OC -` spools!
@@ -424,7 +534,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         bytes: stale_conf.to_vec(),
       });
     }
-    let save_files = sync_live_state_to_entries(
+    let save_files = sync_live_state_to_entries_with_process_overrides(
       &mut entries,
       std::slice::from_ref(&rig),
       &rig.id,
@@ -436,6 +546,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       "AnycubicSlicerNext.conf",
       &[],
       &derived_overrides,
+      &per_proc_overrides,
     );
 
     for sf in &save_files {
@@ -650,10 +761,18 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
       let exp_noz_note = format!("Nozzle: {}°C", noz_t);
       let exp_bed_note = format!("Bed: {}°C", bed_t);
-      if !notes.contains(&exp_noz_note) || !notes.contains(&exp_bed_note) {
+      let exp_flow_note = format!("Flow: {:.2}", flow);
+      let exp_mvs_note = format!("Max Vol: {:.1} mm³/s", mvs);
+      let exp_fan_note = format!("Fan: {}%", fan_min);
+      if !notes.contains(&exp_noz_note)
+        || !notes.contains(&exp_bed_note)
+        || !notes.contains(&exp_flow_note)
+        || !notes.contains(&exp_mvs_note)
+        || !notes.contains(&exp_fan_note)
+      {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' filament_notes ('{}') does not match exported '{}' / '{}'",
-          cfg_name, name, notes, exp_noz_note, exp_bed_note
+          "[{}] Filament '{}' filament_notes ('{}') does not match exported '{}' / '{}' / '{}' / '{}' / '{}'",
+          cfg_name, name, notes, exp_noz_note, exp_bed_note, exp_flow_note, exp_mvs_note, exp_fan_note
         ));
       }
       if !(min_bed..=max_bed).contains(&bed_t) || bed_t > 110 || init_bed > 110 {
@@ -813,6 +932,111 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       if pval.get("internal_solid_infill_speed").is_some() {
         cfg_failures.push(format!(
           "[{}] Process '{}' leaked internal_solid_infill_speed",
+          cfg_name, pfile
+        ));
+      }
+      // Process `notes` must describe the exact exported speeds / accel / strategy
+      let pnotes = pval.get("notes").and_then(|v| v.as_str()).unwrap_or("");
+      let num_of = |k: &str| -> f64 {
+        first_str_val(&pval, k)
+          .and_then(|s| s.parse::<f64>().ok())
+          .unwrap_or(-1.0)
+      };
+      let mut exp_note_parts = vec![
+        format!("Layer Height: {:.2}mm", num_of("layer_height")),
+        format!("{:.0} mm/s Outer Wall", num_of("outer_wall_speed")),
+        format!("{:.0} mm/s Inner Wall", num_of("inner_wall_speed")),
+        format!("{:.0} mm/s Sparse Infill", num_of("sparse_infill_speed")),
+        format!("{:.0} mm/s Initial Layer", num_of("initial_layer_speed")),
+        format!("Default Accel: {:.0} mm/s²", num_of("default_acceleration")),
+      ];
+      if let Some(lw) = first_str_val(&pval, "line_width").and_then(|s| s.parse::<f64>().ok()) {
+        exp_note_parts.push(format!("Line Width: {:.2}mm", lw));
+      }
+      for k in ["wall_generator", "print_sequence"] {
+        if let Some(v) = first_str_val(&pval, k) {
+          exp_note_parts.push(format!("'{}'", v));
+        }
+      }
+      for part in &exp_note_parts {
+        if !pnotes.contains(part.as_str()) {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' notes do not match exported value '{}' (notes='{}')",
+            cfg_name, pfile, part, pnotes
+          ));
+        }
+      }
+      // Verify Item #5 (line_width_geometry default-on) and Item #6 (outer_wall_consistency default-on)
+      for lw_key in [
+        "outer_wall_line_width",
+        "inner_wall_line_width",
+        "sparse_infill_line_width",
+        "top_surface_line_width",
+        "initial_layer_line_width",
+      ] {
+        let lw_v = first_str_val(&pval, lw_key).and_then(|s| s.parse::<f64>().ok());
+        if !lw_v.map(|x| (0.15..=1.35).contains(&x)).unwrap_or(false) {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' has missing or out-of-range {}={:?}",
+            cfg_name, pfile, lw_key, first_str_val(&pval, lw_key)
+          ));
+        }
+      }
+      let dsd_ow = first_str_val(&pval, "dont_slow_down_outer_wall");
+      if !matches!(dsd_ow.as_deref(), Some("0") | Some("1")) {
+        cfg_failures.push(format!(
+          "[{}] Process '{}' missing valid dont_slow_down_outer_wall, got {:?}",
+          cfg_name, pfile, dsd_ow
+        ));
+      }
+      let sm_perim = first_str_val(&pval, "small_perimeter_speed").and_then(|s| s.parse::<f64>().ok());
+      if !sm_perim.map(|x| (20.0..=65.0).contains(&x)).unwrap_or(false) {
+        cfg_failures.push(format!(
+          "[{}] Process '{}' has invalid small_perimeter_speed={:?} (expected 20..=65 mm/s)",
+          cfg_name, pfile, first_str_val(&pval, "small_perimeter_speed")
+        ));
+      }
+      if let Some(ws) = first_str_val(&pval, "wall_sequence") {
+        if !matches!(
+          ws.as_str(),
+          "inner wall/outer wall" | "outer wall/inner wall" | "inner-outer-inner wall"
+        ) {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' has invalid OrcaSlicer wall_sequence='{}' (expected 'inner wall/outer wall', 'outer wall/inner wall', or 'inner-outer-inner wall')",
+            cfg_name, pfile, ws
+          ));
+        }
+      }
+      let ironing_rule = snap.rules.iter().find(|r| r.id == "ironing_tuning" && r.enabled);
+      if ironing_rule.is_none() && pval.get("ironing_type").is_some() {
+        cfg_failures.push(format!(
+          "[{}] Process '{}' leaked untouched ironing_type when ironing_tuning is disabled",
+          cfg_name, pfile
+        ));
+      }
+      if let Some(ir) = ironing_rule {
+        if !ir.scope.process_tiers.is_empty()
+          && pfile.contains("0.28mm")
+          && !ir.scope.process_tiers.iter().any(|t| t.contains("draft") || t.contains("0.28"))
+          && pval.get("ironing_type").is_some()
+        {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' leaked ironing_type despite process_tiers scope {:?}",
+            cfg_name, pfile, ir.scope.process_tiers
+          ));
+        }
+      }
+      let support_enabled = snap.rules.iter().any(|r| r.id == "support_tuning" && r.enabled);
+      if !support_enabled && pval.get("support_style").is_some() {
+        cfg_failures.push(format!(
+          "[{}] Process '{}' leaked untouched support_style when support_tuning is disabled",
+          cfg_name, pfile
+        ));
+      }
+      let dim_enabled = snap.rules.iter().any(|r| r.id == "dimensional_precision" && r.enabled);
+      if !dim_enabled && pval.get("xy_hole_compensation").is_some() {
+        cfg_failures.push(format!(
+          "[{}] Process '{}' leaked untouched xy_hole_compensation when dimensional_precision is disabled",
           cfg_name, pfile
         ));
       }

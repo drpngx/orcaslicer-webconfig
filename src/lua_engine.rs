@@ -2824,6 +2824,14 @@ pub fn execute_transformation_lua_with_params(
         }
       }
     }
+    if let Some(serde_json::Value::String(s)) = obj.get_mut("wall_sequence") {
+      *s = match s.trim() {
+        "inner-outer-inner" => "inner-outer-inner wall".to_string(),
+        "outer-inner" => "outer wall/inner wall".to_string(),
+        "inner-outer" => "inner wall/outer wall".to_string(),
+        other => other.to_string(),
+      };
+    }
   }
   Ok((
     resulting_config,

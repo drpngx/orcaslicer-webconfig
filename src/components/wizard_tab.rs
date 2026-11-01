@@ -2538,10 +2538,6 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                     .iter()
                     .filter(|c| c.rule_id == r.id && c.shadow_kind.is_some())
                     .count();
-                  let step_has_rev = props
-                    .rule_changes
-                    .iter()
-                    .any(|c| c.rule_id == r.id && c.shadow_kind == Some(RuleShadowKind::DirectionReversed));
 
                   html! {
                     <>
@@ -2565,11 +2561,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                           <span class="text-[9px] uppercase text-on-surface-variant">{&r.condition_expr}</span>
                           if r.enabled && step_shadow_count > 0 {
                             <span class="bg-amber-950/80 text-amber-300 border border-amber-500/60 text-[9px] font-bold px-1 py-0.2 rounded">
-                              {if step_has_rev {
-                                format!("↩️ {}", step_shadow_count)
-                              } else {
-                                format!("⚡ {}", step_shadow_count)
-                              }}
+                              {format!("⚡ {}", step_shadow_count)}
                             </span>
                           }
                         </div>
@@ -2602,9 +2594,6 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                     {for multi_rule_chains.iter().map(|(pkey, plabel, chain)| {
                       let initial_val = chain.first().map(|c| c.before_value.clone()).unwrap_or_default();
                       let final_val = chain.last().map(|c| c.after_value.clone()).unwrap_or_default();
-                      let chain_has_rev = chain
-                        .iter()
-                        .any(|c| c.shadow_kind == Some(RuleShadowKind::DirectionReversed));
                       let chain_has_ow = chain
                         .iter()
                         .any(|c| c.shadow_kind == Some(RuleShadowKind::Overwritten));
@@ -2614,11 +2603,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                             <span class="font-bold text-on-surface">
                               {format!("{} ({})", plabel, pkey)}
                             </span>
-                            if chain_has_rev {
-                              <span class="bg-amber-950/70 text-amber-300 border border-amber-500/60 px-1.5 py-0.2 rounded text-[10px] font-bold">
-                                {"↩️ Direction reversed"}
-                              </span>
-                            } else if chain_has_ow {
+                            if chain_has_ow {
                               <span class="bg-amber-950/60 text-amber-300 border border-amber-500/50 px-1.5 py-0.2 rounded text-[10px] font-bold">
                                 {"⚡ Overwritten by later rule"}
                               </span>
@@ -2628,7 +2613,6 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                             <span class="text-on-surface-variant">{format!("Base: {}", initial_val)}</span>
                             {for chain.iter().map(|step_ch| {
                               let sh_badge = match step_ch.shadow_kind {
-                                Some(RuleShadowKind::DirectionReversed) => Some("↩️ Reversed"),
                                 Some(RuleShadowKind::Overwritten) => Some("⚡ Overwritten"),
                                 None => None,
                               };
@@ -2693,9 +2677,6 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
             let has_shadow_warning = is_active && !shadowed_diffs.is_empty();
             let is_completely_shadowed =
               has_shadow_warning && shadowed_diffs.len() == per_rule_diffs.len();
-            let has_reversal_on_rule = shadowed_diffs
-              .iter()
-              .any(|c| c.shadow_kind == Some(RuleShadowKind::DirectionReversed));
             let max_shadow_step = shadowed_diffs
               .iter()
               .filter_map(|c| c.shadowed_by_step)
@@ -2746,13 +2727,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                           </span>
                           {if has_shadow_warning {
                             let badge_txt = if is_completely_shadowed {
-                              if has_reversal_on_rule {
-                                format!("⚠️ Completely Shadowed / Reversed ({}/{})", shadowed_diffs.len(), per_rule_diffs.len())
-                              } else {
-                                format!("⚠️ Completely Shadowed ({}/{} overwritten)", shadowed_diffs.len(), per_rule_diffs.len())
-                              }
-                            } else if has_reversal_on_rule {
-                              format!("↩️ Direction Reversed / Shadowed ({}/{})", shadowed_diffs.len(), per_rule_diffs.len())
+                              format!("⚠️ Completely Shadowed ({}/{} overwritten)", shadowed_diffs.len(), per_rule_diffs.len())
                             } else {
                               format!("⚡ Partially Shadowed ({}/{} overwritten)", shadowed_diffs.len(), per_rule_diffs.len())
                             };
@@ -2918,16 +2893,16 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                     }
                   }}
 
-                  // Rule Shadowing & Contradiction Detector Warning Banner (with 1-click ↑ Move Up / ↓ Move Down precedence reordering)
+                  // Rule Shadowing (absolute clobbering) Detector Warning Banner (with 1-click ↑ Move Up / ↓ Move Down precedence reordering)
                   {if has_shadow_warning {
                     html! {
                       <div class="bg-amber-950/35 border border-amber-500/70 rounded-lg p-space-sm flex flex-col gap-1.5 font-mono text-xs">
                         <div class="flex items-center justify-between flex-wrap gap-1.5">
                           <span class="text-[11px] font-bold text-amber-300">
                             {if is_completely_shadowed {
-                              format!("⚠️ Rule Completely Shadowed: All {} output parameter(s) from Step #{} are overwritten or reversed by downstream rule(s)!", shadowed_diffs.len(), step_number)
+                              format!("⚠️ Rule Completely Shadowed: All {} output parameter(s) from Step #{} are absolutely overwritten (clobbered) by downstream rule(s)!", shadowed_diffs.len(), step_number)
                             } else {
-                              format!("⚡ Rule Partially Shadowed: {} of {} parameter(s) from Step #{} are overwritten or reversed by downstream rule(s):", shadowed_diffs.len(), per_rule_diffs.len(), step_number)
+                              format!("⚡ Rule Partially Shadowed: {} of {} parameter(s) from Step #{} are absolutely overwritten (clobbered) by downstream rule(s):", shadowed_diffs.len(), per_rule_diffs.len(), step_number)
                             }}
                           </span>
                           <div class="flex items-center gap-1 flex-wrap text-[10px]">
@@ -2974,10 +2949,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                             let by_step = ch.shadowed_by_step.unwrap_or(0);
                             let by_rule = ch.shadowed_by_rule_name.as_deref().unwrap_or("downstream rule");
                             let by_val = ch.shadowed_final_value.as_deref().unwrap_or("");
-                            let prefix = match ch.shadow_kind {
-                              Some(RuleShadowKind::DirectionReversed) => "↩️ Direction reversed",
-                              _ => "⚡ Overwritten",
-                            };
+                            let prefix = "⚡ Overwritten";
                             html! {
                               <div class="flex items-center justify-between flex-wrap gap-1 bg-surface-container-lowest/70 px-2 py-0.5 rounded border border-amber-500/30">
                                 <span>
@@ -3006,10 +2978,6 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                         </span>
                         {for per_rule_diffs.iter().map(|ch| {
                           let sh_tag = match ch.shadow_kind {
-                            Some(RuleShadowKind::DirectionReversed) => Some(format!(
-                              "↩️ Reversed by Step #{}",
-                              ch.shadowed_by_step.unwrap_or(0)
-                            )),
                             Some(RuleShadowKind::Overwritten) => Some(format!(
                               "⚡ Overwritten by Step #{}",
                               ch.shadowed_by_step.unwrap_or(0)

@@ -112,7 +112,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
   let shadowed_count = props
     .provenance_items
     .iter()
-    .filter(|p| p.has_shadowed_steps || p.has_direction_reversal)
+    .filter(|p| p.has_shadowed_steps)
     .count();
   let total_step_events: usize = props.provenance_items.iter().map(|p| p.steps.len()).sum();
   let out_of_scope_count = props
@@ -125,7 +125,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
     .provenance_items
     .iter()
     .filter(|p| match provenance_filter.as_str() {
-      "shadowed" => p.has_shadowed_steps || p.has_direction_reversal,
+      "shadowed" => p.has_shadowed_steps,
       "multi_step" => p.steps.len() >= 2,
       "out_of_scope" => !p.skipped_steps.is_empty(),
       "all" => true,
@@ -1112,7 +1112,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                     <div class="flex items-center gap-space-xs flex-wrap">
                       {for [
                         ("modified", format!("Modified Lineage ({})", modified_count)),
-                        ("shadowed", format!("⚠️ Shadowed / Reversed ({})", shadowed_count)),
+                        ("shadowed", format!("⚡ Clobbered by Absolute Write ({})", shadowed_count)),
                         ("multi_step", format!("Multi-Rule Chains ≥2 ({})", multi_step_count)),
                         ("out_of_scope", format!("⏭️ Out-of-Scope Rules ({})", out_of_scope_count)),
                         ("all", format!("All Catalog Params ({})", props.provenance_items.len())),
@@ -1172,9 +1172,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                         html! {
                           <div class={format!(
                             "rounded-lg p-space-md border flex flex-col gap-space-sm transition-colors {}",
-                            if prov.has_direction_reversal {
-                              "bg-surface-container border-amber-500/80 shadow-md"
-                            } else if prov.has_shadowed_steps {
+                            if prov.has_shadowed_steps {
                               "bg-surface-container border-amber-500/60 shadow-sm"
                             } else if step_len >= 2 {
                               "bg-surface-container border-tertiary/60 shadow-sm"
@@ -1209,17 +1207,12 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                     {"0 Steps (Baseline Retained)"}
                                   </span>
                                 }
-                                if prov.has_direction_reversal {
-                                  <span class="bg-amber-950/70 text-amber-300 border border-amber-500/70 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
-                                    {"↩️ Direction reversed"}
-                                  </span>
-                                }
                                 if has_overwritten_step {
                                   <span class="bg-amber-950/60 text-amber-300 border border-amber-500/50 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
                                     {"⚡ Overwritten by later rule"}
                                   </span>
                                 }
-                                if prov.has_shadowed_steps || prov.has_direction_reversal {
+                                if prov.has_shadowed_steps {
                                   <button
                                     class="bg-surface-container-lowest hover:bg-surface-container-high text-amber-300 border border-amber-500/50 px-2 py-0.5 rounded text-[10px] font-mono font-bold cursor-pointer"
                                     title="Jump to Wizard & Lua Studio to reorder conflicting rules"
@@ -1273,14 +1266,7 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                   .iter()
                                   .filter(|earlier| earlier.shadowed_by_step == Some(step.step_number))
                                   .map(|earlier| {
-                                    match earlier.shadow_kind {
-                                      Some(RuleShadowKind::DirectionReversed) => {
-                                        format!("↩️ Reverses Step #{} ({})", earlier.step_number, earlier.after_value)
-                                      }
-                                      _ => {
-                                        format!("⚡ Overwrites Step #{} ({})", earlier.step_number, earlier.after_value)
-                                      }
-                                    }
+                                    format!("⚡ Overwrites Step #{} ({})", earlier.step_number, earlier.after_value)
                                   })
                                   .collect();
                                 html! {
@@ -1340,10 +1326,6 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                         let by_name = step.shadowed_by_rule_name.as_deref().unwrap_or("later rule");
                                         let by_val = step.shadowed_final_value.as_deref().unwrap_or("");
                                         let msg = match kind {
-                                          RuleShadowKind::DirectionReversed => format!(
-                                            "↩️ Direction reversed by Step #{}: {} (→ {})",
-                                            by_step, by_name, by_val
-                                          ),
                                           RuleShadowKind::Overwritten => format!(
                                             "⚡ Overwritten by Step #{}: {} (→ {})",
                                             by_step, by_name, by_val

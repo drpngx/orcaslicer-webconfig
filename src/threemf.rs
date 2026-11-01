@@ -655,7 +655,13 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   base_map.insert(
     "filament_notes".to_string(),
     serde_json::json!([
-      spool.generate_descriptive_notes_with_effective_temps(effective_temp, effective_bed)
+      spool.generate_descriptive_notes_with_effective_values(
+        effective_temp,
+        effective_bed,
+        effective_flow_ratio,
+        effective_mvs,
+        fan_min_pct
+      )
     ]),
   );
   base_map.insert(
@@ -817,6 +823,8 @@ pub fn resolve_effective_orca_profile_values(
     if !is_optical_glass_mode
       && !(has_wet_filament_first_layer
         && matches!(k.as_str(), "initial_layer_speed" | "initial_layer_infill_speed"))
+      && !(matches!(k.as_str(), "line_width" | "outer_wall_line_width")
+        && v.as_str() != Some("0.42"))
       && matches!(
         k.as_str(),
         "layer_height"
@@ -962,6 +970,12 @@ pub fn resolve_effective_orca_profile_values(
 }
 
 pub const EXTRA_PROCESS_OVERRIDE_KEYS: &[&str] = &[
+  "initial_layer_line_width",
+  "inner_wall_line_width",
+  "sparse_infill_line_width",
+  "top_surface_line_width",
+  "internal_solid_infill_line_width",
+  "support_line_width",
   "seam_slope_inner_walls",
   "avoid_crossing_perimeters",
   "enable_support",
@@ -1090,9 +1104,17 @@ pub fn build_process_preset_json(
       }
     }
   }
+  let lua_touched_set: Option<std::collections::HashSet<&str>> = derived_overrides
+    .get("_lua_touched_keys")
+    .and_then(|v| v.as_str())
+    .map(|s| s.split(';').filter(|k| !k.is_empty()).collect());
   for &extra_key in EXTRA_PROCESS_OVERRIDE_KEYS {
+    let is_touched = match &lua_touched_set {
+      Some(set) => set.contains(extra_key),
+      None => derived_overrides.contains_key(extra_key),
+    };
     if !out.contains_key(extra_key)
-      && (derived_overrides.contains_key(extra_key)
+      && (is_touched
         || matches!(extra_key, "seam_slope_inner_walls" | "avoid_crossing_perimeters"))
     {
       if let Some(v) = effective.get(extra_key).filter(|v| v.is_string()) {
@@ -1100,8 +1122,8 @@ pub fn build_process_preset_json(
       }
     }
   }
-  let proc_notes = if process.notes.trim().is_empty() {
-    process.generate_descriptive_notes()
+  let proc_notes = if process.has_auto_generated_notes() {
+    process.generate_descriptive_notes_with_effective_values(&effective)
   } else {
     process.notes.clone()
   };
@@ -1231,8 +1253,8 @@ pub fn build_project_settings_config_json(
   } else {
     rig.notes.clone()
   };
-  let proc_notes = if process.notes.trim().is_empty() {
-    process.generate_descriptive_notes()
+  let proc_notes = if process.has_auto_generated_notes() {
+    process.generate_descriptive_notes_with_effective_values(&effective)
   } else {
     process.notes.clone()
   };
@@ -1439,9 +1461,17 @@ pub fn build_project_settings_config_json(
       }
     }
   }
+  let lua_touched_set: Option<std::collections::HashSet<&str>> = derived_overrides
+    .get("_lua_touched_keys")
+    .and_then(|v| v.as_str())
+    .map(|s| s.split(';').filter(|k| !k.is_empty()).collect());
   for &extra_key in EXTRA_PROCESS_OVERRIDE_KEYS {
+    let is_touched = match &lua_touched_set {
+      Some(set) => set.contains(extra_key),
+      None => derived_overrides.contains_key(extra_key),
+    };
     if !out.contains_key(extra_key)
-      && (derived_overrides.contains_key(extra_key)
+      && (is_touched
         || matches!(extra_key, "seam_slope_inner_walls" | "avoid_crossing_perimeters"))
     {
       if let Some(v) = effective.get(extra_key).filter(|v| v.is_string()) {

@@ -276,7 +276,18 @@ impl RuleScopeFilter {
 
     if !self.process_tiers.is_empty() {
       if let Some(tier) = context.get("process_tier").and_then(|v| v.as_str()) {
-        if !self.process_tiers.iter().any(|t| t.eq_ignore_ascii_case(tier)) {
+        let tier_lc = tier.trim().to_lowercase();
+        let matches_tier = self.process_tiers.iter().any(|t| {
+          let tl = t.trim().to_lowercase();
+          tl == tier_lc
+            || ((tl == "0.12mm" || tl == "0.12mm fine" || tl.contains("fine")) && tier_lc == "fine")
+            || ((tl == "0.20mm quality" || tl.contains("quality")) && tier_lc == "quality")
+            || ((tl == "0.20mm standard" || tl.contains("standard")) && tier_lc == "standard")
+            || ((tl == "0.20mm speed" || tl.contains("speed")) && tier_lc == "speed")
+            || ((tl == "0.28mm" || tl == "0.28mm draft" || tl.contains("draft")) && tier_lc == "draft")
+            || (tl == "0.20mm" && matches!(tier_lc.as_str(), "quality" | "standard" | "speed"))
+        });
+        if !matches_tier {
           return Some(format!(
             "Process tier filter [{}] ≠ evaluated process tier ({})",
             self.process_tiers.join(", "),
@@ -364,10 +375,10 @@ pub fn values_are_equivalent(a: &str, b: &str) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuleShadowKind {
-  /// A downstream rule overwrote or superseded this step's value (`⚡ Overwritten by later rule`).
+  /// A downstream rule absolutely overwrote this step's value: re-running the downstream rule with this
+  /// step's change removed yields the identical result, so this step's contribution was forgotten
+  /// (`⚡ Overwritten by later rule`). Opposite-direction relative adjustments are NOT shadowing.
   Overwritten,
-  /// A downstream rule reversed the direction of this step's change or reverted its value (`↩️ Direction reversed`).
-  DirectionReversed,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -390,7 +401,7 @@ pub struct RuleBeforeAfterChange {
   pub delta_summary: String,
   #[serde(default)]
   pub rule_log: String,
-  /// Present when a downstream rule in the stack overwrote or reversed this step's parameter change.
+  /// Present when a downstream rule in the stack absolutely overwrote (clobbered) this step's parameter change.
   #[serde(default)]
   pub shadow_kind: Option<RuleShadowKind>,
   #[serde(default)]
@@ -418,12 +429,9 @@ pub struct ParameterProvenance {
   /// Enabled rules that would have touched this parameter but were out of scope for this context.
   #[serde(default)]
   pub skipped_steps: Vec<SkippedRuleInfo>,
-  /// True when >= 1 step on this parameter was overwritten or direction-reversed by a later rule.
+  /// True when >= 1 step on this parameter was absolutely overwritten (clobbered) by a later rule.
   #[serde(default)]
   pub has_shadowed_steps: bool,
-  /// True when >= 1 step on this parameter had its direction reversed or value reverted by a later rule.
-  #[serde(default)]
-  pub has_direction_reversal: bool,
 }
 
 pub fn compute_delta_summary(before_raw: &str, after_raw: &str, unit: &str) -> String {
@@ -833,8 +841,8 @@ impl TransformationEngine {
       },
       TransformationRule {
         id: "mach_fast_start_gcode".to_string(),
-        name: "⚠️ Fast-Start & Unpacked G9111 / Bambu Machine G-Code (POTENTIALLY DANGEROUS)".to_string(),
-        description: "⚠️ POTENTIALLY DANGEROUS: Unpacks Anycubic Kobra S1's `G9111` startup macro into explicit Kobra OS sub-macros (direct 140°C preheat skipping 170°C→140°C cooldown, 1–14× `WIPE_NOZZLE1`, `G28 W`, optional `LEVIQ2_AUTO_ZOFFSET`, `BED_MESH_PROFILE LOAD=\"default\"`, front or KAMP prime line) or optimizes Bambu Lab (P1S/X1C/A1) start/end G-code. Never home Z above 140°C or skip Z-offset after swapping build plates!".to_string(),
+        name: "⚠️ Startup G-Code — Rig-Specific Fast-Start & Poop-Saver (POTENTIALLY DANGEROUS)".to_string(),
+        description: "⚠️ POTENTIALLY DANGEROUS: Rig-specific G-code invoked at print startup (plus end / toolchange). Kobra S1: unpacks `G9111` into explicit Kobra OS sub-macros (direct 140°C preheat, 1–14× `WIPE_NOZZLE1`, `G28 W`, optional `LEVIQ2_AUTO_ZOFFSET`, saved bed mesh, front or KAMP prime line). Kobra S1 Max: keeps stock `G9111` + ABS heat-soak, plate/PETG Z-offset, anti-ooze end. Bambu Lab X1/P1: Bambu fast-start. Other printers keep their stock G-code. Never home Z above 140°C or skip Z-offset after swapping build plates!".to_string(),
         category: "Machine Start/End G-Code (⚠️ Potentially Dangerous)".to_string(),
         icon: "⚡".to_string(),
         enabled: false,
@@ -935,8 +943,8 @@ impl TransformationEngine {
       },
       TransformationRule {
         id: "mach_fast_start_gcode".to_string(),
-        name: "⚠️ Fast-Start & Unpacked G9111 / Bambu Machine G-Code (POTENTIALLY DANGEROUS)".to_string(),
-        description: "⚠️ POTENTIALLY DANGEROUS: Unpacks Anycubic Kobra S1's `G9111` startup macro into explicit Kobra OS sub-macros (direct 140°C preheat, 1–14× `WIPE_NOZZLE1`, `G28 W`, optional `LEVIQ2_AUTO_ZOFFSET`, `BED_MESH_PROFILE LOAD=\"default\"`, front or KAMP prime line) or optimizes Bambu Lab (P1S/X1C/A1) start/end G-code.".to_string(),
+        name: "⚠️ Startup G-Code — Rig-Specific Fast-Start & Poop-Saver (POTENTIALLY DANGEROUS)".to_string(),
+        description: "⚠️ POTENTIALLY DANGEROUS: Rig-specific G-code invoked at print startup (plus end / toolchange). Kobra S1: unpacked `G9111` sub-macros. Kobra S1 Max: stock `G9111` + ABS heat-soak, plate/PETG Z-offset, anti-ooze end. Bambu Lab X1/P1: Bambu fast-start. Other printers keep their stock G-code unchanged.".to_string(),
         category: "Machine Start/End G-Code (⚠️ Potentially Dangerous)".to_string(),
         icon: "⚡".to_string(),
         enabled: true,
@@ -1668,7 +1676,7 @@ end
       }
     }
 
-    // Detect Rule Shadowing (⚡ Overwritten by later rule) & Contradictions (↩️ Direction reversed)
+    // Detect Rule Shadowing (⚡ Overwritten by later rule): absolute clobbering only
     let parse_num_for_shadow = |raw: &str, unit: &str| -> Option<f64> {
       if unit == "flag" {
         return None;
@@ -1712,64 +1720,38 @@ end
 
         let mut detected: Option<(RuleShadowKind, usize)> = None;
 
-        // 1. Check if any downstream step reverses the numeric direction or reverts back to `curr.raw_before`
-        for &later_rec_idx in &rec_indices[(pos + 1)..] {
-          let later = &raw_step_records[later_rec_idx];
-          let is_reverted = values_are_equivalent(&later.raw_after, &curr.raw_before);
-          let is_opposite_sign = if let Some(d_curr) = curr_num_delta {
-            if let (Some(b_l), Some(a_l)) = (
-              parse_num_for_shadow(&later.raw_before, &later.unit),
-              parse_num_for_shadow(&later.raw_after, &later.unit),
-            ) {
-              let d_later = a_l - b_l;
-              d_curr.abs() > 1e-9 && d_later.abs() > 1e-9 && d_curr * d_later < 0.0
-            } else {
-              false
+        // Opposite-direction adjustments from different rules (e.g. +5°C for a hardened nozzle, -3°C for
+        // wet filament) are normal relative composition and are NOT flagged. We only flag absolute
+        // clobbering: a downstream rule whose output is identical even when `key` is restored to
+        // `curr.raw_before`, i.e. the downstream rule completely forgot `curr`'s contribution.
+        // A zero-delta numeric step contributes nothing and cannot be clobbered.
+        let curr_is_noop = matches!(curr_num_delta, Some(d) if d.abs() <= 1e-9);
+        if !curr_is_noop {
+          for &later_rec_idx in &rec_indices[(pos + 1)..] {
+            let later = &raw_step_records[later_rec_idx];
+            let Some((later_lua, later_before_snap)) = step_snapshots.get(&later.step_num) else {
+              continue;
+            };
+            let mut cf_snap = later_before_snap.clone();
+            if let serde_json::Value::Object(ref mut cf_map) = cf_snap {
+              if let Some(ref orig_v) = curr.before_json_val {
+                cf_map.insert(key.clone(), orig_v.clone());
+              } else if curr.raw_before != "(unset)" {
+                cf_map.insert(
+                  key.clone(),
+                  serde_json::Value::String(curr.raw_before.clone()),
+                );
+              } else {
+                cf_map.remove(&key);
+              }
             }
-          } else {
-            false
-          };
-          if is_reverted || is_opposite_sign {
-            detected = Some((RuleShadowKind::DirectionReversed, later_rec_idx));
-            break;
-          }
-        }
-
-        // 2. Otherwise check if a downstream step overwrites `curr`
-        if detected.is_none() {
-          if curr_num_delta.is_none() {
-            // Non-numeric string / enum / flag: any subsequent modification overwrites `curr`
-            detected = Some((RuleShadowKind::Overwritten, rec_indices[pos + 1]));
-          } else {
-            // Same-direction numeric change: check via counterfactual execution whether the downstream
-            // rule produces the exact same output even when `key` is restored to `curr.raw_before`.
-            for &later_rec_idx in &rec_indices[(pos + 1)..] {
-              let later = &raw_step_records[later_rec_idx];
-              if let Some((later_lua, later_before_snap)) = step_snapshots.get(&later.step_num) {
-                let mut cf_snap = later_before_snap.clone();
-                if let serde_json::Value::Object(ref mut cf_map) = cf_snap {
-                  if let Some(ref orig_v) = curr.before_json_val {
-                    cf_map.insert(key.clone(), orig_v.clone());
-                  } else if curr.raw_before != "(unset)" {
-                    cf_map.insert(
-                      key.clone(),
-                      serde_json::Value::String(curr.raw_before.clone()),
-                    );
-                  } else {
-                    cf_map.remove(&key);
-                  }
-                }
-                if let Ok((cf_out, _, _)) =
-                  execute_transformation_lua(later_lua, &cf_snap, context)
-                {
-                  if let serde_json::Value::Object(ref cf_out_map) = cf_out {
-                    let cf_after_str = cf_out_map.get(&key).map(&extract_scalar).unwrap_or_default();
-                    if values_are_equivalent(&cf_after_str, &later.raw_after) {
-                      detected = Some((RuleShadowKind::Overwritten, later_rec_idx));
-                      break;
-                    }
-                  }
-                }
+            if let Ok((serde_json::Value::Object(cf_out_map), _, _)) =
+              execute_transformation_lua(later_lua, &cf_snap, context)
+            {
+              let cf_after_str = cf_out_map.get(&key).map(&extract_scalar).unwrap_or_default();
+              if values_are_equivalent(&cf_after_str, &later.raw_after) {
+                detected = Some((RuleShadowKind::Overwritten, later_rec_idx));
+                break;
               }
             }
           }
@@ -1788,7 +1770,6 @@ end
           curr_change.shadowed_final_value = Some(final_after_fmt.clone());
 
           let kind_tag = match kind {
-            RuleShadowKind::DirectionReversed => "↩️ Direction Reversed",
             RuleShadowKind::Overwritten => "⚡ Overwritten by Later Rule",
           };
           execution_logs.push(format!(
@@ -1918,6 +1899,12 @@ end
           );
         }
       }
+      let mut touched_keys: Vec<String> = rule_sources.keys().cloned().collect();
+      touched_keys.sort();
+      map.insert(
+        "_lua_touched_keys".to_string(),
+        serde_json::Value::String(touched_keys.join(";")),
+      );
       res_profile.values = map;
     }
 
@@ -1976,9 +1963,6 @@ end
         "Unmodified (Baseline retained)".to_string()
       };
       let has_shadowed_steps = steps.iter().any(|s| s.shadow_kind.is_some());
-      let has_direction_reversal = steps
-        .iter()
-        .any(|s| s.shadow_kind == Some(RuleShadowKind::DirectionReversed));
       result.push(ParameterProvenance {
         param_key: item.key.clone(),
         param_label: item.label.clone(),
@@ -1992,7 +1976,6 @@ end
         is_modified: item.is_modified,
         skipped_steps: Vec::new(),
         has_shadowed_steps,
-        has_direction_reversal,
       });
     }
     result.sort_by(|a, b| {
@@ -2000,7 +1983,6 @@ end
       let b_active = b.is_modified || !b.steps.is_empty();
       b_active
         .cmp(&a_active)
-        .then(b.has_direction_reversal.cmp(&a.has_direction_reversal))
         .then(b.has_shadowed_steps.cmp(&a.has_shadowed_steps))
         .then(b.steps.len().cmp(&a.steps.len()))
         .then(a.category.cmp(&b.category))
@@ -3782,8 +3764,21 @@ end
     // 1. Default preset: Kobra S1 Trimmed Safe (140°C direct, 2× WIPE_NOZZLE1, LEVIQ2_AUTO_ZOFFSET ON, E-14 cut, E-5 end, PETG/ABS unbottleneck)
     let mut ans = fast_start.default_answers();
     let (title1, _desc1, badge1, lua1) = fast_start.generate_from_answers(&ans, "all");
-    assert!(title1.contains("Kobra S1 Unpacked G9111"), "title: {}", title1);
-    assert!(badge1.contains("LEVIQ2 Z-Offset ON"), "badge: {}", badge1);
+    // Without a rig in context the title is rig-agnostic (never names another brand)
+    assert!(title1.contains("Startup G-Code — Rig-Specific"), "title: {}", title1);
+    assert!(!title1.contains("Bambu"), "title: {}", title1);
+    let _ = badge1;
+    let kobra_desc = describe_lua_rule(
+      &lua1,
+      &HashMap::new(),
+      "all",
+      &json!({ "printer_model": "Anycubic Kobra S1" }),
+    )
+    .unwrap();
+    let kobra_title = kobra_desc.title.unwrap_or_default();
+    assert!(kobra_title.contains("Startup G-Code: Kobra S1 Unpacked G9111"), "title: {}", kobra_title);
+    assert!(!kobra_title.contains("Bambu"), "title: {}", kobra_title);
+    assert!(kobra_desc.badge.unwrap_or_default().contains("LEVIQ2 Z-Offset ON"));
     let (cfg1, _, _) = execute_transformation_lua(
       &lua1,
       &json!({
@@ -3854,7 +3849,15 @@ end
       "startup_preset",
       "bambu_fast_same_spool".to_string(),
     );
-    let (_, _, badge_bambu, lua_bambu) = fast_start.generate_from_answers(&ans, "all");
+    let (_, _, _, lua_bambu) = fast_start.generate_from_answers(&ans, "all");
+    let bambu_desc = describe_lua_rule(
+      &lua_bambu,
+      &HashMap::new(),
+      "all",
+      &json!({ "printer_model": "Bambu Lab P1S" }),
+    )
+    .unwrap();
+    let badge_bambu = bambu_desc.badge.unwrap_or_default();
     assert!(badge_bambu.contains("Bambu Fast-Start"), "badge: {}", badge_bambu);
     assert!(badge_bambu.contains("Keep AMS Loaded"), "badge: {}", badge_bambu);
     let (cfg_bambu, _, _) = execute_transformation_lua(
@@ -3877,6 +3880,77 @@ end
     assert!(gcode_bambu_end.contains("M620 S255 / T255 / M621 S255 AMS cut & unload intentionally skipped"));
     assert!(gcode_bambu_cut.contains("G1 E-18 F1200 ; Pull 18mm"));
     assert_eq!(cfg_bambu["flush_multiplier"], "0.60");
+    assert!(!gcode_bambu_start.contains("G9111"));
+    assert!(cfg_bambu.get("before_layer_change_gcode").is_none());
+    assert!(cfg_bambu.get("_kobra_unbottleneck_petg_abs").is_none());
+
+    // 3b. The family is driven by the rig, NOT the preset: a "Bambu" preset on a Kobra S1 rig emits Kobra G-code
+    let (cfg_bambu_preset_on_kobra, _, _) = execute_transformation_lua(
+      &lua_bambu,
+      &json!({}),
+      &json!({ "printer_model": "Anycubic Kobra S1" }),
+    )
+    .unwrap();
+    let k_start = cfg_bambu_preset_on_kobra["machine_start_gcode"].as_str().unwrap();
+    assert!(k_start.contains("G28 W") && !k_start.contains("G29.1"));
+    assert!(cfg_bambu_preset_on_kobra["change_filament_gcode"]
+      .as_str()
+      .unwrap()
+      .contains("G1 E-14 F1200"));
+
+    // 3c. Kobra S1 Max: stock G9111 wrapper + bed metadata, S1 Max shutdown (M141), no S1-only bits
+    let (cfg_s1max, _, _) = execute_transformation_lua(
+      &lua1,
+      &json!({ "filament_retraction_length": "1.50", "filament_max_volumetric_speed": "12.0" }),
+      &json!({ "printer_model": "Anycubic Kobra S1 Max", "filament_type": "PETG" }),
+    )
+    .unwrap();
+    let s1max_start = cfg_s1max["machine_start_gcode"].as_str().unwrap();
+    assert!(s1max_start.contains("G9111 bedTemp=[first_layer_bed_temperature]"));
+    assert!(s1max_start.contains("; first_layer_fan_speed = 2"));
+    assert!(s1max_start.contains("X{print_bed_max[0]*0.5}"));
+    assert!(s1max_start.contains("SET_GCODE_OFFSET Z_ADJUST=-0.03 MOVE=1"));
+    for s1_only in ["WIPE_NOZZLE", "TO_THROW_POSITION", "LEVIQ2_AUTO_ZOFFSET", "X125 Y125"] {
+      assert!(!s1max_start.contains(s1_only), "S1 Max start leaked '{}'", s1_only);
+    }
+    let s1max_end = cfg_s1max["machine_end_gcode"].as_str().unwrap();
+    assert!(s1max_end.contains("M141 S0") && s1max_end.contains("G1 E-5 F1800"));
+    assert!(!s1max_end.contains("X44"));
+    assert!(cfg_s1max.get("change_filament_gcode").is_none());
+    assert!(cfg_s1max.get("flush_multiplier").is_none());
+    assert!(cfg_s1max.get("before_layer_change_gcode").is_none());
+    assert_eq!(cfg_s1max["filament_retraction_length"], "1.50");
+    let s1max_title = describe_lua_rule(
+      &lua1,
+      &HashMap::new(),
+      "all",
+      &json!({ "printer_model": "Anycubic Kobra S1 Max" }),
+    )
+    .unwrap()
+    .title
+    .unwrap_or_default();
+    assert!(s1max_title.contains("Kobra S1 Max"), "title: {}", s1max_title);
+
+    // 3d. Unsupported rigs: stock G-code left completely untouched + clear "no optimized G-code" message
+    for model in [
+      "Anycubic Kobra 3",
+      "Anycubic Kobra 3 Max",
+      "Anycubic Kobra 2 Max",
+      "Bambu Lab A1 mini",
+      "Prusa MK4",
+      "",
+    ] {
+      let base_cfg = json!({ "filament_retraction_length": "1.50", "machine_start_gcode": "STOCK" });
+      let (cfg_none, _, _) =
+        execute_transformation_lua(&lua1, &base_cfg, &json!({ "printer_model": model })).unwrap();
+      assert_eq!(cfg_none, base_cfg, "{} must keep stock machine G-code", model);
+      if !model.is_empty() {
+        let d = describe_lua_rule(&lua1, &HashMap::new(), "all", &json!({ "printer_model": model }))
+          .unwrap();
+        let t = d.title.unwrap_or_default();
+        assert!(t.contains("No Optimized G-Code") && t.contains(model), "title: {}", t);
+      }
+    }
 
     // 4. Verify 100% parity between standalone machine/filament .json and .3mf project_settings.config when enabled!
     let rig = MachineRig::kobra_s1_hardened_steel_png();
@@ -4113,12 +4187,12 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     dim_tpl.apply_answer_change(&mut dim_ans, "fit_preset", "mechanical_exact".to_string());
     assert_eq!(
       dim_ans.get("wall_sequence").map(|s| s.as_str()),
-      Some("outer-inner")
+      Some("outer wall/inner wall")
     );
     let (_, _, _, dim_lua) = dim_tpl.generate_from_answers(&dim_ans, "all");
     let (dim_cfg, _, _) =
       execute_transformation_lua(&dim_lua, &json!({}), &json!({})).expect("dimensional_precision executes");
-    assert_eq!(dim_cfg["wall_sequence"], "outer-inner");
+    assert_eq!(dim_cfg["wall_sequence"], "outer wall/inner wall");
     assert_eq!(dim_cfg["precise_outer_wall"], "1");
     assert_eq!(dim_cfg["xy_hole_compensation"], "0.080");
     assert_eq!(dim_cfg["xy_contour_compensation"], "-0.020");
@@ -4514,6 +4588,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     base.set_str("nozzle_temperature", "220");
     base.set_str("outer_wall_line_width", "0.40");
     base.set_str("bed_temperature", "60");
+    base.set_str("fan_max_speed", "80");
 
     let mk_rule = |id: &str, name: &str, prio: i32, lua: &str| TransformationRule {
       id: id.to_string(),
@@ -4540,6 +4615,8 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
           config["outer_wall_line_width"] = "0.42"
           local b = tonumber(config["bed_temperature"][1]) or 60
           config["bed_temperature"] = { tostring(b + 5) }
+          local f = tonumber(config["fan_max_speed"][1]) or 80
+          config["fan_max_speed"] = { tostring(f - 10) }
         "#,
       ),
       mk_rule(
@@ -4553,17 +4630,23 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
           config["outer_wall_line_width"] = "0.50"
           local b = tonumber(config["bed_temperature"][1]) or 60
           config["bed_temperature"] = { tostring(b + 5) }
+          config["fan_max_speed"] = { "100" }
         "#,
       ),
     ];
 
     let eval = TransformationEngine::evaluate_stack(&base, &rules, &json!({}));
+    let change = |key: &str| {
+      eval
+        .rule_changes
+        .iter()
+        .find(|c| c.rule_id == "rule_early" && c.param_key == key)
+        .unwrap_or_else(|| panic!("early {} change", key))
+        .clone()
+    };
 
-    let early_zhop = eval
-      .rule_changes
-      .iter()
-      .find(|c| c.rule_id == "rule_early" && c.param_key == "z_hop_types")
-      .expect("early z_hop_types change");
+    // Absolute enum write clobbers the earlier enum write.
+    let early_zhop = change("z_hop_types");
     assert_eq!(early_zhop.shadow_kind, Some(RuleShadowKind::Overwritten));
     assert_eq!(early_zhop.shadowed_by_step, Some(2));
     assert_eq!(
@@ -4571,48 +4654,34 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       Some("Rule Late")
     );
 
-    let early_temp = eval
-      .rule_changes
-      .iter()
-      .find(|c| c.rule_id == "rule_early" && c.param_key == "nozzle_temperature")
-      .expect("early nozzle_temperature change");
-    assert_eq!(
-      early_temp.shadow_kind,
-      Some(RuleShadowKind::DirectionReversed)
-    );
-    assert_eq!(early_temp.shadowed_by_step, Some(2));
+    // Opposite-direction RELATIVE adjustments (-5°C then +8°C = +3°C) compose normally: NOT shadowed.
+    assert_eq!(change("nozzle_temperature").shadow_kind, None);
 
-    let early_width = eval
-      .rule_changes
-      .iter()
-      .find(|c| c.rule_id == "rule_early" && c.param_key == "outer_wall_line_width")
-      .expect("early outer_wall_line_width change");
-    assert_eq!(early_width.shadow_kind, Some(RuleShadowKind::Overwritten));
+    // Absolute numeric writes clobber the earlier value.
+    assert_eq!(
+      change("outer_wall_line_width").shadow_kind,
+      Some(RuleShadowKind::Overwritten)
+    );
+    // Absolute write in the opposite direction is still clobbering (the -10% is forgotten).
+    assert_eq!(
+      change("fan_max_speed").shadow_kind,
+      Some(RuleShadowKind::Overwritten)
+    );
 
     // Additive same-direction offset (+5°C then +5°C = +10°C) is NOT shadowed!
-    let early_bed = eval
-      .rule_changes
-      .iter()
-      .find(|c| c.rule_id == "rule_early" && c.param_key == "bed_temperature")
-      .expect("early bed_temperature change");
-    assert_eq!(early_bed.shadow_kind, None);
+    assert_eq!(change("bed_temperature").shadow_kind, None);
 
-    // Check Provenance items
-    let prov_temp = eval
-      .provenance_items
-      .iter()
-      .find(|p| p.param_key == "nozzle_temperature")
-      .unwrap();
-    assert!(prov_temp.has_shadowed_steps);
-    assert!(prov_temp.has_direction_reversal);
-
-    let prov_bed = eval
-      .provenance_items
-      .iter()
-      .find(|p| p.param_key == "bed_temperature")
-      .unwrap();
-    assert!(!prov_bed.has_shadowed_steps);
-    assert!(!prov_bed.has_direction_reversal);
+    let prov = |key: &str| {
+      eval
+        .provenance_items
+        .iter()
+        .find(|p| p.param_key == key)
+        .unwrap()
+        .clone()
+    };
+    assert!(!prov("nozzle_temperature").has_shadowed_steps);
+    assert!(!prov("bed_temperature").has_shadowed_steps);
+    assert!(prov("fan_max_speed").has_shadowed_steps);
   }
 
   #[test]

@@ -34,9 +34,9 @@ params = {
     options = {
       {
         value = "surface_and_overhang",
-        label = "🎯 Balanced Precision & Overhang Safe (inner-outer-inner • +0.08mm Hole • -0.02mm Contour • 0.15mm Elephant)",
+        label = "🎯 Balanced Precision & Overhang Safe (inner-outer-inner wall • +0.08mm Hole • -0.02mm Contour • 0.15mm Elephant)",
         sets = {
-          wall_sequence = "inner-outer-inner",
+          wall_sequence = "inner-outer-inner wall",
           precise_outer_wall = "1",
           elefant_foot_compensation = "0.15",
           xy_hole_compensation = "0.08",
@@ -45,9 +45,9 @@ params = {
       },
       {
         value = "mechanical_exact",
-        label = "⚙️ Exact Bearing & Boss Fit (outer-inner • +0.08mm Hole • -0.02mm Contour • 0.15mm Elephant)",
+        label = "⚙️ Exact Bearing & Boss Fit (outer wall/inner wall • +0.08mm Hole • -0.02mm Contour • 0.15mm Elephant)",
         sets = {
-          wall_sequence = "outer-inner",
+          wall_sequence = "outer wall/inner wall",
           precise_outer_wall = "1",
           elefant_foot_compensation = "0.15",
           xy_hole_compensation = "0.08",
@@ -56,9 +56,9 @@ params = {
       },
       {
         value = "clearance_slip_fit",
-        label = "🔓 Slip-Fit Pins, Threads & Print-in-Place Hinges (outer-inner • +0.12mm Hole • -0.04mm Contour • 0.18mm Elephant)",
+        label = "🔓 Slip-Fit Pins, Threads & Print-in-Place Hinges (outer wall/inner wall • +0.12mm Hole • -0.04mm Contour • 0.18mm Elephant)",
         sets = {
-          wall_sequence = "outer-inner",
+          wall_sequence = "outer wall/inner wall",
           precise_outer_wall = "1",
           elefant_foot_compensation = "0.18",
           xy_hole_compensation = "0.12",
@@ -67,9 +67,9 @@ params = {
       },
       {
         value = "press_fit_tight",
-        label = "🔩 Tight Interference / Dowel Press-Fit (inner-outer-inner • +0.04mm Hole • 0.00mm Contour • 0.12mm Elephant)",
+        label = "🔩 Tight Interference / Dowel Press-Fit (inner-outer-inner wall • +0.04mm Hole • 0.00mm Contour • 0.12mm Elephant)",
         sets = {
-          wall_sequence = "inner-outer-inner",
+          wall_sequence = "inner-outer-inner wall",
           precise_outer_wall = "1",
           elefant_foot_compensation = "0.12",
           xy_hole_compensation = "0.04",
@@ -85,13 +85,13 @@ params = {
   {
     id = "wall_sequence",
     label = "2. Perimeter Wall Printing Sequence (wall_sequence)",
-    description = "inner-outer-inner isolates the outer wall from internal infill push-out while still supporting overhangs; outer-inner prints the outer wall first for exact vertical tolerances.",
+    description = "inner-outer-inner wall isolates the outer wall from internal infill push-out while still supporting overhangs; outer wall/inner wall prints the outer wall first for exact vertical tolerances.",
     type = "enum",
-    default = "inner-outer-inner",
+    default = "inner-outer-inner wall",
     options = {
-      { value = "inner-outer-inner", label = "inner-outer-inner — High Surface Quality + Dimensional Fit (Recommended)" },
-      { value = "outer-inner", label = "outer-inner — Exact Bearing / Caliper Fit (Vertical Walls)" },
-      { value = "inner-outer", label = "inner-outer — Classic Steep Overhang Priority" },
+      { value = "inner-outer-inner wall", label = "inner-outer-inner wall — High Surface Quality + Dimensional Fit (Recommended)" },
+      { value = "outer wall/inner wall", label = "outer wall/inner wall — Exact Bearing / Caliper Fit (Vertical Walls)" },
+      { value = "inner wall/outer wall", label = "inner wall/outer wall — Classic Steep Overhang Priority" },
     },
   },
   {
@@ -175,7 +175,10 @@ function validate(p, ctx)
 end
 
 function describe(p, ctx)
-  local seq = (p and p.wall_sequence) or "inner-outer-inner"
+  local seq = (p and p.wall_sequence) or "inner-outer-inner wall"
+  if seq == "inner-outer-inner" then seq = "inner-outer-inner wall" end
+  if seq == "outer-inner" then seq = "outer wall/inner wall" end
+  if seq == "inner-outer" then seq = "inner wall/outer wall" end
   local pow = (p and p.precise_outer_wall) or "1"
   local hole = tonumber(p and p.xy_hole_compensation) or 0.08
   local contour = tonumber(p and p.xy_contour_compensation) or -0.02
@@ -191,7 +194,10 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local seq = (p and p.wall_sequence) or "inner-outer-inner"
+  local seq = (p and p.wall_sequence) or "inner-outer-inner wall"
+  if seq == "inner-outer-inner" then seq = "inner-outer-inner wall" end
+  if seq == "outer-inner" then seq = "outer wall/inner wall" end
+  if seq == "inner-outer" then seq = "inner wall/outer wall" end
   local pow = (p and p.precise_outer_wall) or "1"
   local hole = tonumber(p and p.xy_hole_compensation) or 0.08
   local contour = tonumber(p and p.xy_contour_compensation) or -0.02

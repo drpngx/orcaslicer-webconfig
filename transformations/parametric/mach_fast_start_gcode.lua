@@ -1,7 +1,14 @@
--- ⚠️ POTENTIALLY DANGEROUS: Complete Machine G-Code & Kobra S1 / Bambu Lab Optimizer
--- Tunes all 5 Machine G-Code tabs (`machine_start_gcode`, `machine_end_gcode`, `change_filament_gcode`,
--- `before_layer_change_gcode`) plus Kobra S1 non-G-code filament bottlenecks (PETG 0.70mm retraction &
--- 19 mm³/s MVS, ABS/ASA 23 mm³/s MVS) for Anycubic Kobra S1 (Kobra OS / Rinkhals) and Bambu Lab (P1S/X1C/A1).
+-- ⚠️ POTENTIALLY DANGEROUS: Startup G-Code (invoked at print start) & Machine G-Code Optimizer
+-- The printer family is ALWAYS derived from the active rig's `printer_model` (never chosen manually),
+-- because start/end/toolchange G-code is firmware- and geometry-specific:
+--   • Anycubic Kobra S1      -> full optimization (unpacked `G9111` sub-macros, X44/Y270 throw position,
+--                               Y255 layer-0 rear purge removal, E-14 ACE Pro pre-cut retract, PETG/ABS fix).
+--   • Anycubic Kobra S1 Max  -> keeps the stock `G9111` wrapper + S1 Max bed metadata lines, adds ABS/ASA
+--                               heat-soak (bed-centre via placeholders), plate/PETG Z-offset, anti-ooze end.
+--                               The S1-only sub-macros, throw position, purge & toolchange scripts are NOT used.
+--   • Bambu Lab X1 / P1      -> Bambu fast-start, E-18 AMS pre-cut retract, anti-ooze end.
+--   • Everything else        -> (Kobra 3 / 4 / X, Kobra 1 / 2 Marlin, Bambu A1 / H2D, other brands)
+--                               no optimized G-code: the stock machine G-code is left untouched.
 --
 -- ⚠️ SAFETY WARNING — WHY THIS TRANSFORMATION IS POTENTIALLY DANGEROUS:
 -- 1. NEVER Home Z (`G28 W` / `G28 Z`) Above 140°C ("The Golden Rule"):
@@ -22,13 +29,13 @@
 
 meta = {
   id = "mach_fast_start_gcode",
-  name = "⚠️ Fast-Start, Unpacked G9111 & Multi-Color Poop-Saver G-Code (POTENTIALLY DANGEROUS)",
+  name = "⚠️ Startup G-Code — Fast-Start, Unpacked G9111 & Multi-Color Poop-Saver (POTENTIALLY DANGEROUS)",
   icon = "⚡",
   category = "Machine Start/End/Toolchange G-Code (⚠️ Potentially Dangerous)",
   tree_category = "3. First Layer & Bed Adhesion",
   tree_subcategory = "Fast-Start G-Code, Z-Offset & Poop-Saver (⚠️ Dangerous)",
   slicer_menu_path = "Printer Settings ➔ Machine G-code (Start / End / Change Filament / Before Layer)",
-  when_to_run = "⚠️ POTENTIALLY DANGEROUS: Enable to unpack Anycubic Kobra S1's `G9111` startup macro, optimize Bambu Lab P1S/X1C/A1 startup, cut multi-color filament poop by ~45% (`E-14`/`E-18` pre-cut retract), prevent nozzle crust (`E-5`/`E-6` end retract), auto-adjust Textured PEI / PETG Z-offset, auto heat-soak ABS/ASA, and uncap Kobra S1 PETG/ABS flow.",
+  when_to_run = "⚠️ POTENTIALLY DANGEROUS: Rig-specific startup G-code (invoked at print start). Automatically picks Kobra S1, Kobra S1 Max, or Bambu Lab X1/P1 G-code from the active rig (other printers keep their stock G-code untouched), and can unpack the Kobra S1 `G9111` startup macro, cut multi-color filament poop by ~45% (`E-14`/`E-18` pre-cut retract), prevent nozzle crust (`E-5`/`E-6` end retract), auto-adjust Textured PEI / PETG Z-offset, auto heat-soak ABS/ASA, and uncap Kobra S1 PETG/ABS flow.",
   formula_summary = "Start: 140°C Z-home guard + N× wipe + Plate/PETG Z-offset (-0.03/+0.02mm) + ABS/ASA 4-5min heat-soak • Change Filament: E-14 (Kobra 0.65× flush) / E-18 (Bambu 0.60× flush) before cut • End: E-5/E-6 anti-ooze retract + silence M106 P2/P3 fans + Z150 smart park • Kobra Fix: PETG 0.70mm retract @ 19 mm³/s, ABS/ASA @ 23 mm³/s",
   default_condition_expr = "all",
   how_to_read_print = {
@@ -48,15 +55,14 @@ params = {
   {
     id = "startup_preset",
     label = "1. Complete Machine G-Code Optimization Preset (⚠️ Read Safety Warnings)",
-    description = "Select a curated Kobra S1 or Bambu Lab optimization bundle, or choose Custom Knobs.",
+    description = "Curated bundles. The G-code generated always matches the active rig (Kobra S1, Kobra S1 Max, or Bambu Lab X1/P1); knobs that do not apply to the rig are ignored.",
     type = "enum",
     default = "kobra_s1_trimmed_safe",
     options = {
       {
         value = "kobra_s1_trimmed_safe",
-        label = "🛡️ Kobra S1: Trimmed Safe 'Best of Both Worlds' + Poop-Saver + Anti-Ooze + PETG/ABS Fix (Recommended)",
+        label = "🛡️ Recommended: Safe Fast-Start + Poop-Saver Cut Retract + Anti-Ooze End (Rig-Specific)",
         sets = {
-          printer_family = "kobra_s1",
           preheat_wipe_temp_c = "140",
           wipe_passes = "2",
           run_leviq2_zoffset = "1",
@@ -73,9 +79,8 @@ params = {
       },
       {
         value = "kobra_s1_ultra_fast_no_zoffset",
-        label = "⚠️ Kobra S1: Ultra-Fast Same-Plate (Skips LEVIQ2 Z-Offset — Saves ~2.5 min + 40% Less Poop)",
+        label = "⚠️ Ultra-Fast Same-Plate (Kobra S1: Skips LEVIQ2 Z-Offset — Saves ~2.5 min)",
         sets = {
-          printer_family = "kobra_s1",
           preheat_wipe_temp_c = "140",
           wipe_passes = "2",
           run_leviq2_zoffset = "0",
@@ -92,9 +97,8 @@ params = {
       },
       {
         value = "kobra_s1_unpacked_1to1",
-        label = "🔬 Kobra S1: Full 1:1 Unpacked Stock G9111 (170°C→140°C Cooldown, 14× Wipe, LEVIQ2 Z-Offset ON)",
+        label = "🔬 Full 1:1 Unpacked Stock Startup (Kobra S1: 170°C→140°C, 14× Wipe, LEVIQ2 ON)",
         sets = {
-          printer_family = "kobra_s1",
           preheat_wipe_temp_c = "170",
           wipe_passes = "14",
           run_leviq2_zoffset = "1",
@@ -111,9 +115,8 @@ params = {
       },
       {
         value = "stock_g9111",
-        label = "🏭 Kobra S1: Keep Stock G9111 Wrapper + Add ABS Heat-Soak, Plate/PETG Z-Offset, E-14 Cut & Anti-Ooze End",
+        label = "🏭 Keep Stock Startup Macro + Add ABS Heat-Soak, Plate/PETG Z-Offset, Cut Retract & Anti-Ooze End",
         sets = {
-          printer_family = "kobra_s1",
           preheat_wipe_temp_c = "170",
           wipe_passes = "14",
           run_leviq2_zoffset = "1",
@@ -130,9 +133,8 @@ params = {
       },
       {
         value = "bambu_fast_start",
-        label = "🚀 Bambu Lab (P1S/X1C/A1): Fast-Start + E-18 Cut Poop-Saver (0.60×) + Plate/PETG Z-Offset + Anti-Ooze End",
+        label = "🚀 Fast-Start + Adaptive Prime Line Next to Part + Cut Retract + Anti-Ooze End",
         sets = {
-          printer_family = "bambu_lab",
           preheat_wipe_temp_c = "140",
           wipe_passes = "2",
           run_leviq2_zoffset = "1",
@@ -149,9 +151,8 @@ params = {
       },
       {
         value = "bambu_fast_same_spool",
-        label = "⚠️ Bambu Lab (P1S/X1C/A1): Fast-Start + Keep AMS Loaded at End + E-18 Cut Poop-Saver",
+        label = "⚠️ Fast Same-Spool Re-Print: Keep Filament Loaded at End (Bambu AMS) + Cut Retract",
         sets = {
-          printer_family = "bambu_lab",
           preheat_wipe_temp_c = "140",
           wipe_passes = "2",
           run_leviq2_zoffset = "1",
@@ -173,20 +174,8 @@ params = {
     },
   },
   {
-    id = "printer_family",
-    label = "2. Printer Firmware Architecture",
-    description = "Select Anycubic Kobra S1 (Kobra OS / Klipper) or Bambu Lab (P1S / X1C / A1).",
-    type = "enum",
-    default = "kobra_s1",
-    options = {
-      { value = "auto", label = "Auto-Detect from Active Rig Printer Model" },
-      { value = "kobra_s1", label = "Anycubic Kobra S1 (Kobra OS / Klipper)" },
-      { value = "bambu_lab", label = "Bambu Lab P1S / X1C / A1" },
-    },
-  },
-  {
     id = "preheat_wipe_temp_c",
-    label = "3. Start G-Code: Initial Pre-Wipe Nozzle Temp (°C) — Enforces 140°C Z-Home Ceiling",
+    label = "3. Start G-Code (Kobra S1 / Bambu X1·P1): Initial Pre-Wipe Nozzle Temp (°C) — Enforces 140°C Z-Home Ceiling",
     description = "140°C heats directly to probing temp (skipping the slow 170°C→140°C cooldown). 170°C softens stubborn residue before wiping, then ALWAYS cools back to 140°C on the silicone pad before G28 Z-homing.",
     type = "range",
     min = 135,
@@ -202,7 +191,7 @@ params = {
   },
   {
     id = "wipe_passes",
-    label = "4. Start G-Code: Rear Nozzle Wiper Passes (1–14 Passes)",
+    label = "4. Start G-Code (Kobra S1 / Bambu X1·P1): Rear Nozzle Wiper Passes (1–14 Passes)",
     description = "Stock G9111 runs `WIPE_NOZZLE` (14 rapid passes). Setting 2–3 passes calls `WIPE_NOZZLE1` 2–3 times (saving ~25s while still cleaning the tip).",
     type = "range",
     min = 1,
@@ -219,7 +208,7 @@ params = {
   },
   {
     id = "run_leviq2_zoffset",
-    label = "5. ⚠️ Start G-Code: Strain-Gauge Auto Z-Offset (`LEVIQ2_AUTO_ZOFFSET`)",
+    label = "5. ⚠️ Start G-Code (Kobra S1 only): Strain-Gauge Auto Z-Offset (`LEVIQ2_AUTO_ZOFFSET`)",
     description = "⚠️ DANGEROUS IF DISABLED: Keep ON (1) to measure exact nozzle Z-offset on every print. Set to OFF (0) ONLY when repeating prints on the exact same build plate and nozzle to save ~45–60s.",
     type = "enum",
     default = "1",
@@ -252,7 +241,7 @@ params = {
   },
   {
     id = "prime_line_mode",
-    label = "8. Start G-Code: Purge / Prime Line Strategy",
+    label = "8. Start G-Code (Kobra S1 / Bambu X1·P1): Purge / Prime Line Strategy",
     description = "Stock Front Purge Line (`Y1 X180 E40`) or Adaptive KAMP-Style 30mm Prime Line 5mm left of the print (`first_layer_print_min[0]-5`).",
     type = "enum",
     default = "stock_front",
@@ -263,14 +252,12 @@ params = {
   },
   {
     id = "long_retract_before_cut",
-    label = "9. Change Filament G-Code: Long Retract Before Cut (Cuts Multi-Color Poop by ~45%)",
+    label = "9. Change Filament G-Code (Kobra S1 / Bambu X1·P1): Long Retract Before Cut (Cuts Multi-Color Poop by ~45%)",
     description = "Pulls 14mm (Kobra S1 before `T[next_extruder]`, sets 0.65× flush multiplier) or 18mm (Bambu Lab before cutter, sets 0.60× flush multiplier) of molten filament out of the melt zone before cutting.",
     type = "enum",
     default = "auto",
     options = {
-      { value = "auto", label = "Auto by Printer (Kobra S1: E-14 & 0.65× Flush • Bambu: E-18 & 0.60× Flush)" },
-      { value = "kobra_14mm", label = "Kobra S1 ACE Pro: G1 E-14 F1200 Before T[next_extruder] + 0.65× Flush" },
-      { value = "bambu_18mm", label = "Bambu Lab AMS: G1 E-18 F1200 Before Cut + 0.60× Flush" },
+      { value = "auto", label = "Auto by Rig (Kobra S1: E-14 & 0.65× Flush • Bambu X1/P1: E-18 & 0.60× Flush)" },
       { value = "off", label = "Off (Stock Toolchange G-Code & Flush Multiplier)" },
     },
   },
@@ -298,7 +285,7 @@ params = {
   },
   {
     id = "keep_ams_loaded_at_end",
-    label = "12. ⚠️ End G-Code: Keep AMS / ACE Pro Filament Loaded at Print End",
+    label = "12. ⚠️ End G-Code (Bambu X1·P1 AMS): Keep Filament Loaded at Print End",
     description = "⚠️ When enabled (1), skips `M620 S255` / `T255` / `M621 S255` unload at the end of a print so the active spool stays in the hotend for back-to-back same-spool prints (saves ~90s + 50mm poop purge).",
     type = "enum",
     default = "0",
@@ -309,7 +296,7 @@ params = {
   },
   {
     id = "remove_kobra_rear_purge_line",
-    label = "13. Before Layer Change G-Code: Remove Kobra S1 Redundant Rear Purge Line (`Y255`)",
+    label = "13. Before Layer Change G-Code (Kobra S1 only): Remove Redundant Rear Purge Line (`Y255`)",
     description = "Recent Anycubic Slicer Next updates added a second `{if layer_num==0} ; PURGE LINE ... Y255` strip inside `before_layer_change_gcode`. Enabling this removes that redundant rear strip.",
     type = "enum",
     default = "1",
@@ -320,7 +307,7 @@ params = {
   },
   {
     id = "kobra_unbottleneck_petg_abs",
-    label = "14. Kobra S1 Non-G-Code Fix: Unbottleneck PETG & ABS/ASA Flow + 0.70mm PETG Retract",
+    label = "14. Non-G-Code Fix (Kobra S1 only): Unbottleneck PETG & ABS/ASA Flow + 0.70mm PETG Retract",
     description = "Fixes Anycubic's two biggest factory filament bottlenecks (MPC561 / Kreativling fix): lowers PETG retraction from 1.5mm to 0.70mm (stopping Z-seam holes) and uncaps Max Volumetric Speed to 19 mm³/s on PETG and 23 mm³/s on ABS/ASA.",
     type = "enum",
     default = "1",
@@ -331,8 +318,8 @@ params = {
   },
   {
     id = "bambu_skip_mech_check",
-    label = "15. Bambu Lab: Skip Resonance Buzz Sweep (`mech mode fast check`)",
-    description = "Skips the loud XY vibration frequency sweep before every print on Bambu Lab P1S/X1C/A1 (saves ~20s).",
+    label = "15. Start G-Code (Bambu X1·P1 only): Skip Resonance Buzz Sweep (`mech mode fast check`)",
+    description = "Skips the loud XY vibration frequency sweep before every print on Bambu Lab X1 / P1 (saves ~20s).",
     type = "enum",
     default = "1",
     options = {
@@ -342,7 +329,7 @@ params = {
   },
   {
     id = "bambu_parallel_bed_heat",
-    label = "16. Bambu Lab: Parallel Bed Preheat During Homing & Wipe",
+    label = "16. Start G-Code (Bambu X1·P1 only): Parallel Bed Preheat During Homing & Wipe",
     description = "Starts bed heating (`M140`) in the background while homing XY and wiping the nozzle, waiting (`M190`) only right before `G28 Z` (saves ~45–60s).",
     type = "enum",
     default = "1",
@@ -353,21 +340,37 @@ params = {
   },
 }
 
+-- Returns the rig's G-code family (single return value; see `rig_model_label` for the display name):
+--   "kobra_s1"     Anycubic Kobra S1 (full optimization)
+--   "kobra_s1_max" Anycubic Kobra S1 Max (stock G9111 wrapper + generic add-ons only)
+--   "bambu_lab"    Bambu Lab X1 / X1 Carbon / X1E / P1S / P1P
+--   "none"         any other printer (stock machine G-code left untouched)
+--   "unknown"      no rig printer model in context (describe-time only)
+local function rig_model_label(ctx)
+  local raw = (ctx and ctx.printer_model) or ""
+  if raw == "" then
+    return "unknown printer"
+  end
+  return raw
+end
+
 local function resolve_printer_family(p, ctx)
-  local fam = (p and p.printer_family) or "kobra_s1"
-  if fam == "auto" then
-    local model = string.lower((ctx and ctx.printer_model) or "")
-    if string.find(model, "bambu", 1, true)
-      or string.find(model, "p1s", 1, true)
-      or string.find(model, "p1p", 1, true)
-      or string.find(model, "x1", 1, true)
-      or string.find(model, "a1", 1, true)
-    then
-      return "bambu_lab"
-    end
+  local model = string.lower((ctx and ctx.printer_model) or "")
+  if model == "" then
+    return "unknown"
+  end
+  if string.find(model, "kobra s1 max", 1, true) then
+    return "kobra_s1_max"
+  end
+  if string.find(model, "kobra s1", 1, true) then
     return "kobra_s1"
   end
-  return fam
+  if string.find(model, "bambu", 1, true) then
+    if string.find(model, "x1", 1, true) or string.find(model, "p1", 1, true) then
+      return "bambu_lab"
+    end
+  end
+  return "none"
 end
 
 local function build_abs_heat_soak_block(p, fam)
@@ -385,6 +388,20 @@ local function build_abs_heat_soak_block(p, fam)
       "  M190 S[first_layer_bed_temperature] ; Wait for bed to reach target",
       "  G4 S300 ; Dwell 5 minutes (300s) for chamber & bed thermal expansion to stabilize",
       "  M106 P2 S0 ; Turn off Aux fan before homing Z",
+      "{endif}",
+    }, "\n")
+  end
+  if fam == "kobra_s1_max" then
+    return table.concat({
+      "; --- Conditional Chamber Heat-Soak BEFORE G9111 / Probing for ABS / ASA (4 min) ---",
+      "{if filament_type[initial_tool]==\"ABS\" or filament_type[initial_tool]==\"ASA\"}",
+      "  M140 S[first_layer_bed_temperature] ; Start heating bed to 100C+",
+      "  M106 P2 S180 ; Run Aux Fan at 70% to circulate heat off the bed",
+      "  G28 ; Quick home so we can park near the bed",
+      "  G1 X{print_bed_max[0]*0.5} Y{print_bed_max[1]*0.5} Z15 F6000 ; Center toolhead over bed",
+      "  M190 S[first_layer_bed_temperature] ; Wait for bed sensor to hit target",
+      "  G4 S240 ; Heat-soak for 4 minutes (240s) so bed expansion stabilizes before probing",
+      "  M106 P2 S0 ; Turn off Aux fan before G9111 probing",
       "{endif}",
     }, "\n")
   end
@@ -418,7 +435,9 @@ local function build_conditional_z_offset_block(p, fam)
     }, "\n")
   end
   return table.concat({
-    "; --- Automatic Plate & PETG Z-Offset Tuning (MUST be AFTER G9111 / LEVIQ2_AUTO_ZOFFSET) ---",
+    (fam == "kobra_s1_max")
+      and "; --- Automatic Plate & PETG Z-Offset Tuning (MUST be AFTER G9111, which resets the Z-offset) ---"
+      or "; --- Automatic Plate & PETG Z-Offset Tuning (MUST be AFTER G9111 / LEVIQ2_AUTO_ZOFFSET) ---",
     "{if curr_bed_type==\"Textured PEI Plate\"}",
     "  SET_GCODE_OFFSET Z_ADJUST=-0.03 MOVE=1 ; Squish 0.03mm closer into textured PEI valleys",
     "{endif}",
@@ -564,6 +583,30 @@ local function build_kobra_s1_start_gcode(p)
   return table.concat(lines, "\n")
 end
 
+-- Kobra S1 Max: keep the stock G9111 wrapper and the stock bed/first-layer metadata comment lines
+-- (Kobra OS reads them), adding only firmware-agnostic add-ons around it.
+local function build_kobra_s1_max_start_gcode(p)
+  local lines = { "; --- Kobra S1 Max: Stock G9111 Startup Macro + Add-Ons ---" }
+  local soak_block = build_abs_heat_soak_block(p, "kobra_s1_max")
+  if soak_block then
+    table.insert(lines, soak_block)
+  end
+  table.insert(lines, "G9111 bedTemp=[first_layer_bed_temperature] extruderTemp=[first_layer_temperature[initial_tool]]")
+  table.insert(lines, "M117")
+  local z_block = build_conditional_z_offset_block(p, "kobra_s1_max")
+  if z_block then
+    table.insert(lines, z_block)
+  end
+  table.insert(lines, "; print_bed_min = {print_bed_min[0]},{print_bed_min[1]}")
+  table.insert(lines, "; print_bed_max = {print_bed_max[0]},{print_bed_max[1]}")
+  table.insert(lines, "; print_bed_size = {print_bed_size[0]},{print_bed_size[1]}")
+  table.insert(lines, "; first_layer_print_min = {first_layer_print_min[0]},{first_layer_print_min[1]}")
+  table.insert(lines, "; first_layer_print_max = {first_layer_print_max[0]},{first_layer_print_max[1]}")
+  table.insert(lines, "; first_layer_print_size = {first_layer_print_size[0]},{first_layer_print_size[1]}")
+  table.insert(lines, "; first_layer_fan_speed = 2, {int(additional_cooling_fan_speed[initial_tool] * 255 / 100)}")
+  return table.concat(lines, "\n")
+end
+
 local function build_bambu_start_gcode(p)
   local preheat_t = math.max(135, math.min(170, math.floor((tonumber(p and p.preheat_wipe_temp_c) or 140) + 0.5)))
   local wipe_n = math.max(1, math.min(14, math.floor((tonumber(p and p.wipe_passes) or 2) + 0.5)))
@@ -574,7 +617,7 @@ local function build_bambu_start_gcode(p)
   local z_block = build_conditional_z_offset_block(p, "bambu_lab")
 
   local lines = {
-    "; --- ⚠️ Bambu Lab (P1S / X1C / A1) Fast-Start G-Code ---",
+    "; --- ⚠️ Bambu Lab (X1 / P1) Fast-Start G-Code ---",
     "G90",
     "M83",
   }
@@ -683,6 +726,39 @@ local function build_end_gcode(p, fam)
     return table.concat(lines, "\n")
   end
 
+  if fam == "kobra_s1_max" then
+    if not anti_ooze and not smart_park then
+      return nil
+    end
+    table.insert(lines, "; --- Anycubic Kobra S1 Max Optimized Machine End G-Code ---")
+    table.insert(lines, "M400 ; Wait for final print move to complete")
+    if anti_ooze then
+      table.insert(lines, "; 1. Anti-Ooze End Retract")
+      table.insert(lines, "G92 E0")
+      table.insert(lines, "G1 E-5 F1800 ; Retract 5mm immediately to prevent nozzle oozing while cooling")
+      table.insert(lines, "G91 ; Relative positioning")
+      table.insert(lines, "G1 Z2 F2400 ; Lift Z 2mm cleanly off the print")
+      table.insert(lines, "G90 ; Back to absolute positioning")
+    end
+    if smart_park then
+      table.insert(lines, "; 2. Smart Z150 Bed Drop Height")
+      table.insert(lines, "{if max_layer_z < 140}")
+      table.insert(lines, "  G1 Z150 F3000 ; Drop bed to clean, comfortable 150mm reach height")
+      table.insert(lines, "{elsif max_layer_z < max_print_height-1}")
+      table.insert(lines, "  G1 Z{z_offset+min(max_layer_z+10, max_print_height)} F900 ; Drop 10mm below tall print")
+      table.insert(lines, "{endif}")
+    end
+    table.insert(lines, "; 3. Stock Kobra S1 Max Heater & Fan Shutdown")
+    table.insert(lines, "M140 S0 ; turn off heatbed")
+    table.insert(lines, "M104 S0 ; turn off temperature")
+    table.insert(lines, "M141 S0 ; turn off box temperature")
+    table.insert(lines, "M106 P1 S0 ; turn off fan")
+    table.insert(lines, "M106 P2 S0")
+    table.insert(lines, "M106 P3 S0")
+    table.insert(lines, "M84 ; disable stepper motors")
+    return table.concat(lines, "\n")
+  end
+
   table.insert(lines, "; --- Anycubic Kobra S1 Optimized Machine End G-Code ---")
   if anti_ooze then
     table.insert(lines, "; 1. Anti-Ooze End Retract (Put at very top before Kobra S1 parks at X44 Y270)")
@@ -726,10 +802,10 @@ end
 
 local function build_change_filament_gcode(p, fam)
   local mode = (p and p.long_retract_before_cut) or "auto"
-  if mode == "off" then
+  if mode == "off" or (fam ~= "kobra_s1" and fam ~= "bambu_lab") then
     return nil
   end
-  if mode == "bambu_18mm" or (mode == "auto" and fam == "bambu_lab") then
+  if fam == "bambu_lab" then
     local gcode = table.concat({
       "; --- Long Retract Before Filament Cut (Bambu AMS — Cuts Multi-Color Poop by ~45%) ---",
       "M400",
@@ -778,6 +854,7 @@ end
 
 function describe(p, ctx)
   local fam = resolve_printer_family(p, ctx)
+  local model = rig_model_label(ctx)
   local preset = (p and p.startup_preset) or "kobra_s1_trimmed_safe"
   local preheat_t = math.max(135, math.min(170, math.floor((tonumber(p and p.preheat_wipe_temp_c) or 140) + 0.5)))
   local wipe_n = math.max(1, math.min(14, math.floor((tonumber(p and p.wipe_passes) or 2) + 0.5)))
@@ -788,6 +865,44 @@ function describe(p, ctx)
   local anti_ooze = ((p and p.anti_ooze_end_retract) or "1") ~= "0"
   local keep_ams = ((p and p.keep_ams_loaded_at_end) or "0") == "1"
   local unbottleneck = ((p and p.kobra_unbottleneck_petg_abs) or "1") ~= "0"
+
+  if fam == "unknown" then
+    return {
+      title = "⚠️ Startup G-Code — Rig-Specific Fast-Start & Poop-Saver (POTENTIALLY DANGEROUS)",
+      description = "⚠️ POTENTIALLY DANGEROUS: Generates startup / end / toolchange G-code matched to the active rig: Anycubic Kobra S1 (unpacked G9111), Kobra S1 Max (stock G9111 + add-ons), or Bambu Lab X1/P1. Any other printer keeps its stock machine G-code unchanged.",
+      badge = "⚠️ Startup G-Code: Rig-Specific (Kobra S1 / S1 Max / Bambu X1·P1)",
+    }
+  end
+
+  if fam == "none" then
+    return {
+      title = string.format("Startup G-Code — No Optimized G-Code for %s", model),
+      description = string.format(
+        "No optimized startup / end / toolchange G-code is available for %s, so its stock machine G-code is left unchanged. Optimized G-code exists for Anycubic Kobra S1, Kobra S1 Max, and Bambu Lab X1 / P1.",
+        model
+      ),
+      badge = string.format("Startup G-Code: Stock (no optimized G-code for %s)", model),
+    }
+  end
+
+  if fam == "kobra_s1_max" then
+    local badge = string.format(
+      "⚠️ Kobra S1 Max: Stock G9111%s%s%s",
+      soak_abs and " • ABS Heat-Soak" or "",
+      cond_z and " • Plate/PETG Z-Offset" or "",
+      anti_ooze and " • E-5 Anti-Ooze End" or ""
+    )
+    return {
+      title = "⚠️ Startup G-Code: Kobra S1 Max Stock G9111 + Add-Ons",
+      description = string.format(
+        "⚠️ POTENTIALLY DANGEROUS: Keeps the Kobra S1 Max stock G9111 startup macro and bed metadata lines%s%s%s. Kobra S1-only sub-macros, throw position, rear-purge removal, toolchange script, and PETG/ABS fix are NOT applied to the S1 Max.",
+        soak_abs and ", adds a 4-min ABS/ASA bed heat-soak before probing" or "",
+        cond_z and ", SET_GCODE_OFFSET (-0.03mm Textured PEI / +0.02mm PETG) after G9111" or "",
+        anti_ooze and ", E-5 anti-ooze end retract + Z150 park" or ""
+      ),
+      badge = badge,
+    }
+  end
 
   if fam == "bambu_lab" then
     local skip_mech = ((p and p.bambu_skip_mech_check) or "1") ~= "0"
@@ -803,7 +918,7 @@ function describe(p, ctx)
       keep_ams and " • Keep AMS Loaded" or ""
     )
     return {
-      title = string.format("⚠️ Bambu Lab Fast-Start & Poop-Saver G-Code (%d°C Wipe, %d× Pass%s)", preheat_t, math.min(wipe_n, 6), cut_tag),
+      title = string.format("⚠️ Startup G-Code: Bambu Lab X1/P1 Fast-Start & Poop-Saver (%d°C Wipe, %d× Pass%s)", preheat_t, math.min(wipe_n, 6), cut_tag),
       description = string.format(
         "⚠️ POTENTIALLY DANGEROUS: Custom Bambu Lab start/end/toolchange G-code (%s, %d× rear wipe at %d°C with 140°C Z-home guard, %s%s%s%s).",
         parallel_bed and "parallel M140 bed heat" or "sequential bed heat",
@@ -831,7 +946,7 @@ function describe(p, ctx)
     fix_tag
   )
   return {
-    title = string.format("⚠️ Kobra S1 Unpacked G9111 & Poop-Saver (%d°C Preheat, %s, %s%s)", preheat_t, wipe_tag, z_tag, cut_tag),
+    title = string.format("⚠️ Startup G-Code: Kobra S1 Unpacked G9111 & Poop-Saver (%d°C Preheat, %s, %s%s)", preheat_t, wipe_tag, z_tag, cut_tag),
     description = string.format(
       "⚠️ POTENTIALLY DANGEROUS: Tunes Kobra S1 start/end/toolchange G-code (%s, %s%s%s%s%s%s).",
       (preset == "stock_g9111") and "stock G9111 wrapper" or string.format("%d°C pre-wipe -> 140°C silicone-pad Z-home guard, %s", preheat_t, wipe_tag),
@@ -848,9 +963,18 @@ end
 
 function apply(config, ctx, p)
   local fam = resolve_printer_family(p, ctx)
+  if fam == "none" or fam == "unknown" then
+    print(string.format(
+      "[Machine:StartupGCode] No optimized G-code for '%s' — stock machine G-code left unchanged",
+      rig_model_label(ctx)
+    ))
+    return
+  end
   local start_gcode = ""
   if fam == "bambu_lab" then
     start_gcode = build_bambu_start_gcode(p)
+  elseif fam == "kobra_s1_max" then
+    start_gcode = build_kobra_s1_max_start_gcode(p)
   else
     start_gcode = build_kobra_s1_start_gcode(p)
   end
@@ -898,5 +1022,5 @@ function apply(config, ctx, p)
   end
 
   local desc = describe(p, ctx)
-  print(string.format("[Machine:FastStartGCode] %s", desc.badge))
+  print(string.format("[Machine:StartupGCode] %s", desc.badge))
 end
