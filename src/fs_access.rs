@@ -33,15 +33,31 @@ pub struct LocalFsSaveFileEntry {
   pub content: String,
 }
 
+/// Result of synchronizing live app state onto the scanned directory entries:
+/// `files` are the preset/config `.json` payloads to write, `deletions` are the relative paths of
+/// stale WebConfig-managed `OC -` presets (e.g. leftovers from a previous nozzle like
+/// `OC - PETG • 0.4 Hardened.json` after switching the rig to Diamondback) that must be removed
+/// from disk so the slicer stops listing both the old and new presets.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalFsSyncPlan {
+  pub files: Vec<LocalFsSaveFileEntry>,
+  pub deletions: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalFsSaveRequest {
   pub files: Vec<LocalFsSaveFileEntry>,
+  /// Optional stale preset paths to delete (mirrored across all `user/<id>/` folders by the server).
+  #[serde(default)]
+  pub deletions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalFsSaveResponse {
   pub ok: bool,
   pub files_saved: usize,
+  #[serde(default)]
+  pub files_deleted: usize,
   pub message: String,
 }
 

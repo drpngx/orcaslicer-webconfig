@@ -139,7 +139,14 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
                       {format!("Nozzle: {} ({}mm)", tpl.nozzle_material, tpl.nozzle_diameter)}
                     </span>
                     <span class="text-[11px] text-on-surface-variant">
-                      {format!("Add-ons: {}", if tpl.addons.is_empty() { "Stock".to_string() } else { tpl.addons.join(", ") })}
+                      {format!(
+                        "Add-ons: {}",
+                        if tpl.addons.is_empty() {
+                          "Stock".to_string()
+                        } else {
+                          tpl.addons.iter().map(|a| crate::models::RigAddOn::friendly_name(a)).collect::<Vec<_>>().join(", ")
+                        }
+                      )}
                     </span>
                   </div>
                   <button
@@ -243,12 +250,23 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
                       </span>
                     </div>
                     <div class="flex justify-between items-start">
+                      <span>{"Hotend (Nozzle Screws Into):"}</span>
+                      <span class="text-tertiary text-right font-bold max-w-[180px] truncate" title={machine.hotend.clone()}>
+                        {&machine.hotend}
+                      </span>
+                    </div>
+                    <div class="flex justify-between items-start">
                       <span>{"3. Add-Ons:"}</span>
                       <span class="text-secondary text-right font-medium max-w-[180px] truncate">
                         {if machine.addons.is_empty() {
                           "None (Stock Covers/Duct)".to_string()
                         } else {
-                          format!("{} installed", machine.addons.len())
+                          machine
+                            .addons
+                            .iter()
+                            .map(|a| crate::models::RigAddOn::friendly_name(a))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                         }}
                       </span>
                     </div>
@@ -523,10 +541,16 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
             <p class="text-xs text-on-surface-variant">
               {"Toggle physical toolhead mods installed on this rig. Each add-on dynamically patches cooling fan schedules or retraction via transformations/rig_addons_cooling.lua:"}
             </p>
+            <p class="text-[11px] text-on-surface-variant bg-surface-container-lowest border border-outline-variant/50 rounded p-space-sm">
+              {"ℹ️ The MicroSwiss FlowTech™ add-on is the HOTEND (the body the nozzle threads into — see the 'Hotend' row above). MicroSwiss nozzles (Diamondback / CM2 / CHT / Plated Brass) ONLY fit this hotend: picking one in Part 2 installs it automatically, and it can't be removed until you switch back to a stock nozzle (Brass / Hardened Steel / Ruby)."}
+            </p>
 
             <div class="flex flex-col gap-space-sm">
               {for addon_catalog.into_iter().map(|addon| {
                 let is_installed = active_rig.addons.iter().any(|a| a == &addon.id);
+                // MicroSwiss nozzles require the FlowTech hotend — lock the card while one is active.
+                let is_required = addon.id == "flowtech_hotend"
+                  && MachineRig::is_microswiss_nozzle_type(&active_rig.nozzle_type);
                 let aid = addon.id.clone();
                 let cb_toggle = on_toggle_addon.clone();
 
@@ -549,14 +573,22 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
                       <span
                         class={format!(
                           "px-2 py-0.5 rounded text-[10px] font-mono font-bold {}",
-                          if is_installed {
+                          if is_required {
+                            "bg-primary text-on-primary"
+                          } else if is_installed {
                             "bg-tertiary text-on-tertiary"
                           } else {
                             "bg-surface-container-highest text-on-surface-variant"
                           }
                         )}
                       >
-                        {if is_installed { "INSTALLED" } else { "OFF" }}
+                        {if is_required {
+                          "REQUIRED"
+                        } else if is_installed {
+                          "INSTALLED"
+                        } else {
+                          "OFF"
+                        }}
                       </span>
                     </div>
                     <span class="text-[10px] font-mono text-secondary uppercase">

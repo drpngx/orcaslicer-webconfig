@@ -341,12 +341,55 @@ pub fn import_scanned_directory(
     }
   }
 
+  // `printer_timestamp` of each imported OC machine preset (name -> timestamp), used to pick the
+  // most recently saved OC rig as active when the conf-bound machine no longer exists.
+  let mut oc_machine_timestamps: HashMap<String, String> = HashMap::new();
+  // Detect stale `OC -` machine incarnations left over from a nozzle swap: among OC machine presets
+  // sharing the same title base + nozzle diameter (e.g. `OC - Kobra S1 • 0.4 Hardened` saved at
+  // 17:38:30 vs `OC - Kobra S1 • 0.4 Diamondback +FlowTech` saved at 17:38:35), only the most
+  // recently saved one (`printer_timestamp`) is the current rig — older ones are skipped here so
+  // their preset files get pruned on the next Save instead of lingering in the slicer's dropdowns.
+  let mut newest_oc_incarnation: HashMap<(String, String), (String, String)> = HashMap::new();
+  for (rel_path, m_val) in &user_machine_files {
+    let name = extract_str(m_val, "name").unwrap_or_default();
+    if !(name.starts_with("OC -") || name.starts_with("OC:")) {
+      continue;
+    }
+    let Some((base, diam, _tag)) = crate::models::split_oc_nozzle_title(&name) else {
+      continue;
+    };
+    let ts = extract_str(m_val, "printer_timestamp").unwrap_or_default();
+    let key = (base, diam);
+    match newest_oc_incarnation.get(&key) {
+      Some((best_ts, _)) if *best_ts >= ts => {}
+      _ => {
+        newest_oc_incarnation.insert(key, (ts, rel_path.clone()));
+      }
+    }
+  }
+
   for (rel_path, m_val) in &user_machine_files {
     let name = extract_str(m_val, "name").unwrap_or_else(|| "User Machine".to_string());
     let inherits =
       extract_str(m_val, "inherits").unwrap_or_else(|| "Anycubic Kobra S1 0.4 nozzle".to_string());
     let raw_noz_type =
       extract_str(m_val, "nozzle_type").unwrap_or_else(|| "hardened_steel".to_string());
+    // Skip stale OC incarnations (an older nozzle preset of the same rig); the newest one wins.
+    if name.starts_with("OC -") || name.starts_with("OC:") {
+      if let Some((base, diam, _tag)) = crate::models::split_oc_nozzle_title(&name) {
+        if newest_oc_incarnation
+          .get(&(base, diam))
+          .map(|(_, newest_rel)| newest_rel != rel_path)
+          .unwrap_or(false)
+        {
+          continue;
+        }
+      }
+      oc_machine_timestamps.insert(
+        name.clone(),
+        extract_str(m_val, "printer_timestamp").unwrap_or_default(),
+      );
+    }
     let name_low = name.to_lowercase();
     let notes_low = extract_str(m_val, "printer_notes")
       .or_else(|| extract_str(m_val, "notes"))
@@ -474,9 +517,33 @@ pub fn import_scanned_directory(
       machines.is_empty()
     };
 
+    // Reconstruct rig add-ons from the `printer_notes` "Add-Ons: ..." segment (written by
+    // `generate_descriptive_notes`, using friendly names now and raw ids in older saves) so a
+    // disk round-trip keeps the FlowTech hotend / duct / hollow covers installed.
     let mut addons = Vec::new();
+    if let Some((_, rest)) = notes_low.split_once("add-ons:") {
+      let seg = rest.split_once("weather:").map(|(s, _)| s).unwrap_or(rest);
+      if !seg.contains("stock") {
+        if seg.contains("flowtech") {
+          addons.push("flowtech_hotend".to_string());
+        }
+        if seg.contains("duct") {
+          addons.push("microswiss_duct".to_string());
+        }
+        if seg.contains("hollow") {
+          addons.push("hollow_front_back_covers".to_string());
+        }
+      }
+    }
     if name.contains("NewStartcode V4") {
       addons.push("hollow_front_back_covers".to_string());
+    }
+    // MicroSwiss nozzles (Diamondback/CM2/CHT/Plated Brass) ONLY fit the MicroSwiss FlowTech
+    // all-metal hotend — they are not independent, so the hotend is implied by the nozzle.
+    if MachineRig::is_microswiss_nozzle_type(&nozzle_type)
+      && !addons.iter().any(|a| a == "flowtech_hotend")
+    {
+      addons.push("flowtech_hotend".to_string());
     }
 
     let mut rig = MachineRig {
@@ -516,6 +583,10 @@ pub fn import_scanned_directory(
     };
     let (_, hrc) = rig.orca_machine_nozzle_type_and_hrc();
     rig.nozzle_hrc = hrc;
+    // The FlowTech hotend add-on also updates the rig's hotend field (stock name otherwise).
+    if rig.addons.iter().any(|a| a == "flowtech_hotend") {
+      rig.hotend = "MicroSwiss FlowTech All-Metal Hotend".to_string();
+    }
     let disk_notes = extract_str(m_val, "printer_notes")
       .or_else(|| extract_str(m_val, "notes"))
       .unwrap_or_default();
@@ -537,6 +608,40 @@ pub fn import_scanned_directory(
     machines.push(oc_rig);
   }
 
+  // If nothing ended up active (e.g. the conf-bound machine was skipped above as a stale OC
+  // incarnation), activate the most recently saved OC rig — the newest `OC -` machine preset on
+  // disk is the rig the user last saved (e.g. right after a nozzle swap renamed every preset).
+  let mut newest_oc_rig: Option<(String, usize)> = None;
+  for (idx, m) in machines.iter().enumerate() {
+    if !(m.name.starts_with("OC -") || m.name.starts_with("OC:")) {
+      continue;
+    }
+    let ts = oc_machine_timestamps
+      .get(&m.name)
+      .cloned()
+      .unwrap_or_default();
+    match &newest_oc_rig {
+      Some((best_ts, _)) if *best_ts >= ts => {}
+      _ => newest_oc_rig = Some((ts, idx)),
+    }
+  }
+  if !machines.iter().any(|m| m.is_active) {
+    if let Some((_, idx)) = newest_oc_rig {
+      machines[idx].is_active = true;
+    }
+  }
+
+  // OC filament presets on disk are governed by the newest OC machine preset's nozzle tag; older
+  // `OC -` filament files carrying a different tag (e.g. `• 0.4 Hardened` after a Diamondback
+  // swap) are stale incarnations and are skipped during filament import below.
+  // Only trust this when the newest OC rig actually came from disk with a `printer_timestamp`.
+  let oc_governing_tag: Option<String> = match &newest_oc_rig {
+    Some((ts, idx)) if !ts.is_empty() => machines
+      .get(*idx)
+      .map(|m| m.short_nozzle_tag().to_string()),
+    _ => None,
+  };
+
   let active_machine_id = machines
     .iter()
     .find(|m| m.is_active)
@@ -553,6 +658,20 @@ pub fn import_scanned_directory(
   let mut filaments = Vec::new();
   for (idx, (rel_path, f_val, raw_text)) in user_filament_files.iter().enumerate() {
     let name = extract_str(f_val, "name").unwrap_or_else(|| format!("Filament #{}", idx + 1));
+    // Skip stale `OC -` filament incarnations from an older nozzle (e.g. `OC - PETG • 0.4 Hardened`
+    // lingering after the rig switched to Diamondback): OC filament presets are governed by the
+    // newest OC machine preset, so files tagged with a different nozzle are leftovers whose files
+    // are pruned on the next Save instead of showing up twice in the slicer's dropdowns.
+    if name.starts_with("OC -") || name.starts_with("OC:") {
+      if let (Some(governing_tag), Some((_, _, file_tag))) = (
+        &oc_governing_tag,
+        crate::models::split_oc_nozzle_title(&name),
+      ) {
+        if !file_tag.eq_ignore_ascii_case(governing_tag) {
+          continue;
+        }
+      }
+    }
     let raw_inherits = extract_str(f_val, "inherits").unwrap_or_default();
     let is_oc_managed_filament = name.starts_with("OC -") || name.starts_with("OC:");
     let is_standalone_base_file = rel_path.contains("/filament/base/")
@@ -562,6 +681,19 @@ pub fn import_scanned_directory(
     // Determine actual material type from profile name or `filament_type` field via `constants.json`
     let c = crate::constants::constants();
     let disk_fil_type = extract_str(f_val, "filament_type");
+    // Undo the `anycubic_pctg_as_petg` declaration (PCTG exported as PETG for AnycubicSlicerNext)
+    // so PCTG spools keep their PCTG temperature brackets after a round-trip through disk.
+    let disk_fil_type = match disk_fil_type {
+      Some(t)
+        if t.to_uppercase().starts_with("PETG")
+          && extract_str(f_val, "filament_notes")
+            .map(|n| n.contains(crate::threemf::PCTG_AS_PETG_NOTE_MARKER))
+            .unwrap_or(false) =>
+      {
+        Some(format!("PCTG{}", &t["PETG".len()..]))
+      }
+      other => other,
+    };
     let inherited_fil_type = system_filaments
       .get(&raw_inherits)
       .and_then(|b| extract_str(b, "filament_type"));
@@ -1764,7 +1896,7 @@ pub fn sync_live_state_to_entries(
   conf_relative_path: &str,
   pending_updates: &[PendingDiskUpdate],
   derived_overrides: &serde_json::Map<String, serde_json::Value>,
-) -> Vec<LocalFsSaveFileEntry> {
+) -> crate::fs_access::LocalFsSyncPlan {
   sync_live_state_to_entries_with_process_overrides(
     entries,
     machines,
@@ -1784,6 +1916,11 @@ pub fn sync_live_state_to_entries(
 /// Same as [`sync_live_state_to_entries`], but each `ProcessProfile` `.json` is generated from its own
 /// independently evaluated Lua stack (`per_process_overrides[process.id]`), so Process-Tier-scoped rules
 /// only land in the matching exported presets. Machine & Filament files use `derived_overrides`.
+///
+/// Returns a [`crate::fs_access::LocalFsSyncPlan`] whose `deletions` list the stale WebConfig-managed
+/// `OC -` preset files pruned from `entries` (e.g. `OC - PETG • 0.4 Hardened.json` left over after the
+/// rig's nozzle changed) so the caller can have the local-slicer server delete them from disk —
+/// otherwise the slicer keeps listing both the old and the new presets.
 #[allow(clippy::too_many_arguments)]
 pub fn sync_live_state_to_entries_with_process_overrides(
   entries: &mut Vec<ScannedFileEntry>,
@@ -1798,8 +1935,9 @@ pub fn sync_live_state_to_entries_with_process_overrides(
   pending_updates: &[PendingDiskUpdate],
   derived_overrides: &serde_json::Map<String, serde_json::Value>,
   per_process_overrides: &HashMap<String, serde_json::Map<String, serde_json::Value>>,
-) -> Vec<LocalFsSaveFileEntry> {
+) -> crate::fs_access::LocalFsSyncPlan {
   let mut modified_map: HashMap<String, String> = HashMap::new();
+  let mut deletions: Vec<String> = Vec::new();
 
   // 1. Detect user_folder_id from `AnycubicSlicerNext.conf` (`app.preset_folder`) or existing
   // `user/<id>/...` directory entries, preferring non-"default" account folders (e.g. "434139").
@@ -1859,7 +1997,51 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     }
   }
 
-  // 2. Ensure every MachineRig in `machines` has an up-to-date file in `user/<user_folder_id>/machine/`
+  // 2. Prune stale WebConfig-managed `OC -` preset entries (machines, processes, and filaments)
+  // whose names no longer match the live state — e.g. `OC - Kobra S1 • 0.4 Hardened.json` after the
+  // rig's nozzle was switched to Diamondback (renaming every preset). Without this, the slicer keeps
+  // listing both the old and the new presets. Non-OC (user/slicer-created) presets are never touched.
+  let valid_machine_fnames: std::collections::HashSet<String> = machines
+    .iter()
+    .map(|r| crate::models::sanitize_profile_filename(&r.name))
+    .collect();
+  let valid_proc_fnames: std::collections::HashSet<String> = processes
+    .iter()
+    .map(|p| crate::models::sanitize_profile_filename(&p.name))
+    .collect();
+  let valid_filament_fnames: std::collections::HashSet<String> = filaments
+    .iter()
+    .map(|s| crate::models::sanitize_profile_filename(&s.format_concise_title()))
+    .collect();
+  let mut pruned_oc_machine_names: Vec<String> = Vec::new();
+  entries.retain(|e| {
+    let rel = e.relative_path.replace('\\', "/");
+    let is_oc_preset = rel.starts_with("user/")
+      && !rel.contains("/base/")
+      && e.filename.starts_with("OC")
+      && e.filename.ends_with(".json")
+      && (rel.contains("/machine/") || rel.contains("/process/") || rel.contains("/filament/"));
+    if !is_oc_preset {
+      return true;
+    }
+    let valid = if rel.contains("/machine/") {
+      &valid_machine_fnames
+    } else if rel.contains("/process/") {
+      &valid_proc_fnames
+    } else {
+      &valid_filament_fnames
+    };
+    if valid.contains(&e.filename) {
+      return true;
+    }
+    if rel.contains("/machine/") {
+      pruned_oc_machine_names.push(e.filename.trim_end_matches(".json").to_string());
+    }
+    deletions.push(rel);
+    false
+  });
+
+  // 3. Ensure every MachineRig in `machines` has an up-to-date file in `user/<user_folder_id>/machine/`
   // Always use `build_machine_preset_json_with_overrides(rig, Some(derived_overrides))` so the standalone
   // machine `.json` file on disk is 100% identical to the machine parameters embedded in `.3mf`
   // `Metadata/project_settings.config`.
@@ -1887,18 +2069,8 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     }
   }
 
-  // 3. Ensure every ProcessProfile in `processes` has a file in `user/<user_folder_id>/process/`
-  // and prune any stale `OC` process files from earlier naming conventions
-  let valid_proc_fnames: std::collections::HashSet<String> = processes
-    .iter()
-    .map(|p| crate::models::sanitize_profile_filename(&p.name))
-    .collect();
-  entries.retain(|e| {
-    if e.relative_path.contains("/process/") && e.filename.starts_with("OC") {
-      return valid_proc_fnames.contains(&e.filename);
-    }
-    true
-  });
+  // 4. Ensure every ProcessProfile in `processes` has a file in `user/<user_folder_id>/process/`
+  // (stale `OC` process files from earlier naming conventions were pruned in step 2)
 
   for proc in processes {
     let fname = crate::models::sanitize_profile_filename(&proc.name);
@@ -1926,7 +2098,7 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     }
   }
 
-  // 4. Synchronize all `filaments` (including newly added `OC:` spools and edited spools)
+  // 5. Synchronize all `filaments` (including newly added `OC:` spools and edited spools)
   // into `user/<user_folder_id>/filament/<sanitized_name>.json`.
   // Crucially, this delegates directly to `export_standalone_filament_json_with_overrides`
   // (which shares `resolve_spool_orca_filament_map_with_rig_and_overrides` with `.3mf` export)
@@ -1971,7 +2143,7 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     }
   }
 
-  // 5. Ensure `AnycubicSlicerNext.conf` exists and reflects active machine, process, AMS slots, colors, and flush matrix
+  // 6. Ensure `AnycubicSlicerNext.conf` exists and reflects active machine, process, AMS slots, colors, and flush matrix
   let conf_path = if conf_relative_path.trim().is_empty() {
     "AnycubicSlicerNext.conf".to_string()
   } else {
@@ -2086,11 +2258,16 @@ pub fn sync_live_state_to_entries_with_process_overrides(
           .get_mut("anycubic_presets")
           .and_then(|a| a.as_array_mut())
         {
+          // Drop rows bound to WebConfig-managed `OC -` machines that were just pruned (e.g. the
+          // old `OC - Kobra S1 • 0.4 Hardened` rig after a nozzle switch), so the slicer stops
+          // auto-selecting the deleted Hardened machine and its stale filament bindings.
           arr.retain(|p| {
-            !p.get("machine")
+            let mach = p
+              .get("machine")
               .and_then(|m| m.as_str())
               .unwrap_or("")
-              .contains(".3mf)")
+              .to_string();
+            !mach.contains(".3mf)") && !pruned_oc_machine_names.contains(&mach)
           });
           let update_preset_map =
             |pmap: &mut serde_json::Map<String, serde_json::Value>, target_machine: &str| {
@@ -2165,8 +2342,8 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     }
   }
 
-  // 6. Apply any staged `PendingDiskUpdate` items on top for non-OC user profiles
-  // (Steps 2-4 already write the complete, authoritative JSON for all `OC -` machine, process, and filament presets!)
+  // 7. Apply any staged `PendingDiskUpdate` items on top for non-OC user profiles
+  // (Steps 3-5 already write the complete, authoritative JSON for all `OC -` machine, process, and filament presets!)
   let filtered_updates: Vec<PendingDiskUpdate> = pending_updates
     .iter()
     .filter(|upd| {
@@ -2196,7 +2373,12 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     })
     .collect();
   out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-  out
+  deletions.sort();
+  deletions.dedup();
+  crate::fs_access::LocalFsSyncPlan {
+    files: out,
+    deletions,
+  }
 }
 
 /// Build a faithful in-memory snapshot of `/mnt/c/Users/drpng/AppData/Roaming/AnycubicSlicerNext`
@@ -2915,6 +3097,7 @@ mod tests {
       &serde_json::Map::new(),
     );
     let conf_saved = saved
+      .files
       .iter()
       .find(|f| f.relative_path == "AnycubicSlicerNext.conf")
       .expect("Existing AnycubicSlicerNext.conf must be updated and returned in save list");
@@ -3099,5 +3282,402 @@ mod tests {
         }
       }
     }
+  }
+
+  /// Regression test for a nozzle switch (Hardened Steel -> MicroSwiss Diamondback):
+  /// every `OC -` preset is renamed (`• 0.4 Hardened` -> `• 0.4 Diamondback`), and the save sync must
+  /// 1. prune the stale Hardened machine/process/filament `.json` entries and return them as
+  ///    `deletions` for `/api/local-slicer-save` (never touching non-OC user presets),
+  /// 2. rewrite `AnycubicSlicerNext.conf` so `presets.machine` points at the renamed rig and no
+  ///    `anycubic_presets` row still references the deleted Hardened machine, and
+  /// 3. rename filament presets with the exact same nozzle tag as the machine title ("Diamondback").
+  #[test]
+  fn test_nozzle_switch_to_diamondback_prunes_stale_hardened_presets_on_save() {
+    // Directory state from a previous Hardened Steel save: OC machine + OC filaments + conf bound to them.
+    let mut entries = build_reference_anycubic_entries();
+    entries.retain(|e| e.filename != "AnycubicSlicerNext.conf");
+    entries.push(ScannedFileEntry {
+      relative_path: "AnycubicSlicerNext.conf".to_string(),
+      filename: "AnycubicSlicerNext.conf".to_string(),
+      bytes: r##"{
+        "app": { "preset_folder": "434139", "version": "2.0.0.3", "flush_multiplier": "1.000000" },
+        "models": [{ "model": "Anycubic Kobra S1", "nozzle_diameter": "0.4", "vendor": "Anycubic" }],
+        "presets": { "machine": "OC - Kobra S1 • 0.4 Hardened" },
+        "anycubic_presets": [{
+          "machine": "OC - Kobra S1 • 0.4 Hardened",
+          "process": "OC - 0.20mm Standard @Kobra S1",
+          "filament": "OC - PETG • 0.4 Hardened",
+          "filament_01": "OC - PCTG • 0.4 Hardened",
+          "filament_colors": "#BC4033,#658946"
+        }]
+      }"##
+        .as_bytes()
+        .to_vec(),
+    });
+    entries.push(ScannedFileEntry {
+      relative_path: "user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json".to_string(),
+      filename: "OC - Kobra S1 • 0.4 Hardened.json".to_string(),
+      bytes: r#"{
+        "from": "User",
+        "inherits": "Anycubic Kobra S1 0.4 nozzle",
+        "name": "OC - Kobra S1 • 0.4 Hardened",
+        "nozzle_type": "hardened_steel",
+        "nozzle_hrc": "55"
+      }"#
+        .as_bytes()
+        .to_vec(),
+    });
+    for (fname, inherits, fil_type, temp) in [
+      (
+        "OC - PETG • 0.4 Hardened",
+        "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
+        "PETG",
+        "235",
+      ),
+      (
+        "OC - PCTG • 0.4 Hardened",
+        "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
+        "PCTG",
+        "260",
+      ),
+    ] {
+      entries.push(ScannedFileEntry {
+        relative_path: format!("user/434139/filament/{}.json", fname),
+        filename: format!("{}.json", fname),
+        bytes: format!(
+          r#"{{"from": "User", "inherits": "{}", "name": "{}", "filament_type": ["{}"], "nozzle_temperature": ["{}"]}}"#,
+          inherits, fname, fil_type, temp
+        )
+        .into_bytes(),
+      });
+    }
+
+    let mut imported = import_scanned_directory(&entries).unwrap();
+
+    // Simulate the Machine tab nozzle change to MicroSwiss Diamondback (mirrors on_change_nozzle).
+    let expected_tag;
+    {
+      let rig = imported
+        .machines
+        .iter_mut()
+        .find(|m| m.id == imported.active_machine_id)
+        .expect("active rig");
+      assert_eq!(rig.name, "OC - Kobra S1 • 0.4 Hardened");
+      rig.nozzle_type = "diamondback".to_string();
+      rig.nozzle_material = "MicroSwiss Diamondback (PCD)".to_string();
+      rig.nozzle_name = "MicroSwiss Diamondback PCD 0.40mm".to_string();
+      // MicroSwiss nozzles only fit the MicroSwiss FlowTech hotend — on_change_nozzle installs it.
+      if !rig.addons.iter().any(|a| a == "flowtech_hotend") {
+        rig.addons.push("flowtech_hotend".to_string());
+      }
+      rig.hotend = "MicroSwiss FlowTech All-Metal Hotend".to_string();
+      let (_, hrc) = rig.orca_machine_nozzle_type_and_hrc();
+      rig.nozzle_hrc = hrc;
+      rig.refresh_title_and_notes(rig.name.starts_with("OC -"));
+      assert_eq!(rig.name, "OC - Kobra S1 • 0.4 Diamondback +FlowTech");
+      expected_tag = rig.short_nozzle_tag().to_string();
+    }
+    for spool in imported.filaments.iter_mut() {
+      spool.recompute_for_nozzle("diamondback");
+    }
+
+    let procs = ProcessProfile::get_default_processes();
+    let plan = sync_live_state_to_entries(
+      &mut entries,
+      &imported.machines,
+      &imported.active_machine_id,
+      &imported.filaments,
+      &procs,
+      &procs[0].id,
+      &vec!["0".to_string(); 16],
+      1.0,
+      "AnycubicSlicerNext.conf",
+      &[],
+      &serde_json::Map::new(),
+    );
+
+    // 1. Stale Hardened presets are pruned from entries and returned as deletions.
+    for stale in [
+      "user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json",
+      "user/434139/filament/OC - PETG • 0.4 Hardened.json",
+      "user/434139/filament/OC - PCTG • 0.4 Hardened.json",
+    ] {
+      assert!(
+        plan.deletions.iter().any(|d| d == stale),
+        "deletions must contain {} (got {:?})",
+        stale,
+        plan.deletions
+      );
+      assert!(
+        !entries.iter().any(|e| e.relative_path == stale),
+        "{} must be pruned from entries",
+        stale
+      );
+    }
+    // Only WebConfig-managed OC presets are ever deleted; user/slicer presets stay untouched.
+    assert!(plan
+      .deletions
+      .iter()
+      .all(|d| d.rsplit('/').next().unwrap_or("").starts_with("OC -")));
+    assert!(entries
+      .iter()
+      .any(|e| e.filename == "Anycubic Kobra S1 0.4 nozzle - png.json"));
+
+    // 2. Renamed presets are written with the same nozzle tag as the machine title.
+    assert!(entries
+      .iter()
+      .any(|e| e.filename == "OC - Kobra S1 • 0.4 Diamondback +FlowTech.json"));
+    for spool in &imported.filaments {
+      // Only WebConfig-managed `OC -` presets carry the nozzle tag; the user's own disk
+      // presets (e.g. "Anycubic PETG - hotbed") keep their original names.
+      if !(spool.name.starts_with("OC -") || spool.name.starts_with("OC:")) {
+        continue;
+      }
+      assert!(
+        spool.name.ends_with(&format!("• 0.4 {}", expected_tag)),
+        "spool '{}' must carry the machine's nozzle tag",
+        spool.name
+      );
+      assert!(
+        entries.iter().any(|e| e.filename
+          == crate::models::sanitize_profile_filename(&spool.name)),
+        "renamed spool file must exist in entries: {}",
+        spool.name
+      );
+    }
+
+    // 3. The conf points at the renamed rig and drops the stale Hardened machine row.
+    let conf_entry = entries
+      .iter()
+      .find(|e| e.filename == "AnycubicSlicerNext.conf")
+      .expect("conf entry");
+    let conf_text = String::from_utf8_lossy(&conf_entry.bytes);
+    let conf_json: serde_json::Value =
+      serde_json::from_str(conf_text.split("# MD5").next().unwrap().trim()).unwrap();
+    assert_eq!(
+      conf_json["presets"]["machine"].as_str().unwrap(),
+      "OC - Kobra S1 • 0.4 Diamondback +FlowTech"
+    );
+    let rows = conf_json["anycubic_presets"].as_array().unwrap();
+    assert!(
+      !rows
+        .iter()
+        .any(|r| r["machine"].as_str() == Some("OC - Kobra S1 • 0.4 Hardened")),
+      "stale Hardened machine row must be dropped from anycubic_presets"
+    );
+    assert!(rows.iter().any(|r| r["machine"].as_str()
+      == Some("OC - Kobra S1 • 0.4 Diamondback +FlowTech")
+      && r["filament"].as_str() == Some("OC - PETG • 0.4 Diamondback")));
+  }
+
+  /// The filament-preset nozzle tag must stay in lockstep with `MachineRig::short_nozzle_tag`
+  /// for every nozzle type (e.g. `OC - PETG • 0.4 Diamondback` matches `OC - Kobra S1 • 0.4 Diamondback`).
+  #[test]
+  fn test_filament_nozzle_tag_matches_machine_title_tag_for_all_nozzle_types() {
+    for nozzle_type in [
+      "brass",
+      "orca_brass",
+      "microswiss_brass",
+      "hardened_steel",
+      "ruby_brass",
+      "cm2",
+      "cht_cm2",
+      "cht",
+      "diamondback",
+    ] {
+      let mut rig = MachineRig::kobra_s1_hardened_steel_png();
+      rig.nozzle_type = nozzle_type.to_string();
+      rig.nozzle_material = "Generic".to_string(); // force the type-only ladder to resolve the tag
+      let expected_tag = rig.short_nozzle_tag();
+
+      let mut spool = FilamentSpool::from_catalog_entry(
+        1,
+        &crate::catalog::load_merged_catalog()
+          .filaments
+          .iter()
+          .find(|f| f.code == "PETG")
+          .unwrap()
+          .clone(),
+        nozzle_type,
+      );
+      assert!(
+        spool.name.ends_with(&format!("• 0.4 {}", expected_tag)),
+        "catalog spool '{}' must end with machine tag '{}' for nozzle_type={}",
+        spool.name,
+        expected_tag,
+        nozzle_type
+      );
+
+      spool.name = "OC - PETG • 0.4 Hardened".to_string();
+      spool.recompute_for_nozzle(nozzle_type);
+      assert!(
+        spool.name.ends_with(&format!("• 0.4 {}", expected_tag)),
+        "renamed spool '{}' must end with machine tag '{}' for nozzle_type={}",
+        spool.name,
+        expected_tag,
+        nozzle_type
+      );
+    }
+  }
+
+  /// Regression test for the user-visible bug where a Diamondback nozzle switch left BOTH preset
+  /// generations on disk (`OC - … • 0.4 Hardened` from 17:38:30 and `OC - … • 0.4 Diamondback`
+  /// from 17:38:35) with `AnycubicSlicerNext.conf` still bound to the stale Hardened machine:
+  /// re-import must keep only the newest OC incarnation as a rig (and activate it), skip OC
+  /// filament presets tagged with the retired nozzle, and the next save must delete every stale
+  /// Hardened preset file plus drop the stale conf row.
+  #[test]
+  fn test_import_prefers_newest_oc_incarnation_and_prunes_older_tag_presets() {
+    let mut entries = build_reference_anycubic_entries();
+    entries.retain(|e| e.filename != "AnycubicSlicerNext.conf");
+    entries.push(ScannedFileEntry {
+      relative_path: "AnycubicSlicerNext.conf".to_string(),
+      filename: "AnycubicSlicerNext.conf".to_string(),
+      bytes: r##"{
+        "app": { "preset_folder": "434139", "version": "2.0.0.3", "flush_multiplier": "1.000000" },
+        "models": [{ "model": "Anycubic Kobra S1", "nozzle_diameter": "0.4", "vendor": "Anycubic" }],
+        "presets": { "machine": "OC - Kobra S1 • 0.4 Hardened" },
+        "anycubic_presets": [{
+          "machine": "OC - Kobra S1 • 0.4 Hardened",
+          "process": "OC - 0.20mm Standard @Kobra S1",
+          "filament": "OC - PETG • 0.4 Hardened",
+          "filament_colors": "#BC4033"
+        }]
+      }"##
+        .as_bytes()
+        .to_vec(),
+    });
+    // Both OC machine incarnations exist on disk; the Diamondback one was saved 5 seconds later.
+    entries.push(ScannedFileEntry {
+      relative_path: "user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json".to_string(),
+      filename: "OC - Kobra S1 • 0.4 Hardened.json".to_string(),
+      bytes: r#"{
+        "from": "User",
+        "inherits": "Anycubic Kobra S1 0.4 nozzle",
+        "name": "OC - Kobra S1 • 0.4 Hardened",
+        "nozzle_type": "hardened_steel",
+        "printer_timestamp": "2026-11-02 17:38:30"
+      }"#
+        .as_bytes()
+        .to_vec(),
+    });
+    entries.push(ScannedFileEntry {
+      relative_path: "user/434139/machine/OC - Kobra S1 • 0.4 Diamondback.json".to_string(),
+      filename: "OC - Kobra S1 • 0.4 Diamondback.json".to_string(),
+      bytes: r#"{
+        "from": "User",
+        "inherits": "Anycubic Kobra S1 0.4 nozzle",
+        "name": "OC - Kobra S1 • 0.4 Diamondback",
+        "nozzle_type": "brass",
+        "printer_timestamp": "2026-11-02 17:38:35"
+      }"#
+        .as_bytes()
+        .to_vec(),
+    });
+    for (fname, fil_type, temp) in [
+      ("OC - PETG • 0.4 Hardened", "PETG", "235"),
+      ("OC - PETG • 0.4 Diamondback", "PETG", "225"),
+    ] {
+      entries.push(ScannedFileEntry {
+        relative_path: format!("user/434139/filament/{}.json", fname),
+        filename: format!("{}.json", fname),
+        bytes: format!(
+          r#"{{"from": "User", "inherits": "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle", "name": "{}", "filament_type": ["{}"], "nozzle_temperature": ["{}"]}}"#,
+          fname, fil_type, temp
+        )
+        .into_bytes(),
+      });
+    }
+
+    let imported = import_scanned_directory(&entries).unwrap();
+
+    // Only the newest OC machine incarnation imports, and it becomes the active rig. The rig
+    // keeps its disk preset name, but import heals the MicroSwiss nozzle -> FlowTech hotend
+    // coupling (add-on installed + hotend field updated) even though the file never listed it.
+    assert!(imported
+      .machines
+      .iter()
+      .any(|m| m.name == "OC - Kobra S1 • 0.4 Diamondback"));
+    assert!(!imported
+      .machines
+      .iter()
+      .any(|m| m.name == "OC - Kobra S1 • 0.4 Hardened"),
+      "stale Hardened machine incarnation must not import as a rig");
+    let active_rig = imported
+      .machines
+      .iter()
+      .find(|m| m.id == imported.active_machine_id)
+      .unwrap();
+    assert_eq!(active_rig.name, "OC - Kobra S1 • 0.4 Diamondback");
+    assert_eq!(active_rig.short_nozzle_tag(), "Diamondback");
+    assert!(active_rig.addons.iter().any(|a| a == "flowtech_hotend"));
+    assert_eq!(active_rig.hotend, "MicroSwiss FlowTech All-Metal Hotend");
+
+    // The Hardened-tagged OC filament preset is a stale incarnation and does not import.
+    assert!(imported
+      .filaments
+      .iter()
+      .any(|f| f.name == "OC - PETG • 0.4 Diamondback"));
+    assert!(!imported
+      .filaments
+      .iter()
+      .any(|f| f.name == "OC - PETG • 0.4 Hardened"));
+
+    // The next save prunes every stale Hardened preset file and rebinds the conf to the current rig.
+    let procs = ProcessProfile::get_default_processes();
+    let plan = sync_live_state_to_entries(
+      &mut entries,
+      &imported.machines,
+      &imported.active_machine_id,
+      &imported.filaments,
+      &procs,
+      &procs[0].id,
+      &vec!["0".to_string(); 16],
+      1.0,
+      "AnycubicSlicerNext.conf",
+      &[],
+      &serde_json::Map::new(),
+    );
+    assert!(plan.deletions.contains(&"user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json".to_string()));
+    assert!(plan
+      .deletions
+      .contains(&"user/434139/filament/OC - PETG • 0.4 Hardened.json".to_string()));
+    // Current Diamondback presets are never deleted (the machine keeps its disk name), and the
+    // healed FlowTech hotend is written back into its notes.
+    assert!(!plan
+      .deletions
+      .iter()
+      .any(|d| d.contains("Diamondback")),
+      "current Diamondback presets must never be deleted: {:?}",
+      plan.deletions
+    );
+    let healed_machine = entries
+      .iter()
+      .find(|e| e.filename == "OC - Kobra S1 • 0.4 Diamondback.json")
+      .expect("Diamondback machine file must be rewritten in place");
+    assert!(String::from_utf8_lossy(&healed_machine.bytes)
+      .contains("MicroSwiss FlowTech"));
+    for stale in [
+      "user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json",
+      "user/434139/filament/OC - PETG • 0.4 Hardened.json",
+    ] {
+      assert!(!entries.iter().any(|e| e.relative_path == stale));
+    }
+    let conf_entry = entries
+      .iter()
+      .find(|e| e.filename == "AnycubicSlicerNext.conf")
+      .unwrap();
+    let conf_text = String::from_utf8_lossy(&conf_entry.bytes);
+    let conf_json: serde_json::Value =
+      serde_json::from_str(conf_text.split("# MD5").next().unwrap().trim()).unwrap();
+    assert_eq!(
+      conf_json["presets"]["machine"].as_str().unwrap(),
+      "OC - Kobra S1 • 0.4 Diamondback"
+    );
+    assert!(!conf_json["anycubic_presets"]
+      .as_array()
+      .unwrap()
+      .iter()
+      .any(|r| r["machine"].as_str() == Some("OC - Kobra S1 • 0.4 Hardened")));
   }
 }

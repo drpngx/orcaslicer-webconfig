@@ -44,12 +44,19 @@ pub struct LocalFsSaveFileEntry {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LocalFsSaveRequest {
   pub files: Vec<LocalFsSaveFileEntry>,
+  /// Stale WebConfig-managed preset paths to delete (e.g. `user/434139/filament/OC - PETG • 0.4 Hardened.json`
+  /// left over after a nozzle change renamed every preset). Mirrored across all `user/<id>/` folders
+  /// like writes. Only `user/<id>/(machine|process|filament)/OC -*.json` targets are honored.
+  #[serde(default)]
+  pub deletions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LocalFsSaveResponse {
   pub ok: bool,
   pub files_saved: usize,
+  #[serde(default)]
+  pub files_deleted: usize,
   pub message: String,
 }
 
@@ -567,6 +574,7 @@ async fn api_local_slicer_save(Json(req): Json<LocalFsSaveRequest>) -> impl Into
     let resp = LocalFsSaveResponse {
       ok: false,
       files_saved: 0,
+      files_deleted: 0,
       message: format!(
         "Capability sandbox could not open slicer directory: {}",
         cfg.local_slicer_directory
@@ -713,17 +721,60 @@ async fn api_local_slicer_save(Json(req): Json<LocalFsSaveRequest>) -> impl Into
     }
   }
 
+  // Delete stale WebConfig-managed `OC -` presets (e.g. `OC - PETG • 0.4 Hardened.json` left over
+  // after a nozzle change renamed every preset), mirroring across every `user/<id>/` folder like
+  // writes above so no orphan copies linger in secondary account folders. Only OC-managed preset
+  // paths are honored — user/slicer-created presets are never deleted.
+  let mut files_deleted = 0usize;
+  for del_rel in &req.deletions {
+    let rel = del_rel.replace('\\', "/");
+    if !is_allowed_preset_deletion_target(&rel) {
+      continue;
+    }
+
+    let mut target_rels = vec![rel.clone()];
+    if let Some((_src_folder, rest)) = rel.strip_prefix("user/").and_then(|a| a.split_once('/')) {
+      for existing_folder in &existing_user_folders {
+        let mirror_rel = format!("user/{}/{}", existing_folder, rest);
+        if !target_rels.contains(&mirror_rel) {
+          target_rels.push(mirror_rel);
+        }
+      }
+    }
+
+    for target_rel in &target_rels {
+      // Remove the preset file plus its slicer-generated `.info` sibling.
+      let mut candidate_rels = vec![target_rel.clone()];
+      if target_rel.ends_with(".json") {
+        candidate_rels.push(format!("{}.info", target_rel.trim_end_matches(".json")));
+      }
+      for candidate in &candidate_rels {
+        if cap_dir.exists(candidate) && cap_dir.remove_file(candidate).is_ok() {
+          if let Ok(mut guard) = state.lock() {
+            if let Some(ref mut payload) = guard.result {
+              payload.entries.retain(|e| &e.relative_path != candidate);
+            }
+          }
+          if candidate.ends_with(".json") {
+            files_deleted += 1;
+          }
+        }
+      }
+    }
+  }
+
   info!(
-    "Saved {} modified user configuration files to '{}' via cap-std",
-    files_saved, cfg.local_slicer_directory
+    "Saved {} modified user configuration files ({} stale OC presets deleted) to '{}' via cap-std",
+    files_saved, files_deleted, cfg.local_slicer_directory
   );
 
   let resp = LocalFsSaveResponse {
     ok: true,
     files_saved,
+    files_deleted,
     message: format!(
-      "Saved {} file(s) to {}",
-      files_saved, cfg.local_slicer_directory
+      "Saved {} file(s) & deleted {} stale preset(s) in {}",
+      files_saved, files_deleted, cfg.local_slicer_directory
     ),
   };
   let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
@@ -1594,4 +1645,52 @@ pub fn create_router() -> Router {
       post(api_anycubic_push_slots).options(cors_preflight),
     )
     .fallback(get(index))
+}
+
+/// Guards `/api/local-slicer-save` `deletions`: only WebConfig-managed preset files under
+/// `user/<folder>/(machine|process|filament)/` whose filename starts with `OC` and ends with
+/// `.json` (or the slicer-generated `.info` sibling) may be deleted — user/slicer-created presets,
+/// `base/` profiles, and any path-traversal attempt are rejected.
+fn is_allowed_preset_deletion_target(rel: &str) -> bool {
+  if rel.contains("..") {
+    return false;
+  }
+  let Some(after_user) = rel.strip_prefix("user/") else {
+    return false;
+  };
+  let Some((_folder, subpath)) = after_user.split_once('/') else {
+    return false;
+  };
+  let fname = subpath.rsplit('/').next().unwrap_or("");
+  (subpath.starts_with("machine/") || subpath.starts_with("process/") || subpath.starts_with("filament/"))
+    && !subpath.contains("/base/")
+    && fname.starts_with("OC")
+    && (fname.ends_with(".json") || fname.ends_with(".info"))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_allowed_preset_deletion_target as allowed;
+
+  #[test]
+  fn only_oc_managed_user_presets_are_deletable() {
+    assert!(allowed(
+      "user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json"
+    ));
+    assert!(allowed(
+      "user/default/filament/OC - PETG • 0.4 Hardened.json"
+    ));
+    assert!(allowed("user/434139/process/OC - 0.20mm Standard @Kobra S1.json"));
+    assert!(allowed("user/434139/machine/OC - Kobra S1 • 0.4 Hardened.info"));
+
+    // User/slicer-created presets are never deletable.
+    assert!(!allowed("user/434139/machine/Anycubic Kobra S1 0.4 nozzle - png.json"));
+    assert!(!allowed("user/434139/filament/Anycubic PETG - hotbed.json"));
+    assert!(!allowed("user/434139/filament/base/CHCKX PETG PCTG @Anycubic Kobra S1 0.4 nozzle.json"));
+    // Wrong location / traversal / arbitrary files are rejected.
+    assert!(!allowed("AnycubicSlicerNext.conf"));
+    assert!(!allowed("user/434139/OC - evil.json"));
+    assert!(!allowed("user/434139/machine/OC - ../evil.json"));
+    assert!(!allowed("system/Anycubic/machine/OC - system.json"));
+  }
 }

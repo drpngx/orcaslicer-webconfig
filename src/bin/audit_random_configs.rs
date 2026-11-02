@@ -549,12 +549,17 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       &per_proc_overrides,
     );
 
-    for sf in &save_files {
+    for sf in &save_files.files {
       let full_path = cfg_dir.join(&sf.relative_path);
       if let Some(parent) = full_path.parent() {
         fs::create_dir_all(parent).expect("Failed to create parent dir");
       }
       fs::write(&full_path, &sf.content).expect("Failed to write save file");
+    }
+    for del_rel in &save_files.deletions {
+      let full_path = cfg_dir.join(del_rel);
+      let _ = fs::remove_file(&full_path);
+      let _ = fs::remove_file(full_path.with_extension("info"));
     }
 
     // Also write `project_settings.config` (3MF config), `project_export.3mf`, and `orcaslicer_webconfig.json`
@@ -1628,13 +1633,19 @@ fn repair_live_slicer_dir(
     &snap.pending_updates,
     &derived_overrides,
   );
-  for sf in &save_files {
+  for sf in &save_files.files {
     let dest = slicer_dir.join(&sf.relative_path);
     if let Some(parent) = dest.parent() {
       fs::create_dir_all(parent).expect("Failed to create parent dir");
     }
     fs::write(&dest, &sf.content).expect("Failed to write repaired file");
     println!("Updated live file: {}", dest.display());
+  }
+  for del_rel in &save_files.deletions {
+    let dest = slicer_dir.join(del_rel);
+    let _ = fs::remove_file(&dest);
+    let _ = fs::remove_file(dest.with_extension("info"));
+    println!("Pruned stale OC preset: {}", dest.display());
   }
 
   let threemf_bytes = build_3mf_project_container(

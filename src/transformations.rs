@@ -612,6 +612,18 @@ impl TransformationEngine {
         scope: crate::transformations::RuleScopeFilter::default(),
       },
       TransformationRule {
+        id: "anycubic_pctg_as_petg".to_string(),
+        name: "Anycubic PCTG → PETG Filament Type Declaration".to_string(),
+        description: "AnycubicSlicerNext's hard-coded filament_type list lacks PCTG: on Anycubic rigs, PCTG-family spools are exported as filament_type = PETG. Nothing else changes — nozzle/bed temps and nozzle_temperature_range_low/high stay on PCTG limits (240–275°C), and PCTG-scoped rules still apply.".to_string(),
+        category: "Machine Compatibility Rule".to_string(),
+        icon: "🏷️".to_string(),
+        enabled: true,
+        condition_expr: "all".to_string(),
+        lua_code: include_str!("../transformations/anycubic_pctg_as_petg.lua").to_string(),
+        priority: 13,
+        scope: crate::transformations::RuleScopeFilter::default(),
+      },
+      TransformationRule {
         id: "line_width_geometry".to_string(),
         name: "Nozzle-Proportional Line Width & Extrusion Geometry Optimizer".to_string(),
         description: "Sets every per-feature line width as a % of the active nozzle diameter: Initial Layer 125% (wide adhesion bead), Outer Wall 105%, Top Surface 95% (crisp tops & lettering), Inner Wall & Sparse Infill 125% (thicker, stronger, faster internal ribs). Rescales automatically on 0.2–1.0mm nozzle swaps.".to_string(),
@@ -1179,6 +1191,7 @@ end
       match rule.id.as_str() {
         "thermal_conductivity"
         | "rig_addons_cooling"
+        | "anycubic_pctg_as_petg"
         | "line_width_geometry"
         | "outer_wall_consistency"
         | "volumetric_speed_ceiling"
@@ -4812,5 +4825,164 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
         .unwrap();
     assert_eq!(p_012_hq["dont_slow_down_outer_wall"].as_str(), Some("1"));
     assert_eq!(p_012_hq["outer_wall_speed"].as_str(), Some("60"));
+  }
+
+  #[test]
+  fn test_anycubic_pctg_declared_as_petg_keeps_pctg_temperature_brackets() {
+    use crate::threemf::{
+      export_standalone_filament_json, export_standalone_filament_json_with_overrides,
+      PCTG_AS_PETG_NOTE_MARKER, PCTG_AS_PETG_SIDE_CHANNEL,
+    };
+
+    let rule = TransformationEngine::get_default_rules()
+      .into_iter()
+      .find(|r| r.id == "anycubic_pctg_as_petg")
+      .expect("anycubic_pctg_as_petg is a built-in default rule");
+    assert!(rule.enabled, "rule must be on by default");
+
+    // 1. Rig gating inside Lua: Anycubic arms the side-channel, Bambu does not (unless forced).
+    let run = |lua: &str, model: &str| {
+      let (cfg, _, _) = execute_transformation_lua(
+        lua,
+        &json!({}),
+        &json!({ "printer_model": model, "filament_type": "PCTG", "all_filament_types": ["PCTG", "PLA"] }),
+      )
+      .expect("anycubic_pctg_as_petg executes");
+      cfg.get(PCTG_AS_PETG_SIDE_CHANNEL).and_then(|v| v.as_str()).map(String::from)
+    };
+    assert_eq!(run(&rule.lua_code, "Anycubic Kobra S1").as_deref(), Some("1"));
+    assert_eq!(run(&rule.lua_code, "Anycubic Kobra S1 Max").as_deref(), Some("1"));
+    assert_eq!(run(&rule.lua_code, "Bambu Lab P1S"), None);
+    let mut force_all = HashMap::new();
+    force_all.insert("target_printers".to_string(), "all".to_string());
+    let lua_all = embed_param_defaults_in_lua(&rule.lua_code, &force_all);
+    assert_eq!(run(&lua_all, "Bambu Lab P1S").as_deref(), Some("1"));
+
+    // 2. Full default stack on the Anycubic rig produces the side-channel.
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let mut rules = TransformationEngine::get_default_rules();
+    TransformationEngine::sync_rules_for_rig(
+      &mut rules,
+      &rig.nozzle_type,
+      &rig.nozzle_material,
+      rig.ace_pro_units,
+    );
+    let ctx = json!({
+      "printer_model": rig.printer_model,
+      "nozzle_type": rig.nozzle_type,
+      "nozzle_material": rig.nozzle_material,
+      "nozzle_diameter": rig.nozzle_diameter,
+      "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "filament_type": "PCTG",
+      "all_filament_types": ["PCTG", "PETG"],
+    });
+    let res =
+      TransformationEngine::evaluate_stack(&OrcaProfile::get_stock_kobra_s1(), &rules, &ctx);
+    let overrides = res.resulting_profile.values.clone();
+    assert_eq!(
+      overrides.get(PCTG_AS_PETG_SIDE_CHANNEL).and_then(|v| v.as_str()),
+      Some("1")
+    );
+    // The PCTG-scoped stringing rule must still see PCTG (filament type is only re-declared on export).
+    assert!(!res
+      .skipped_rules
+      .iter()
+      .any(|s| s.rule_id == "filament_pctg_antistringing"));
+
+    // 3. Export: only `filament_type` (+ notes marker) differs; temps & brackets stay PCTG.
+    let catalog = crate::catalog::load_merged_catalog();
+    let pctg_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PCTG")
+      .expect("PCTG catalog entry");
+    let pctg = FilamentSpool::from_catalog_entry(1, pctg_entry, &rig.nozzle_type);
+    assert_eq!(pctg.material_type, "PCTG");
+
+    let mut no_flag = overrides.clone();
+    no_flag.remove(PCTG_AS_PETG_SIDE_CHANNEL);
+    let parse = |s: String| -> serde_json::Map<String, serde_json::Value> {
+      serde_json::from_str::<serde_json::Value>(&s)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone()
+    };
+    let with_rule = parse(export_standalone_filament_json_with_overrides(
+      &pctg, &rig, &overrides,
+    ));
+    let without_rule = parse(export_standalone_filament_json_with_overrides(
+      &pctg, &rig, &no_flag,
+    ));
+    assert_eq!(with_rule["filament_type"], json!(["PETG"]));
+    assert_eq!(without_rule["filament_type"], json!(["PCTG"]));
+    assert!(with_rule["filament_notes"][0]
+      .as_str()
+      .unwrap()
+      .contains(PCTG_AS_PETG_NOTE_MARKER));
+    for (k, v) in &without_rule {
+      if k == "filament_type" || k == "filament_notes" {
+        continue;
+      }
+      assert_eq!(with_rule.get(k), Some(v), "'{}' must be unchanged by PETG declaration", k);
+    }
+    assert_eq!(with_rule.len(), without_rule.len());
+
+    let first_i32 = |m: &serde_json::Map<String, serde_json::Value>, k: &str| -> i32 {
+      m[k][0].as_str().unwrap().parse().unwrap()
+    };
+    let (pctg_min, pctg_max) = FilamentSpool::polymer_safe_nozzle_bounds("PCTG");
+    let noz = first_i32(&with_rule, "nozzle_temperature");
+    let init = first_i32(&with_rule, "nozzle_temperature_initial_layer");
+    let lo = first_i32(&with_rule, "nozzle_temperature_range_low");
+    let hi = first_i32(&with_rule, "nozzle_temperature_range_high");
+    assert!((pctg_min..=pctg_max).contains(&noz), "PCTG nozzle {}°C", noz);
+    assert!(lo <= noz && init <= hi, "range [{}..{}] must cover {}/{}°C", lo, hi, noz, init);
+
+    // 4. A hot PCTG spool above PETG's 260°C ceiling is NOT clamped to PETG limits.
+    let (_, petg_max) = FilamentSpool::polymer_safe_nozzle_bounds("PETG");
+    let mut hot = pctg.clone();
+    hot.print_temp = 268;
+    let hot_map = parse(export_standalone_filament_json_with_overrides(
+      &hot, &rig, &overrides,
+    ));
+    assert_eq!(hot_map["filament_type"], json!(["PETG"]));
+    let hot_noz = first_i32(&hot_map, "nozzle_temperature");
+    assert!(hot_noz > petg_max, "PCTG 268°C must not be clamped to PETG {}°C", petg_max);
+    assert!(first_i32(&hot_map, "nozzle_temperature_range_high") >= hot_noz);
+    assert!(first_i32(&hot_map, "nozzle_temperature_range_low") <= hot_noz);
+
+    // 5. PETG / PLA spools and exports without overrides are untouched.
+    let petg_entry = catalog.filaments.iter().find(|f| f.code == "PETG").unwrap();
+    let petg = FilamentSpool::from_catalog_entry(2, petg_entry, &rig.nozzle_type);
+    let petg_map = parse(export_standalone_filament_json_with_overrides(
+      &petg, &rig, &overrides,
+    ));
+    assert_eq!(petg_map["filament_type"], json!(["PETG"]));
+    assert!(!petg_map["filament_notes"][0]
+      .as_str()
+      .unwrap()
+      .contains(PCTG_AS_PETG_NOTE_MARKER));
+    let plain = parse(export_standalone_filament_json(&pctg, &rig));
+    assert_eq!(plain["filament_type"], json!(["PCTG"]));
+
+    // 6. Round-trip: a PETG-declared PCTG preset whose name lacks "PCTG" re-imports as PCTG.
+    let mut renamed = with_rule.clone();
+    renamed.insert("name".to_string(), json!("My Clear Spool"));
+    renamed.insert("filament_settings_id".to_string(), json!(["My Clear Spool"]));
+    renamed.insert("nozzle_temperature".to_string(), json!(["268"]));
+    let mut entries = crate::dir_import::build_reference_anycubic_entries();
+    entries.push(crate::fs_access::ScannedFileEntry {
+      relative_path: "user/434139/filament/My Clear Spool.json".to_string(),
+      filename: "My Clear Spool.json".to_string(),
+      bytes: serde_json::to_vec(&serde_json::Value::Object(renamed)).unwrap(),
+    });
+    let imported = crate::dir_import::import_scanned_directory(&entries).unwrap();
+    let back = imported
+      .filaments
+      .iter()
+      .find(|f| f.name.contains("My Clear Spool"))
+      .expect("renamed PETG-declared spool imported");
+    assert_eq!(back.material_type, "PCTG");
   }
 }

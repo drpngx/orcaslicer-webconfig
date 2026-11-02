@@ -200,6 +200,7 @@ pub fn App() -> Html {
         "bridge_overhang_tuning",
         "structural_strength",
         "outer_wall_consistency",
+        "anycubic_pctg_as_petg",
       ] {
         if !list.iter().any(|r| r.id == new_id) {
           if let Some(def) = defaults.iter().find(|r| r.id == new_id).cloned() {
@@ -1380,16 +1381,33 @@ pub fn App() -> Html {
       let mut list = (*machines).clone();
       if let Some(m) = list.iter_mut().find(|m| m.id == *active_machine_id) {
         if let Some(pos) = m.addons.iter().position(|a| a == &addon_id) {
-          m.addons.remove(pos);
-          toast.set(Some(format!(
-            "Removed '{}' add-on from rig. Cooling/retraction schedule restored.",
-            addon_id
-          )));
+          // The FlowTech hotend cannot be removed while a MicroSwiss nozzle is installed:
+          // MicroSwiss nozzles (Diamondback/CM2/CHT/Plated Brass) only fit the MicroSwiss hotend.
+          if addon_id == "flowtech_hotend"
+            && MachineRig::is_microswiss_nozzle_type(&m.nozzle_type)
+          {
+            toast.set(Some(format!(
+              "Cannot remove the MicroSwiss FlowTech™ hotend: the installed {} nozzle only fits this hotend. Switch to a stock nozzle (Brass / Hardened Steel / Ruby) first.",
+              m.nozzle_material
+            )));
+          } else {
+            m.addons.remove(pos);
+            if addon_id == "flowtech_hotend" && m.hotend.contains("FlowTech") {
+              m.hotend = "Kobra S1 All-Metal Quick-Swap".to_string();
+            }
+            toast.set(Some(format!(
+              "Removed '{}' add-on from rig. Cooling/retraction schedule restored.",
+              crate::models::RigAddOn::friendly_name(&addon_id)
+            )));
+          }
         } else {
           m.addons.push(addon_id.clone());
+          if addon_id == "flowtech_hotend" {
+            m.hotend = "MicroSwiss FlowTech All-Metal Hotend".to_string();
+          }
           toast.set(Some(format!(
             "Installed '{}' add-on on rig! Lua cooling/retraction schedule updated.",
-            addon_id
+            crate::models::RigAddOn::friendly_name(&addon_id)
           )));
         }
         m.refresh_title_and_notes(m.source_disk_profile.is_none() || m.name.starts_with("OC -"));
@@ -1411,53 +1429,37 @@ pub fn App() -> Html {
       let mut fil_list = (*filaments).clone();
       if let Some(m) = mach_list.iter_mut().find(|m| m.id == *active_machine_id) {
         m.nozzle_type = new_nozzle_type.clone();
+        let mut toast_msg;
         match new_nozzle_type.as_str() {
           "diamondback" | "microswiss_diamondback" => {
             m.nozzle_material = "MicroSwiss Diamondback (PCD)".to_string();
             m.nozzle_name = format!("MicroSwiss Diamondback PCD {}0mm", m.nozzle_diameter);
-            toast.set(Some(
-              "Installed MicroSwiss Diamondback PCD Nozzle (nozzle_type=brass, HRC 68): all default nozzle & thermal rules applied (-10°C, 0.94 Flow, 0.60mm Retract)!"
-                .to_string(),
-            ));
+            toast_msg = "Installed MicroSwiss Diamondback PCD Nozzle (nozzle_type=brass, HRC 68): all default nozzle & thermal rules applied (-10°C, 0.94 Flow, 0.60mm Retract)!".to_string();
           }
           "microswiss_brass" | "microswiss_mk8_brass" => {
             m.nozzle_material = "Brass (MicroSwiss TwinClad XT)".to_string();
             m.nozzle_name = format!("MicroSwiss Plated Brass {}0mm", m.nozzle_diameter);
-            toast.set(Some(
-              "Installed MicroSwiss Plated Brass Nozzle (TwinClad XT™, nozzle_type=brass, HRC 35): default rules applied (0°C offset, 0.99 Flow, 0.70mm Retract)!"
-                .to_string(),
-            ));
+            toast_msg = "Installed MicroSwiss Plated Brass Nozzle (TwinClad XT™, nozzle_type=brass, HRC 35): default rules applied (0°C offset, 0.99 Flow, 0.70mm Retract)!".to_string();
           }
           "brass" | "orca_brass" => {
             m.nozzle_material = "Brass".to_string();
             m.nozzle_name = format!("Standard Brass {}0mm", m.nozzle_diameter);
-            toast.set(Some(
-              "Installed Standard Brass Nozzle (nozzle_type=brass, HRC 0): default rules applied with 0°C factory thermal baseline.".to_string(),
-            ));
+            toast_msg = "Installed Standard Brass Nozzle (nozzle_type=brass, HRC 0): default rules applied with 0°C factory thermal baseline.".to_string();
           }
           "ruby_brass" => {
             m.nozzle_material = "Ruby Tip (Brass Body)".to_string();
             m.nozzle_name = format!("Brass-Body Ruby Tip {}0mm (CF/GF Ready)", m.nozzle_diameter);
-            toast.set(Some(
-              "Installed Brass-Body Ruby Tip Nozzle (nozzle_type=brass, HRC 60): 0°C Brass thermal conductivity + HRC 60 Ruby gemstone tip enabled for -CF and -GF composite materials!"
-                .to_string(),
-            ));
+            toast_msg = "Installed Brass-Body Ruby Tip Nozzle (nozzle_type=brass, HRC 60): 0°C Brass thermal conductivity + HRC 60 Ruby gemstone tip enabled for -CF and -GF composite materials!".to_string();
           }
           "hardened_steel" | "orca_hardened_steel" => {
             m.nozzle_material = "Hardened Steel".to_string();
             m.nozzle_name = format!("Hardened Steel Wear-Resistant {}0mm", m.nozzle_diameter);
-            toast.set(Some(
-              "Installed Hardened Steel Nozzle (nozzle_type=hardened_steel, HRC 55): default rules applied automatically (+5°C thermal compensation)!"
-                .to_string(),
-            ));
+            toast_msg = "Installed Hardened Steel Nozzle (nozzle_type=hardened_steel, HRC 55): default rules applied automatically (+5°C thermal compensation)!".to_string();
           }
           "cm2" | "microswiss_cm2" => {
             m.nozzle_material = "MicroSwiss CM2 (Copper + M2 HSS)".to_string();
             m.nozzle_name = format!("MicroSwiss CM2 Hardened Tip {}0mm", m.nozzle_diameter);
-            toast.set(Some(
-              "Installed MicroSwiss CM2™ Nozzle (Copper Core + M2 HSS Tip, HRC 55): 0°C copper conductivity + 0.60mm retract applied!"
-                .to_string(),
-            ));
+            toast_msg = "Installed MicroSwiss CM2™ Nozzle (Copper Core + M2 HSS Tip, HRC 55): 0°C copper conductivity + 0.60mm retract applied!".to_string();
           }
           "cht_cm2" | "microswiss_cht_cm2" => {
             m.nozzle_material = "MicroSwiss CHT CM2 (High-Flow Copper + M2 HSS)".to_string();
@@ -1465,19 +1467,24 @@ pub fn App() -> Html {
               "MicroSwiss CHT CM2 High-Flow Hardened {}0mm",
               m.nozzle_diameter
             );
-            toast.set(Some(
-              "Installed MicroSwiss CHT CM2™ High-Flow Hardened Nozzle (HRC 55): +40% high-flow splitter + 0°C copper conductivity applied!"
-                .to_string(),
-            ));
+            toast_msg = "Installed MicroSwiss CHT CM2™ High-Flow Hardened Nozzle (HRC 55): +40% high-flow splitter + 0°C copper conductivity applied!".to_string();
           }
           _ => {
             m.nozzle_material = "Bi-Metal CHT".to_string();
             m.nozzle_name = format!("Bi-Metal CHT High-Flow {}0mm", m.nozzle_diameter);
-            toast.set(Some(
-              "Installed High-Flow CHT Nozzle (nozzle_type=brass, HRC 55): default rules applied automatically (+25% volumetric capacity)!"
-                .to_string(),
-            ));
+            toast_msg = "Installed High-Flow CHT Nozzle (nozzle_type=brass, HRC 55): default rules applied automatically (+25% volumetric capacity)!".to_string();
           }
+        }
+        // MicroSwiss nozzles (Diamondback/CM2/CHT/Plated Brass) ONLY fit the MicroSwiss FlowTech
+        // all-metal hotend — they are not independent. Auto-install the hotend with the nozzle.
+        if MachineRig::is_microswiss_nozzle_type(&new_nozzle_type)
+          && !m.addons.iter().any(|a| a == "flowtech_hotend")
+        {
+          m.addons.push("flowtech_hotend".to_string());
+          m.hotend = "MicroSwiss FlowTech All-Metal Hotend".to_string();
+          toast_msg.push_str(
+            " MicroSwiss FlowTech™ All-Metal Hotend installed automatically (MicroSwiss nozzles only fit it)!",
+          );
         }
         if !MachineRig::is_diameter_supported_for_nozzle(&m.nozzle_type, &m.nozzle_diameter) {
           m.nozzle_diameter = "0.4".to_string();
@@ -1506,6 +1513,7 @@ pub fn App() -> Html {
             }
           }
         }
+        toast.set(Some(toast_msg));
       }
       machines.set(mach_list);
       filaments.set(fil_list);
@@ -1866,7 +1874,7 @@ pub fn App() -> Html {
 
       let mut entries_copy = (*scanned_entries).clone();
       let staged_list = (*pending_updates).clone();
-      let modified_files = sync_live_state_to_entries_with_process_overrides(
+      let sync_plan = sync_live_state_to_entries_with_process_overrides(
         &mut entries_copy,
         &machines,
         &active_machine_id,
@@ -1880,6 +1888,8 @@ pub fn App() -> Html {
         &canonical_overrides,
         &per_process_overrides,
       );
+      let modified_files = sync_plan.files.clone();
+      let deletion_count = sync_plan.deletions.len();
       let se_state = scanned_entries.clone();
       let pu_state = pending_updates.clone();
       let lst = last_saved_time.clone();
@@ -1889,6 +1899,7 @@ pub fn App() -> Html {
       spawn_local(async move {
         let req_payload = LocalFsSaveRequest {
           files: modified_files.clone(),
+          deletions: sync_plan.deletions.clone(),
         };
         let mut saved_via_api = false;
         if let Ok(req_builder) =
@@ -1913,10 +1924,15 @@ pub fn App() -> Html {
           Ok(()) => {
             if saved_via_api {
               t.set(Some(format!(
-                "Exported '{}' ({}-slot ACE Pro) & synced {} preset file(s) to local disk!",
+                "Exported '{}' ({}-slot ACE Pro) & synced {} preset file(s) to local disk{}!",
                 filename,
                 slots_len,
-                modified_files.len()
+                modified_files.len(),
+                if deletion_count > 0 {
+                  format!(" (pruned {} stale OC preset(s))", deletion_count)
+                } else {
+                  String::new()
+                }
               )));
             } else {
               t.set(Some(format!(
@@ -1961,7 +1977,7 @@ pub fn App() -> Html {
       let staged_list = (*pending_updates).clone();
       let (canonical_overrides, per_process_overrides, _) =
         export_eval_inputs.compute(&processes, &active_proc_for_save, &derived_overrides);
-      let modified_files = sync_live_state_to_entries_with_process_overrides(
+      let sync_plan = sync_live_state_to_entries_with_process_overrides(
         &mut entries_copy,
         &machines,
         &active_machine_id,
@@ -1975,10 +1991,13 @@ pub fn App() -> Html {
         &canonical_overrides,
         &per_process_overrides,
       );
+      let modified_files = sync_plan.files.clone();
+      let deletion_count = sync_plan.deletions.len();
 
       spawn_local(async move {
         let req_payload = LocalFsSaveRequest {
           files: modified_files.clone(),
+          deletions: sync_plan.deletions.clone(),
         };
         let mut saved_via_api = false;
         if let Ok(req_builder) =
@@ -2001,8 +2020,13 @@ pub fn App() -> Html {
 
         if saved_via_api {
           t.set(Some(format!(
-            "Saved {} profile & configuration file(s) directly to local disk!",
-            modified_files.len()
+            "Saved {} profile & configuration file(s) directly to local disk{}!",
+            modified_files.len(),
+            if deletion_count > 0 {
+              format!(" & pruned {} stale OC preset(s)", deletion_count)
+            } else {
+              String::new()
+            }
           )));
         } else {
           t.set(Some(format!(

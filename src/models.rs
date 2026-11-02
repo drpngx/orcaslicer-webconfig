@@ -4,9 +4,85 @@ use serde::{Deserialize, Serialize};
 /// sourced at compile time from `CARGO_PKG_VERSION` (`version.bzl` in Bazel / `Cargo.toml` in Cargo).
 pub const WEBCONFIG_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Current wall-clock time in AnycubicSlicerNext's `printer_timestamp` format
+/// (`"YYYY-MM-DD HH:MM:SS"`, lexicographically sortable). Used to stamp machine presets so a
+/// later directory import can tell which `OC -` incarnation (e.g. `• 0.4 Hardened` vs
+/// `• 0.4 Diamondback`) was saved most recently.
+pub fn now_printer_timestamp() -> String {
+  let secs = current_unix_secs();
+  let days = secs.div_euclid(86_400);
+  let secs_of_day = secs.rem_euclid(86_400);
+  let (y, m, d) = civil_from_days(days);
+  format!(
+    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+    y,
+    m,
+    d,
+    secs_of_day / 3600,
+    (secs_of_day % 3600) / 60,
+    secs_of_day % 60
+  )
+}
+
+fn current_unix_secs() -> i64 {
+  #[cfg(target_arch = "wasm32")]
+  {
+    (js_sys::Date::now() / 1000.0) as i64
+  }
+  #[cfg(not(target_arch = "wasm32"))]
+  {
+    std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|d| d.as_secs() as i64)
+      .unwrap_or(0)
+  }
+}
+
+/// Converts days since the Unix epoch to a civil calendar date (Howard Hinnant's algorithm).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+  let z = z + 719_468;
+  let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+  let doe = z - era * 146_097;
+  let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+  let y = yoe + era * 400;
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  let mp = (5 * doy + 2) / 153;
+  let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+  let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+  (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 /// 4-part Semver representation of `WEBCONFIG_APP_VERSION` (`"<major>.<minor>.<patch>.0"`) required by OrcaSlicer's
 /// `Semver::parse(key_values["version"])` when importing `.json` preset files from `.zip` bundles.
 pub const WEBCONFIG_ORCA_PRESET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".0");
+
+/// Splits an auto-generated `OC -` preset title into `(title_base, nozzle_diameter, nozzle_tag)`:
+/// `"OC - Kobra S1 • 0.4 Diamondback +FlowTech"` -> `("Kobra S1", "0.4", "Diamondback")` and
+/// `"OC - PETG • 0.4 Hardened"` -> `("PETG", "0.4", "Hardened")`.
+/// Returns `None` when the title does not follow the `• <diameter> <tag>` convention, in which case
+/// callers must treat the preset as a regular hand-named profile (never prune / never retag it).
+pub fn split_oc_nozzle_title(title: &str) -> Option<(String, String, String)> {
+  let cleaned = title.trim();
+  let stripped = cleaned
+    .strip_prefix("OC - ")
+    .or_else(|| cleaned.strip_prefix("OC: "))
+    .or_else(|| cleaned.strip_prefix("OC -"))
+    .or_else(|| cleaned.strip_prefix("OC:"))
+    .unwrap_or(cleaned)
+    .trim();
+  let idx = stripped.rfind("• ")?;
+  let base = stripped[..idx].trim().to_string();
+  if base.is_empty() {
+    return None;
+  }
+  // `•` is 3 bytes of UTF-8, so the bullet + space separator is 4 bytes wide.
+  let tail = stripped[idx + "• ".len()..].trim();
+  let mut tokens = tail.split_whitespace();
+  let diam = tokens.next()?;
+  diam.parse::<f64>().ok()?;
+  let tag = tokens.next()?.to_string();
+  Some((base, diam.to_string(), tag))
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RigAddOn {
@@ -33,11 +109,21 @@ impl RigAddOn {
       },
       RigAddOn {
         id: "flowtech_hotend".to_string(),
-        name: "MicroSwiss FlowTech All-Metal Hotend".to_string(),
-        category: "Melt Zone & Retraction".to_string(),
-        effect_summary: "Leak-proof ceramic cylindrical heater; tightens retraction length to 0.65mm @ 50mm/s and boosts melt zone multiplier 1.15x.".to_string(),
+        name: "MicroSwiss FlowTech™ All-Metal Hotend (Required for MicroSwiss Nozzles)".to_string(),
+        category: "Hotend (Auto-Installed with MicroSwiss Nozzles)".to_string(),
+        effect_summary: "The hotend BODY that ALL MicroSwiss nozzles (Diamondback PCD / CM2 / CHT / Plated Brass) thread into — they do NOT fit the stock hotend. Selecting any MicroSwiss nozzle installs this hotend automatically. Leak-proof ceramic cylindrical heater; tightens retraction to 0.65mm @ 50mm/s and boosts melt-zone multiplier 1.15x.".to_string(),
       },
     ]
+  }
+
+  /// Friendly display name for an add-on `id` (e.g. `"flowtech_hotend"` -> `"MicroSwiss FlowTech™ All-Metal Hotend"`),
+  /// falling back to the raw id for unknown/custom add-ons.
+  pub fn friendly_name(addon_id: &str) -> String {
+    Self::get_catalog()
+      .into_iter()
+      .find(|a| a.id == addon_id)
+      .map(|a| a.name.split(" (").next().unwrap_or(&a.name).to_string())
+      .unwrap_or_else(|| addon_id.to_string())
   }
 }
 
@@ -218,25 +304,49 @@ impl MachineRig {
     }
   }
 
-  /// Short nozzle material tag for titles (e.g. "HS", "Diamondback", "Ruby-Brass", "MS-Brass", "CHT", "Brass")
+  /// Short nozzle material tag for titles (e.g. "Diamondback", "Ruby-Brass", "MS-Brass", "MS-CM2", "CHT-HiFlow", "Hardened", "Brass").
+  /// Material synonyms (e.g. "TwinClad") are only consulted on the rig itself; filament spools carry just `nozzle_type`.
   pub fn short_nozzle_tag(&self) -> &'static str {
     let nt = self.nozzle_type.to_lowercase();
     let nm = self.nozzle_material.to_lowercase();
-    if nt.contains("diamondback") || nm.contains("diamondback") {
+    if nt.contains("diamondback") || nm.contains("diamondback") || nm.contains("pcd") {
       "Diamondback"
-    } else if nt.contains("ruby") || nm.contains("ruby") {
+    } else {
+      Self::short_nozzle_tag_for_type(&self.nozzle_type)
+    }
+  }
+
+  /// True for MicroSwiss-manufactured nozzle types (Diamondback PCD, CM2, CHT CM2, FlowTech CHT,
+  /// Plated/MK8 Brass). These nozzles ONLY fit the MicroSwiss FlowTech all-metal hotend — they do
+  /// NOT thread into the stock hotend — so selecting one auto-installs the `flowtech_hotend` add-on.
+  pub fn is_microswiss_nozzle_type(nozzle_type: &str) -> bool {
+    let nt = nozzle_type.to_lowercase();
+    nt.contains("microswiss")
+      || nt.contains("diamondback")
+      || nt.contains("cm2")
+      || nt.contains("cht")
+      || nt.contains("mk8_brass")
+  }
+
+  /// Canonical nozzle tag from `nozzle_type` alone (`"diamondback"` -> `"Diamondback"`), so machine
+  /// titles and filament preset names (`OC - PETG • 0.4 Diamondback`) always agree on the same tag.
+  pub fn short_nozzle_tag_for_type(nozzle_type: &str) -> &'static str {
+    let nt = nozzle_type.to_lowercase();
+    if nt.contains("diamondback") {
+      "Diamondback"
+    } else if nt.contains("ruby") {
       "Ruby-Brass"
-    } else if nt.contains("microswiss_brass") || nm.contains("twinclad") {
+    } else if nt.contains("microswiss_brass") || nt.contains("mk8_brass") {
       "MS-Brass"
     } else if nt.contains("cht_cm2") || (nt.contains("cht") && nt.contains("cm2")) {
       "MS-CHT-CM2"
-    } else if nt.contains("cm2") || nm.contains("cm2") {
+    } else if nt.contains("cm2") {
       "MS-CM2"
-    } else if nt.contains("cht") || nm.contains("cht") || nt.contains("obxidian") {
+    } else if nt.contains("cht") || nt.contains("obxidian") {
       "CHT-HiFlow"
-    } else if nt.contains("hardened") || nm.contains("hardened") {
+    } else if nt.contains("hardened") {
       "Hardened"
-    } else if nt.contains("stainless") || nm.contains("stainless") {
+    } else if nt.contains("stainless") {
       "Stainless"
     } else {
       "Brass"
@@ -411,7 +521,12 @@ impl MachineRig {
     let addons_note = if self.addons.is_empty() {
       "Stock toolhead covers & cooling duct".to_string()
     } else {
-      self.addons.join(", ")
+      self
+        .addons
+        .iter()
+        .map(|a| RigAddOn::friendly_name(a))
+        .collect::<Vec<_>>()
+        .join(", ")
     };
     let climate_note = self.climate_summary_badge();
     format!(
@@ -763,9 +878,8 @@ impl FilamentSpool {
     finish_type: &str,
     active_nozzle_type: &str,
   ) -> String {
-    let short_noz = &crate::constants::constants()
-      .lookup_nozzle(active_nozzle_type)
-      .short_tag;
+    // Canonical tag (matches `MachineRig::short_nozzle_tag` in machine titles, e.g. "Diamondback")
+    let short_noz = MachineRig::short_nozzle_tag_for_type(active_nozzle_type);
     let mat_with_finish = if finish_type.eq_ignore_ascii_case("Carbon Fiber") {
       let up = base_mat_code.to_uppercase();
       if up.contains("-CF")
@@ -917,7 +1031,9 @@ impl FilamentSpool {
     if !is_external_disk_spool
       && (self.name.starts_with("OC -") || self.name.starts_with("OC:"))
     {
-      let new_short_noz = &noz_cfg.short_tag;
+      // Canonical tag so filament presets rename in lockstep with the machine title
+      // (e.g. `OC - PETG • 0.4 Hardened` -> `OC - PETG • 0.4 Diamondback`).
+      let new_short_noz = MachineRig::short_nozzle_tag_for_type(new_nozzle_type);
       if let Some(dot_idx) = self.name.rfind("• 0.") {
         let prefix = &self.name[..dot_idx];
         let after_dot = &self.name[dot_idx + "• ".len()..];
@@ -1680,7 +1796,7 @@ impl FilamentSpool {
 
   pub fn rebuild_synthetic_disk_json(&mut self, active_nozzle_type: &str) {
     let c = crate::constants::constants();
-    let short_noz = &c.lookup_nozzle(active_nozzle_type).short_tag;
+    let short_noz = MachineRig::short_nozzle_tag_for_type(active_nozzle_type);
     let poly_cfg = c.lookup_polymer(&self.material_type);
     let is_foaming_tpu = self.is_foaming_tpu();
     let init_boost = poly_cfg.initial_layer_temp_boost_c(is_foaming_tpu);

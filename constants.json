@@ -251,7 +251,7 @@
     },
     {
       "id": "diamondback",
-      "short_tag": "Diamond",
+      "short_tag": "Diamondback",
       "orca_nozzle_type": "hardened_steel",
       "hrc": 100,
       "temp_offset_from_brass_c": -10,
@@ -267,7 +267,7 @@
     },
     {
       "id": "ruby_brass",
-      "short_tag": "Ruby",
+      "short_tag": "Ruby-Brass",
       "orca_nozzle_type": "hardened_steel",
       "hrc": 90,
       "temp_offset_from_brass_c": 0,
@@ -281,7 +281,7 @@
     },
     {
       "id": "cm2",
-      "short_tag": "CM2",
+      "short_tag": "MS-CM2",
       "orca_nozzle_type": "hardened_steel",
       "hrc": 68,
       "temp_offset_from_brass_c": 5,
@@ -295,7 +295,7 @@
     },
     {
       "id": "cht",
-      "short_tag": "CHT",
+      "short_tag": "CHT-HiFlow",
       "orca_nozzle_type": "brass",
       "hrc": 15,
       "temp_offset_from_brass_c": 0,

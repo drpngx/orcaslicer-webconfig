@@ -182,6 +182,14 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
     let c_rh = *humidity_pct;
 
     Callback::from(move |_: MouseEvent| {
+      // MicroSwiss nozzles (Diamondback/CM2/CHT/Plated Brass) ONLY fit the MicroSwiss FlowTech
+      // all-metal hotend — auto-install it with the nozzle (they are not independent).
+      let mut wiz_addons = addons.clone();
+      if MachineRig::is_microswiss_nozzle_type(&cur_nozzle.id)
+        && !wiz_addons.iter().any(|a| a == "flowtech_hotend")
+      {
+        wiz_addons.push("flowtech_hotend".to_string());
+      }
       let mut rig = MachineRig {
         id: format!("rig_scratch_{}", cur_machine.id),
         name: String::new(),
@@ -189,7 +197,11 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         bed_size: cur_machine.build_volume.clone(),
         kinematics: cur_machine.kinematics.clone(),
         firmware: "OrcaSlicer 2.4.2 Profile".to_string(),
-        hotend: cur_nozzle.name.clone(),
+        hotend: if wiz_addons.iter().any(|a| a == "flowtech_hotend") {
+          "MicroSwiss FlowTech All-Metal Hotend".to_string()
+        } else {
+          cur_nozzle.name.clone()
+        },
         nozzle_type: cur_nozzle.id.clone(),
         nozzle_material: cur_nozzle.material.clone(),
         nozzle_name: format!("{} {:.2}mm", cur_nozzle.name, diam),
@@ -200,7 +212,7 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
         base_retraction_length: cur_nozzle.retraction_mm as f64,
         melt_zone_multiplier: cur_nozzle.melt_zone_mult as f64,
         ace_pro_units: cur_ams.units.max(1),
-        addons: addons.clone(),
+        addons: wiz_addons,
         max_speed: "600 mm/s".to_string(),
         max_accel: "20,000 mm/s²".to_string(),
         is_active: true,

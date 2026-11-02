@@ -165,6 +165,23 @@ pub fn resolve_orca_filament_type(material_type: &str) -> String {
     .clone()
 }
 
+/// Side-channel key set by the `anycubic_pctg_as_petg` rule (Anycubic rigs only by default).
+pub const PCTG_AS_PETG_SIDE_CHANNEL: &str = "_anycubic_pctg_as_petg";
+
+/// Marker appended to `filament_notes` when a PCTG-family spool is declared as `PETG`, so a later
+/// directory import restores `material_type = PCTG` (and its 240–275°C brackets) from disk.
+pub const PCTG_AS_PETG_NOTE_MARKER: &str = "[PCTG declared as PETG for AnycubicSlicerNext]";
+
+/// AnycubicSlicerNext's hard-coded `filament_type` enum lacks `PCTG`: maps a PCTG-family slicer
+/// type (`PCTG`, `PCTG-CF`, ...) to its PETG equivalent. Any other type is returned unchanged.
+pub fn declare_pctg_family_as_petg(slicer_filament_type: &str) -> String {
+  let trimmed = slicer_filament_type.trim();
+  match trimmed.to_uppercase().strip_prefix("PCTG") {
+    Some(rest) => format!("PETG{}", rest),
+    None => trimmed.to_string(),
+  }
+}
+
 pub const FILAMENT_SETTING_KEYS: &[&str] = &[
   "cool_plate_temp",
   "cool_plate_temp_initial_layer",
@@ -407,6 +424,19 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
     .and_then(|m| m.get("_kobra_unbottleneck_petg_abs"))
     .and_then(|v| v.as_str())
     == Some("1");
+  // `anycubic_pctg_as_petg`: only the *declared* `filament_type` string changes. `orca_fil_type`
+  // (base preset lookup, PETG-only Kobra tweaks) and `spool.material_type` (safe temperature
+  // bounds, `nozzle_temperature_range_low/high`) intentionally stay on PCTG.
+  let declare_pctg_as_petg = derived_overrides
+    .and_then(|m| m.get(PCTG_AS_PETG_SIDE_CHANNEL))
+    .and_then(|v| v.as_str())
+    == Some("1");
+  let declared_fil_type = if declare_pctg_as_petg {
+    declare_pctg_family_as_petg(&orca_fil_type)
+  } else {
+    orca_fil_type.clone()
+  };
+  let pctg_declared_as_petg = declared_fil_type != orca_fil_type;
   let is_translucent_finish = spool.finish_type.eq_ignore_ascii_case("Translucent")
     || spool.material_type.to_lowercase().contains("translucent");
 
@@ -476,7 +506,7 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   );
   base_map.insert(
     "filament_type".to_string(),
-    serde_json::json!([orca_fil_type]),
+    serde_json::json!([declared_fil_type]),
   );
   base_map.insert(
     "required_nozzle_HRC".to_string(),
@@ -652,18 +682,27 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
       serde_json::json!(["1.75"]),
     );
   }
-  base_map.insert(
-    "filament_notes".to_string(),
-    serde_json::json!([
-      spool.generate_descriptive_notes_with_effective_values(
-        effective_temp,
-        effective_bed,
-        effective_flow_ratio,
-        effective_mvs,
-        fan_min_pct
-      )
-    ]),
+  let mut notes = spool.generate_descriptive_notes_with_effective_values(
+    effective_temp,
+    effective_bed,
+    effective_flow_ratio,
+    effective_mvs,
+    fan_min_pct,
   );
+  if pctg_declared_as_petg {
+    notes.push_str(&format!(
+      " {} filament_type={} (slicer lacks {}); temps follow {} limits {}–{}°C nozzle, {}–{}°C bed.",
+      PCTG_AS_PETG_NOTE_MARKER,
+      declared_fil_type,
+      orca_fil_type,
+      spool.material_type,
+      min_safe_noz,
+      max_safe_noz,
+      min_safe_bed,
+      max_safe_bed
+    ));
+  }
+  base_map.insert("filament_notes".to_string(), serde_json::json!([notes]));
   base_map.insert(
     "version".to_string(),
     serde_json::json!(WEBCONFIG_ORCA_PRESET_VERSION),
@@ -1183,6 +1222,12 @@ pub fn build_machine_preset_json_with_overrides(
   out.insert(
     "printer_settings_id".to_string(),
     serde_json::json!(mach_name),
+  );
+  // Stamp every save (matching AnycubicSlicerNext's convention) so a later directory import can
+  // order `OC -` incarnations of the same rig (nozzle swaps rename the preset) newest-first.
+  out.insert(
+    "printer_timestamp".to_string(),
+    serde_json::json!(crate::models::now_printer_timestamp()),
   );
   out.insert(
     "printer_model".to_string(),
