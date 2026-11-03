@@ -1662,6 +1662,176 @@ end
     Ok(())
   }
 
+  /// Canonical per-key OrcaSlicer schema formatter applied once during the Phase 3 Epilogue Pass
+  /// after all Phase 2 (`P1 .. PN`) rules have composed in full IEEE-754 floating-point precision.
+  ///
+  /// - `"%.0f"` (integer rounding) for temperatures (`*temperature*`, `*_plate_temp*`), linear speeds
+  ///   (`*_speed`), accelerations (`*_acceleration`), fan percentages (`fan_min_speed*`, `fan_max_speed*`,
+  ///   `overhang_fan_speed`, `*_fan_speed`), layer counts (`*_layers`, `wall_loops`), and HRC.
+  /// - `"%.1f"` for volumetric speeds (`filament_max_volumetric_speed`, `max_volumetric_speed`).
+  /// - `"%.2f"` for retraction lengths, Z-hop distances, wipe distances, line widths, layer heights,
+  ///   support Z distances, XY/elephant-foot compensations, shell thicknesses, and bridge flow.
+  /// - `"%.3f"` for `pressure_advance` and sub-percent `filament_flow_ratio` trims (or `"%.2f"` when
+  ///   the third decimal is zero and the reference baseline used 2 decimals).
+  pub fn format_orca_schema_scalar(param_key: &str, val: f64, reference_str: &str) -> String {
+    let ref_trimmed = reference_str.trim();
+    let ref_decimals = if let Some(dot_idx) = ref_trimmed.find('.') {
+      ref_trimmed[dot_idx + 1..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .count()
+    } else {
+      0
+    };
+    if matches!(
+      param_key,
+      "nozzle_temperature"
+        | "nozzle_temperature_initial_layer"
+        | "nozzle_temperature_HS"
+        | "nozzle_temperature_initial_layer_HS"
+        | "nozzle_temperature_BRASS"
+        | "nozzle_temperature_initial_layer_BRASS"
+        | "nozzle_temperature_range_low"
+        | "nozzle_temperature_range_high"
+        | "hot_plate_temp"
+        | "hot_plate_temp_initial_layer"
+        | "textured_plate_temp"
+        | "textured_plate_temp_initial_layer"
+        | "cool_plate_temp"
+        | "cool_plate_temp_initial_layer"
+        | "eng_plate_temp"
+        | "eng_plate_temp_initial_layer"
+        | "textured_cool_plate_temp"
+        | "textured_cool_plate_temp_initial_layer"
+        | "supertack_plate_temp"
+        | "supertack_plate_temp_initial_layer"
+        | "chamber_temperature"
+        | "temperature_vitrification"
+        | "filament_retraction_speed"
+        | "retraction_speed"
+        | "filament_deretraction_speed"
+        | "deretraction_speed"
+        | "outer_wall_speed"
+        | "inner_wall_speed"
+        | "small_perimeter_speed"
+        | "sparse_infill_speed"
+        | "internal_solid_infill_speed"
+        | "top_surface_speed"
+        | "gap_infill_speed"
+        | "support_speed"
+        | "support_interface_speed"
+        | "bridge_speed"
+        | "internal_bridge_speed"
+        | "initial_layer_speed"
+        | "initial_layer_infill_speed"
+        | "travel_speed"
+        | "ironing_speed"
+        | "slow_down_min_speed"
+        | "overhang_1_4_speed"
+        | "overhang_2_4_speed"
+        | "overhang_3_4_speed"
+        | "overhang_4_4_speed"
+        | "default_acceleration"
+        | "outer_wall_acceleration"
+        | "inner_wall_acceleration"
+        | "initial_layer_acceleration"
+        | "top_surface_acceleration"
+        | "travel_acceleration"
+        | "sparse_infill_acceleration"
+        | "internal_solid_infill_acceleration"
+        | "fan_min_speed"
+        | "fan_min_speed_BRASS"
+        | "fan_min_speed_HS"
+        | "fan_max_speed"
+        | "fan_max_speed_BRASS"
+        | "fan_max_speed_HS"
+        | "overhang_fan_speed"
+        | "additional_cooling_fan_speed"
+        | "during_print_exhaust_fan_speed"
+        | "complete_print_exhaust_fan_speed"
+        | "chamber_fan_speed"
+        | "close_fan_the_first_x_layers"
+        | "slow_down_layer_time"
+        | "fan_cooling_layer_time"
+        | "wall_loops"
+        | "top_shell_layers"
+        | "bottom_shell_layers"
+        | "raft_layers"
+        | "elefant_foot_compensation_layers"
+        | "support_interface_top_layers"
+        | "support_interface_bottom_layers"
+        | "nozzle_hrc"
+        | "required_nozzle_HRC"
+        | "max_travel_detour_distance"
+        | "brim_width"
+        | "scarf_Joint_seam_steps"
+        | "scarf_angle_threshold"
+        | "scarf_joint_speed"
+        | "tree_support_branch_angle"
+        | "support_threshold_angle"
+    ) {
+      return format!("{:.0}", val);
+    }
+    if matches!(
+      param_key,
+      "filament_max_volumetric_speed" | "max_volumetric_speed"
+    ) {
+      return format!("{:.1}", val);
+    }
+    if matches!(param_key, "pressure_advance" | "xy_hole_compensation" | "xy_contour_compensation") {
+      return format!("{:.3}", val);
+    }
+    if param_key == "filament_flow_ratio" {
+      let f3 = format!("{:.3}", val);
+      if ref_decimals == 2 && f3.ends_with('0') {
+        return format!("{:.2}", val);
+      }
+      return f3;
+    }
+    if matches!(
+      param_key,
+      "bottom_solid_infill_flow_ratio"
+        | "top_solid_infill_flow_ratio"
+        | "bridge_flow"
+        | "filament_retraction_length"
+        | "retraction_length"
+        | "filament_z_hop"
+        | "z_hop"
+        | "layer_height"
+        | "initial_layer_print_height"
+        | "line_width"
+        | "outer_wall_line_width"
+        | "inner_wall_line_width"
+        | "initial_layer_line_width"
+        | "top_surface_line_width"
+        | "sparse_infill_line_width"
+        | "internal_solid_infill_line_width"
+        | "support_line_width"
+        | "support_top_z_distance"
+        | "support_bottom_z_distance"
+        | "support_interface_spacing"
+        | "support_object_xy_distance"
+        | "top_shell_thickness"
+        | "bottom_shell_thickness"
+        | "elefant_foot_compensation"
+        | "ironing_spacing"
+        | "flush_multiplier"
+        | "tree_support_branch_distance"
+        | "tree_support_branch_diameter"
+    ) {
+      return format!("{:.2}", val);
+    }
+    if ref_decimals > 0 {
+      format!("{:.prec$}", val, prec = ref_decimals)
+    } else if (val - val.round()).abs() < 1e-6 {
+      format!("{:.0}", val.round())
+    } else if param_key.contains("flow") || param_key.contains("pressure_advance") {
+      format!("{:.3}", val)
+    } else {
+      format!("{:.2}", val)
+    }
+  }
+
   pub fn evaluate_stack(
     base_profile: &OrcaProfile,
     rules: &[TransformationRule],
@@ -1670,13 +1840,19 @@ end
     let mut initial_map = base_profile.values.clone();
     let mut base_snapshot_map = serde_json::Map::new();
     for (k, v) in &base_profile.values {
-      if k != "_bounds" && k != "_coupled_state" && k != "_base" {
+      if k != "_bounds" && k != "_coupled_state" && k != "_base" && k != "_defer_quantization" {
         base_snapshot_map.insert(k.clone(), v.clone());
       }
     }
     initial_map.insert(
       "_base".to_string(),
       serde_json::Value::Object(base_snapshot_map),
+    );
+    // Keep intermediate values in Phase 2 (`P1 .. PN`) as full-precision IEEE-754 floats
+    // and quantize once during the Phase 3 Epilogue Pass via `format_orca_schema_scalar`.
+    initial_map.insert(
+      "_defer_quantization".to_string(),
+      serde_json::Value::String("1".to_string()),
     );
     let mut current_values = serde_json::Value::Object(initial_map);
     let mut execution_logs = Vec::new();
@@ -2321,24 +2497,7 @@ end
     }
 
     let format_clamped_scalar = |val: f64, reference_str: &str, param_key: &str| -> String {
-      let ref_trimmed = reference_str.trim();
-      let ref_decimals = if let Some(dot_idx) = ref_trimmed.find('.') {
-        ref_trimmed[dot_idx + 1..]
-          .chars()
-          .take_while(|c| c.is_ascii_digit())
-          .count()
-      } else {
-        0
-      };
-      if ref_decimals > 0 {
-        format!("{:.prec$}", val, prec = ref_decimals)
-      } else if (val - val.round()).abs() < 1e-6 {
-        format!("{:.0}", val.round())
-      } else if param_key.contains("flow") || param_key.contains("pressure_advance") {
-        format!("{:.3}", val)
-      } else {
-        format!("{:.2}", val)
-      }
+      Self::format_orca_schema_scalar(param_key, val, reference_str)
     };
 
     let write_clamped_value =
@@ -2361,6 +2520,97 @@ end
           }
         }
       };
+
+    // 0. Phase 3 Deferred Schema Quantization Pass:
+    //    During Phase 2 (`P1 .. PN`), values inside `config` were kept as full-precision IEEE-754
+    //    floats to eliminate intermediate string-rounding drift across multi-rule compositions.
+    //    Here at the start of Phase 3 Epilogue, quantize all modified keys once according to
+    //    `format_orca_schema_scalar` and snap intermediate provenance step boundaries so the
+    //    Provenance UI displays clean formatted units with a 100% continuous ledger chain.
+    if let serde_json::Value::Object(ref mut cmap) = current_values {
+      cmap.remove("_defer_quantization");
+      let mut touched_sorted: Vec<String> = rule_sources.keys().cloned().collect();
+      touched_sorted.sort();
+      for k in &touched_sorted {
+        let base_ref = base_profile.get_str(k).unwrap_or_default();
+        let meta = catalog.get(k);
+        let unit = meta.map(|m| m.unit.as_str()).unwrap_or("");
+        let unit_suffix = if unit.is_empty() {
+          String::new()
+        } else {
+          format!(" {}", unit)
+        };
+        if let Some(cur_json) = cmap.get(k).cloned() {
+          let cur_str = extract_scalar(&cur_json);
+          let ref_for_fmt = if base_ref.is_empty() {
+            cur_str.as_str()
+          } else {
+            base_ref.as_str()
+          };
+          if !cur_str.trim().ends_with('%') {
+            if let Ok(num) = cur_str.trim().parse::<f64>() {
+              let quant_str = Self::format_orca_schema_scalar(k, num, ref_for_fmt);
+              if quant_str != cur_str {
+                write_clamped_value(cmap, k, &quant_str);
+              }
+            }
+          }
+        }
+        // Format any unquantized intermediate `before_value` / `after_value` in `rule_changes`
+        // for this key so adjacent steps remain continuous (`step[i].after == step[i+1].before`)
+        // and the final Phase 2 step's `after_value` matches the quantized Phase 3 input.
+        let mut prev_after_raw: Option<String> = None;
+        for rc in rule_changes.iter_mut().filter(|c| &c.param_key == k) {
+          let strip_unit = |s: &str| -> String {
+            if !unit_suffix.is_empty() && s.ends_with(&unit_suffix) {
+              s[..s.len() - unit_suffix.len()].to_string()
+            } else {
+              s.to_string()
+            }
+          };
+          let cur_before_raw = strip_unit(&rc.before_value);
+          let cur_after_raw = strip_unit(&rc.after_value);
+          let ref_for_fmt = if base_ref.is_empty() {
+            cur_before_raw.as_str()
+          } else {
+            base_ref.as_str()
+          };
+          let quant_before_raw = if let Some(ref pa) = prev_after_raw {
+            pa.clone()
+          } else {
+            cur_before_raw.clone()
+          };
+          let quant_after_raw = if cur_after_raw == "(unset)" || cur_after_raw.trim().ends_with('%')
+          {
+            cur_after_raw.clone()
+          } else if let Ok(a_num) = cur_after_raw.trim().parse::<f64>() {
+            Self::format_orca_schema_scalar(k, a_num, ref_for_fmt)
+          } else {
+            cur_after_raw.clone()
+          };
+          rc.before_value = if quant_before_raw == "(unset)" {
+            quant_before_raw.clone()
+          } else {
+            format!("{}{}", quant_before_raw, unit_suffix)
+          };
+          rc.after_value = if quant_after_raw == "(unset)" {
+            quant_after_raw.clone()
+          } else {
+            format!("{}{}", quant_after_raw, unit_suffix)
+          };
+          rc.delta_summary = compute_delta_summary(&quant_before_raw, &quant_after_raw, unit);
+          prev_after_raw = Some(quant_after_raw);
+        }
+        if let Some(ref final_quant_raw) = prev_after_raw {
+          let final_quant_fmt = format!("{}{}", final_quant_raw, unit_suffix);
+          for rc in rule_changes.iter_mut().filter(|c| &c.param_key == k) {
+            if rc.shadowed_final_value.is_some() {
+              rc.shadowed_final_value = Some(final_quant_fmt.clone());
+            }
+          }
+        }
+      }
+    }
 
     // 1. Box-Constraint Projection & Infeasibility Detection (L > U)
     let mut sorted_bound_keys: Vec<String> = parameter_bounds.keys().cloned().collect();
@@ -8298,5 +8548,175 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       &fil_map,
     )
     .expect("3-way parity (x_provenance == x_JSON == x_3MF) must hold for all keys");
+  }
+
+  #[test]
+  fn test_deferred_epilogue_quantization_eliminates_intermediate_rounding_drift() {
+    let mk_rule = |id: &str, name: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: name.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    // 1. Exact prompt scenario:
+    //    Seed `nozzle_temperature = {"235"}`.
+    //    Rule A computes ΔT = -10.4 °C (235 -> 224.6; intermediate "%.0f" would round to "225").
+    //    Rule B computes ΔT = -1.4 °C (224.6 -> 223.2; reading rounded "225" would give 223.6 -> "224").
+    //    True sum: 235 - 10.4 - 1.4 = 223.2 -> "223".
+    //    Also test 3-step retraction length:
+    //    Seed `filament_retraction_length = {"0.80"}`.
+    //    Rule A: -0.094 mm (0.80 -> 0.706; intermediate "%.2f" would round to "0.71").
+    //    Rule B: -0.004 mm (0.706 -> 0.702; reading "0.71" would give 0.706 -> "0.71").
+    //    Rule C: +0.044 mm (0.702 -> 0.746 -> "0.75"; reading "0.71" would give 0.754 -> "0.75",
+    //    or with +0.046: 0.702 + 0.046 = 0.748 -> "0.75" vs 0.71 + 0.046 = 0.756 -> "0.76"!).
+    let mut base = OrcaProfile::new("Quantization Drift Test", "filament");
+    base
+      .values
+      .insert("nozzle_temperature".to_string(), json!(["235"]));
+    base
+      .values
+      .insert("filament_retraction_length".to_string(), json!(["0.80"]));
+    base
+      .values
+      .insert("filament_flow_ratio".to_string(), json!(["0.960"]));
+
+    let rule_a = mk_rule(
+      "rule_a",
+      "Rule A (-10.4 C, -0.094 mm, -0.0034 flow)",
+      10,
+      r#"
+        config["nozzle_temperature"] = map_num(config["nozzle_temperature"], function(t)
+          return t - 10.4
+        end, "%.0f")
+        config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r)
+          return r - 0.094
+        end, "%.2f")
+        config["filament_flow_ratio"] = map_num(config["filament_flow_ratio"], function(f)
+          return f - 0.0034
+        end, "%.3f")
+      "#,
+    );
+    let rule_b = mk_rule(
+      "rule_b",
+      "Rule B (-1.4 C, -0.004 mm, -0.0034 flow)",
+      20,
+      r#"
+        config["nozzle_temperature"] = map_num(config["nozzle_temperature"], function(t)
+          return t - 1.4
+        end, "%.0f")
+        config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r)
+          return r - 0.004
+        end, "%.2f")
+        config["filament_flow_ratio"] = map_num(config["filament_flow_ratio"], function(f)
+          return f - 0.0034
+        end, "%.3f")
+      "#,
+    );
+    let rule_c = mk_rule(
+      "rule_c",
+      "Rule C (+0.046 mm)",
+      30,
+      r#"
+        config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r)
+          return r + 0.046
+        end, "%.2f")
+      "#,
+    );
+
+    let eval = TransformationEngine::evaluate_stack(&base, &[rule_a, rule_b, rule_c], &json!({}));
+    assert_eq!(
+      eval.resulting_profile.get_str("nozzle_temperature").as_deref(),
+      Some("223"),
+      "235 - 10.4 - 1.4 = 223.2 must quantize once in Phase 3 Epilogue to '223' (not drift to '224' via intermediate %.0f)"
+    );
+    assert_eq!(
+      eval
+        .resulting_profile
+        .get_str("filament_retraction_length")
+        .as_deref(),
+      Some("0.75"),
+      "0.80 - 0.094 - 0.004 + 0.046 = 0.748 must quantize once in Phase 3 Epilogue to '0.75' (not drift to '0.76' via intermediate %.2f)"
+    );
+    assert_eq!(
+      eval
+        .resulting_profile
+        .get_str("filament_flow_ratio")
+        .as_deref(),
+      Some("0.953"),
+      "0.960 - 0.0034 - 0.0034 = 0.9532 must quantize once in Phase 3 Epilogue to '0.953' (not drift to '0.954' via intermediate %.3f)"
+    );
+
+    for prov in &eval.provenance_items {
+      prov
+        .verify_ledger_chain()
+        .expect("Provenance ledger chain must remain 100% continuous after Phase 3 Epilogue quantization");
+    }
+
+    // 2. Verify monotonicity across a sweep of base temperatures T0 ∈ [195..295] and base
+    //    retractions r0 ∈ [0.45..1.05] through the production P10 -> P12 -> P25 stack.
+    let r_p10 = mk_rule(
+      "thermal_conductivity",
+      "P10 Thermal Conductivity",
+      10,
+      include_str!("../transformations/thermal_conductivity.lua"),
+    );
+    let r_p12 = mk_rule(
+      "rig_addons_cooling",
+      "P12 FlowTech Hotend",
+      12,
+      include_str!("../transformations/rig_addons_cooling.lua"),
+    );
+    let r_p25 = mk_rule(
+      "symptom_stringing_diamondback",
+      "P25 Diamondback Anti-Stringing",
+      25,
+      include_str!("../transformations/symptom_stringing_diamondback.lua"),
+    );
+    let ctx_db = json!({
+      "nozzle_type": "diamondback",
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_diameter": "0.4",
+      "addons": ["flowtech_hotend"],
+    });
+    let mut prev_shipped_t = 0i32;
+    for t0 in (195..=295).step_by(2) {
+      let mut p = OrcaProfile::new("Temp Sweep", "filament");
+      p.values
+        .insert("nozzle_temperature".to_string(), json!([t0.to_string()]));
+      p.values.insert(
+        "nozzle_temperature_initial_layer".to_string(),
+        json!([t0.to_string()]),
+      );
+      p.values
+        .insert("filament_retraction_length".to_string(), json!(["0.80"]));
+      p.values
+        .insert("filament_retraction_speed".to_string(), json!(["40"]));
+      let res = TransformationEngine::evaluate_stack(
+        &p,
+        &[r_p10.clone(), r_p12.clone(), r_p25.clone()],
+        &ctx_db,
+      );
+      let shipped_t: i32 = res
+        .resulting_profile
+        .get_str("nozzle_temperature")
+        .unwrap()
+        .parse()
+        .unwrap();
+      assert!(
+        shipped_t >= prev_shipped_t,
+        "Monotonicity violated at T0={}: shipped {} < previous {}",
+        t0,
+        shipped_t,
+        prev_shipped_t
+      );
+      prev_shipped_t = shipped_t;
+    }
   }
 }

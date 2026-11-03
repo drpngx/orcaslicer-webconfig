@@ -110,6 +110,7 @@ rust_binary(
 
 rust_test(
     name = "audit_random_configs_test",
+    timeout = "moderate",
     crate = ":audit_random_configs",
 )
 

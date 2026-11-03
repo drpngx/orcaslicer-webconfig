@@ -32,16 +32,22 @@ end
 
 -- map_num(tbl, fn, fmt): apply `fn` to every numeric slot of a config key (either an
 -- array-valued key like {"235"} or a bare scalar "235"), re-formatting each result with
--- `string.format(fmt)` (default "%.3f"); non-numeric slots pass through untouched and the
--- key's shape (array vs scalar) is preserved. A callback returning a non-number passes the
--- ORIGINAL slot through (never the string.format "0.00" placeholder) so a buggy future
--- callback cannot silently corrupt a config value.
+-- `string.format(fmt)` (default "%.3f") unless `config["_defer_quantization"] == "1"` is
+-- active during Phase 2 of `TransformationEngine::evaluate_stack` (in which case full
+-- IEEE-754 float precision `tostring(r)` is preserved and quantized once in Phase 3 Epilogue);
+-- non-numeric slots pass through untouched and the key's shape (array vs scalar) is preserved.
+-- A callback returning a non-number passes the ORIGINAL slot through (never the string.format
+-- "0.00" placeholder) so a buggy future callback cannot silently corrupt a config value.
 function map_num(tbl, fn, fmt)
+  local defer_q = (type(config) == "table" and config["_defer_quantization"] == "1")
   if type(tbl) ~= "table" then
     local n = tonumber(tbl)
     if n then
       local r = fn(n)
       if type(r) == "number" then
+        if defer_q then
+          return tostring(r)
+        end
         return string.format(fmt or "%.3f", r)
       end
       return tbl
@@ -54,7 +60,11 @@ function map_num(tbl, fn, fmt)
     if n then
       local r = fn(n)
       if type(r) == "number" then
-        out[k] = string.format(fmt or "%.3f", r)
+        if defer_q then
+          out[k] = tostring(r)
+        else
+          out[k] = string.format(fmt or "%.3f", r)
+        end
       else
         out[k] = v
       end
@@ -196,10 +206,18 @@ impl LuaVal {
       LuaVal::Nil => "nil".to_string(),
       LuaVal::Boolean(b) => b.to_string(),
       LuaVal::Number(n) => {
-        if n.fract() == 0.0 {
-          format!("{:.0}", n)
+        let snapped = (n * 1e9).round() / 1e9;
+        if (snapped - snapped.round()).abs() < 1e-9 {
+          format!("{:.0}", snapped.round())
         } else {
-          format!("{}", n)
+          let mut s = format!("{:.9}", snapped);
+          while s.ends_with('0') {
+            s.pop();
+          }
+          if s.ends_with('.') {
+            s.pop();
+          }
+          s
         }
       }
       LuaVal::String(s) => s.clone(),
@@ -2655,6 +2673,7 @@ impl Interpreter {
 
     let already_modified_in_rule =
       |modified: &[(String, String, String)], key: &str| modified.iter().any(|(k, _, _)| k == key);
+    let defer_quant = lua_refcell_get_scalar_f64(cfg_tbl, "_defer_quantization") == Some(1.0);
 
     let props = extract_coupled_physics_props(cfg_tbl, ctx_tbl, &state_tbl);
 
@@ -2689,7 +2708,12 @@ impl Interpreter {
         if let Some(cur_pa) = lua_refcell_get_scalar_f64(cfg_tbl, "pressure_advance") {
           if cur_pa > 0.0 {
             let new_pa = (cur_pa * step_pa_ratio).clamp(0.005, 0.120);
-            self.update_coupled_config_key(cfg_tbl, "pressure_advance", format!("{:.3}", new_pa));
+            let pa_str = if defer_quant {
+              LuaVal::Number(new_pa).to_lua_string()
+            } else {
+              format!("{:.3}", new_pa)
+            };
+            self.update_coupled_config_key(cfg_tbl, "pressure_advance", pa_str);
           }
         }
       }
@@ -2745,11 +2769,12 @@ impl Interpreter {
               .filter(|v| *v > 0.0)
               .unwrap_or(35.0);
             let new_mvs = (cur_mvs * step_mvs_ratio).clamp(1.5, hotend_limit);
-            self.update_coupled_config_key(
-              cfg_tbl,
-              "filament_max_volumetric_speed",
-              format!("{:.1}", new_mvs),
-            );
+            let mvs_str = if defer_quant {
+              LuaVal::Number(new_mvs).to_lua_string()
+            } else {
+              format!("{:.1}", new_mvs)
+            };
+            self.update_coupled_config_key(cfg_tbl, "filament_max_volumetric_speed", mvs_str);
           }
         }
       }

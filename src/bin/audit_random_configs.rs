@@ -661,20 +661,50 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           .provenance_items
         })
         .collect();
-    let mach_json =
-      orcaslicer_webconfig::threemf::build_machine_preset_json_with_overrides(&rig, Some(&derived_overrides));
-    let proc_json =
-      orcaslicer_webconfig::threemf::build_process_preset_json(active_proc, &rig, &derived_overrides);
+    let mut mach_json = String::new();
+    let mut proc_json = String::new();
     let mut fil_map = std::collections::HashMap::new();
+    for sf in &save_files.files {
+      if sf.relative_path.starts_with("user/default/machine/") && sf.relative_path.ends_with(".json")
+      {
+        mach_json = sf.content.clone();
+      } else if sf.relative_path.starts_with("user/default/process/")
+        && sf.relative_path.ends_with(".json")
+        && sf.relative_path.contains(&active_proc.name)
+      {
+        proc_json = sf.content.clone();
+      } else if sf.relative_path.starts_with("user/default/filament/")
+        && sf.relative_path.ends_with(".json")
+      {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&sf.content) {
+          if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+            fil_map.insert(name.to_string(), sf.content.clone());
+          }
+        }
+      }
+    }
+    if mach_json.is_empty() {
+      mach_json = orcaslicer_webconfig::threemf::build_machine_preset_json_with_overrides(
+        &rig,
+        Some(&derived_overrides),
+      );
+    }
+    if proc_json.is_empty() {
+      proc_json = orcaslicer_webconfig::threemf::build_process_preset_json(
+        active_proc,
+        &rig,
+        &derived_overrides,
+      );
+    }
     for sp in &spools {
-      fil_map.insert(
-        sp.format_concise_title(),
+      let title = sp.format_concise_title();
+      fil_map.entry(title).or_insert_with(|| {
         orcaslicer_webconfig::threemf::export_standalone_filament_json_with_overrides(
           sp,
           &rig,
           &derived_overrides,
-        ),
-      );
+        )
+      });
     }
     if let Err(errs) =
       orcaslicer_webconfig::threemf::verify_provenance_matches_standalone_and_3mf_exports(
