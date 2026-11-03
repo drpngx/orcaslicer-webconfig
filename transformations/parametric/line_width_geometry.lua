@@ -176,6 +176,20 @@ function apply(config, ctx, p)
   config["internal_solid_infill_line_width"] = w(d, c.outer)
   config["support_line_width"] = w(d, 100)
 
+  local lw_keys = {
+    "initial_layer_line_width",
+    "outer_wall_line_width",
+    "line_width",
+    "top_surface_line_width",
+    "inner_wall_line_width",
+    "sparse_infill_line_width",
+    "internal_solid_infill_line_width",
+    "support_line_width",
+  }
+  for _, k in ipairs(lw_keys) do
+    constrain(k, d * 0.85, d * 1.60, "Nozzle orifice line-width envelope [0.85d, 1.60d]")
+  end
+
   print(string.format(
     "[Pack:LineWidthGeometry] Ø%.2fmm -> initial %s • outer %s • top %s • inner %s • infill %s • solid %s • support %s",
     d,

@@ -82,6 +82,10 @@ function apply(config, ctx)
     -- constants.json `hardware_limits.elastomer_family_tokens`) so the token list has a
     -- single source; nil (standalone rule testing without a rig ctx) means rigid.
     local is_elastomer = ctx.filament_is_elastomer == true
+    local is_elastomer_retract = is_elastomer or scalar_num(config["filament_retraction_length"], 0.8) >= 1.05
+    local max_retract = is_elastomer_retract and 1.45 or (1.15 * math.sqrt(d / 0.4))
+    constrain("filament_retraction_length", 0.35, max_retract, "FlowTech all-metal heat-creep ceiling")
+    constrain("filament_retraction_speed", is_elastomer and 15 or 20, 46, "Direct-drive + all-metal meniscus speed limit")
     local flowtech_speed_pwl = {
       { 20, 20 },
       { 25, 26 },

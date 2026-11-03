@@ -439,6 +439,55 @@ pub struct RuleBeforeAfterChange {
   pub shadowed_final_value: Option<String>,
 }
 
+/// Monotonic interval bound $I_k = [L_k, U_k]$ accumulated across the rule stack via
+/// `constrain(key, min_val, max_val, reason)`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ParameterBound {
+  pub param_key: String,
+  #[serde(default)]
+  pub min: Option<f64>,
+  #[serde(default)]
+  pub max: Option<f64>,
+  #[serde(default)]
+  pub min_by: String,
+  #[serde(default)]
+  pub max_by: String,
+  #[serde(default)]
+  pub min_rule_id: String,
+  #[serde(default)]
+  pub max_rule_id: String,
+  #[serde(default)]
+  pub min_step: usize,
+  #[serde(default)]
+  pub max_step: usize,
+}
+
+impl ParameterBound {
+  /// Returns `true` when the lower bound strictly exceeds the upper bound ($L_k > U_k$),
+  /// indicating an infeasible hardware/polymer constraint conflict.
+  pub fn is_infeasible(&self) -> bool {
+    matches!((self.min, self.max), (Some(l), Some(u)) if l > u + 1e-9)
+  }
+
+  pub fn format_interval(&self, unit: &str) -> String {
+    let u = if unit.is_empty() {
+      String::new()
+    } else {
+      format!(" {}", unit)
+    };
+    let fmt_n = |n: f64| -> String {
+      if (n - n.round()).abs() < 1e-6 {
+        format!("{:.0}{}", n.round(), u)
+      } else {
+        format!("{:.2}{}", n, u)
+      }
+    };
+    let lo = self.min.map(fmt_n).unwrap_or_else(|| "-∞".to_string());
+    let hi = self.max.map(fmt_n).unwrap_or_else(|| "+∞".to_string());
+    format!("[{}, {}]", lo, hi)
+  }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParameterProvenance {
   pub param_key: String,
@@ -457,6 +506,9 @@ pub struct ParameterProvenance {
   /// True when >= 1 step on this parameter was absolutely overwritten (clobbered) by a later rule.
   #[serde(default)]
   pub has_shadowed_steps: bool,
+  /// Active monotonic constraint interval $I_k = [L_k, U_k]$ narrowed by `constrain(...)` calls.
+  #[serde(default)]
+  pub active_bound: Option<ParameterBound>,
 }
 
 pub fn compute_delta_summary(before_raw: &str, after_raw: &str, unit: &str) -> String {
@@ -535,6 +587,12 @@ pub struct StackEvaluationResult {
   /// Enabled rules skipped because their declarative scope / condition excluded this context.
   #[serde(default)]
   pub skipped_rules: Vec<SkippedRuleInfo>,
+  /// Monotonic constraint lattice $I_k = [L_k, U_k]$ accumulated across the stack.
+  #[serde(default)]
+  pub parameter_bounds: HashMap<String, ParameterBound>,
+  /// Constraints where $L_k > U_k$ (e.g. polymer min extrude temp > hotend thermal ceiling).
+  #[serde(default)]
+  pub infeasible_constraints: Vec<ParameterBound>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1606,7 +1664,22 @@ end
           rule.name.clone(),
         ),
       );
-      match execute_transformation_lua(&rule.lua_code, &current_values, context) {
+      let mut rule_ctx = context.clone();
+      if let serde_json::Value::Object(ref mut cm) = rule_ctx {
+        cm.insert(
+          "_current_rule_id".to_string(),
+          serde_json::Value::String(rule.id.clone()),
+        );
+        cm.insert(
+          "_current_rule_name".to_string(),
+          serde_json::Value::String(rule.name.clone()),
+        );
+        cm.insert(
+          "_current_step_num".to_string(),
+          serde_json::json!(step_num),
+        );
+      }
+      match execute_transformation_lua(&rule.lua_code, &current_values, &rule_ctx) {
         Ok((new_val, stdout, modified)) => {
           let rule_log_summary = stdout.join(" • ");
           for line in stdout {
@@ -1998,6 +2071,415 @@ end
       }
     }
 
+    // =========================================================================
+    // Phase 3: Epilogue Constraint Projection & Coupled Invariants (Priority = ∞)
+    // =========================================================================
+    let epilogue_step_num = ordered_rules.len() + 1;
+    let mut parameter_bounds: HashMap<String, ParameterBound> = HashMap::new();
+    let mut infeasible_constraints: Vec<ParameterBound> = Vec::new();
+
+    if let Some(bounds_obj) = current_values.get("_bounds").and_then(|v| v.as_object()) {
+      for (k, b_val) in bounds_obj {
+        if let Some(b_map) = b_val.as_object() {
+          let min = b_map.get("min").and_then(|v| v.as_f64());
+          let max = b_map.get("max").and_then(|v| v.as_f64());
+          let min_by = b_map
+            .get("min_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
+            .to_string();
+          let max_by = b_map
+            .get("max_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
+            .to_string();
+          let min_rule_id = b_map
+            .get("min_rule_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+          let max_rule_id = b_map
+            .get("max_rule_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+          let min_step = b_map
+            .get("min_step")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as usize;
+          let max_step = b_map
+            .get("max_step")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as usize;
+          if min.is_some() || max.is_some() {
+            parameter_bounds.insert(
+              k.clone(),
+              ParameterBound {
+                param_key: k.clone(),
+                min,
+                max,
+                min_by,
+                max_by,
+                min_rule_id,
+                max_rule_id,
+                min_step,
+                max_step,
+              },
+            );
+          }
+        }
+      }
+    }
+
+    let format_clamped_scalar = |val: f64, reference_str: &str, param_key: &str| -> String {
+      let ref_trimmed = reference_str.trim();
+      let ref_decimals = if let Some(dot_idx) = ref_trimmed.find('.') {
+        ref_trimmed[dot_idx + 1..]
+          .chars()
+          .take_while(|c| c.is_ascii_digit())
+          .count()
+      } else {
+        0
+      };
+      if ref_decimals > 0 {
+        format!("{:.prec$}", val, prec = ref_decimals)
+      } else if (val - val.round()).abs() < 1e-6 {
+        format!("{:.0}", val.round())
+      } else if param_key.contains("flow") || param_key.contains("pressure_advance") {
+        format!("{:.3}", val)
+      } else {
+        format!("{:.2}", val)
+      }
+    };
+
+    let write_clamped_value =
+      |map: &mut serde_json::Map<String, serde_json::Value>, key: &str, formatted: &str| {
+        match map.get_mut(key) {
+          Some(serde_json::Value::Array(arr)) => {
+            if arr.is_empty() {
+              arr.push(serde_json::Value::String(formatted.to_string()));
+            } else {
+              for elem in arr.iter_mut() {
+                *elem = serde_json::Value::String(formatted.to_string());
+              }
+            }
+          }
+          _ => {
+            map.insert(
+              key.to_string(),
+              serde_json::Value::String(formatted.to_string()),
+            );
+          }
+        }
+      };
+
+    // 1. Box-Constraint Projection & Infeasibility Detection (L > U)
+    let mut sorted_bound_keys: Vec<String> = parameter_bounds.keys().cloned().collect();
+    sorted_bound_keys.sort();
+    for k in &sorted_bound_keys {
+      let Some(b) = parameter_bounds.get(k) else {
+        continue;
+      };
+      let meta = catalog.get(k);
+      let label = meta
+        .map(|m| m.label.clone())
+        .unwrap_or_else(|| k.replace('_', " "));
+      let unit = meta.map(|m| m.unit.as_str()).unwrap_or("");
+      let unit_suffix = if unit.is_empty() {
+        String::new()
+      } else {
+        format!(" {}", unit)
+      };
+
+      if b.is_infeasible() {
+        infeasible_constraints.push(b.clone());
+        execution_logs.push(format!(
+          "❌ [Infeasible Constraint Conflict] {} ({}): lower bound {:.2}{} (by '{}') > upper bound {:.2}{} (by '{}')",
+          label,
+          k,
+          b.min.unwrap_or(0.0),
+          unit_suffix,
+          b.min_by,
+          b.max.unwrap_or(0.0),
+          unit_suffix,
+          b.max_by
+        ));
+      }
+
+      if let serde_json::Value::Object(ref mut cmap) = current_values {
+        let Some(cur_json) = cmap.get(k) else {
+          continue;
+        };
+        let before_str = extract_scalar(cur_json);
+        let Ok(cur_num) = before_str.trim().parse::<f64>() else {
+          continue;
+        };
+
+        // Apply max(min_v, cur) then min(max_v, .) so hardware upper ceiling wins if L > U.
+        let mut clamped_num = cur_num;
+        let mut bound_reason: Option<(String, String)> = None;
+        if let Some(lo) = b.min {
+          if clamped_num < lo - 1e-9 {
+            clamped_num = lo;
+            let lo_str = format_clamped_scalar(lo, &before_str, k);
+            bound_reason = Some((b.min_by.clone(), format!("≥ {}{}", lo_str, unit_suffix)));
+          }
+        }
+        if let Some(hi) = b.max {
+          if clamped_num > hi + 1e-9 {
+            clamped_num = hi;
+            let hi_str = format_clamped_scalar(hi, &before_str, k);
+            bound_reason = Some((b.max_by.clone(), format!("≤ {}{}", hi_str, unit_suffix)));
+          }
+        }
+
+        if let Some((by_who, bound_cond)) = bound_reason {
+          let after_str = format_clamped_scalar(clamped_num, &before_str, k);
+          if !values_are_equivalent(&before_str, &after_str) {
+            write_clamped_value(cmap, k, &after_str);
+            let clamp_rule_name = format!("Clamped by {} ({})", by_who, bound_cond);
+            append_rule_source(&mut rule_sources, k, epilogue_step_num, &clamp_rule_name);
+            let before_fmt = format!("{}{}", before_str, unit_suffix);
+            let after_fmt = format!("{}{}", after_str, unit_suffix);
+            let delta_summary = compute_delta_summary(&before_str, &after_str, unit);
+            let interval_str = b.format_interval(unit);
+            execution_logs.push(format!(
+              "🛡️ [Constraint Projection • Priority ∞] {} ({}): {} → {} [{} • Feasible {}]",
+              label, k, before_fmt, after_fmt, clamp_rule_name, interval_str
+            ));
+            rule_changes.push(RuleBeforeAfterChange {
+              rule_id: "constraint_projection".to_string(),
+              rule_name: clamp_rule_name,
+              rule_icon: "🛡️".to_string(),
+              rule_category: "Constraint Projection".to_string(),
+              step_number: epilogue_step_num,
+              rule_priority: i32::MAX,
+              param_key: k.clone(),
+              param_label: label,
+              before_value: before_fmt,
+              after_value: after_fmt,
+              delta_summary,
+              rule_log: format!(
+                "Projected onto feasible interval {} (min by '{}', max by '{}')",
+                interval_str, b.min_by, b.max_by
+              ),
+              shadow_kind: None,
+              shadowed_by_step: None,
+              shadowed_by_rule_id: None,
+              shadowed_by_rule_name: None,
+              shadowed_final_value: None,
+            });
+          }
+        }
+      }
+    }
+
+    // 2. Cross-Key Relational Invariants (Coupled Constraints at Priority = ∞)
+    if let serde_json::Value::Object(ref mut cmap) = current_values {
+      let mut record_coupled_clamp = |cmap: &mut serde_json::Map<String, serde_json::Value>,
+                                      sources: &mut HashMap<String, String>,
+                                      key: &str,
+                                      before_str: &str,
+                                      new_num: f64,
+                                      rule_id: &str,
+                                      rule_name: &str,
+                                      rule_log: String| {
+        let after_str = format_clamped_scalar(new_num, before_str, key);
+        if values_are_equivalent(before_str, &after_str) {
+          return;
+        }
+        write_clamped_value(cmap, key, &after_str);
+        append_rule_source(sources, key, epilogue_step_num, rule_name);
+        let meta = catalog.get(key);
+        let label = meta
+          .map(|m| m.label.clone())
+          .unwrap_or_else(|| key.replace('_', " "));
+        let unit = meta.map(|m| m.unit.as_str()).unwrap_or("");
+        let unit_suffix = if unit.is_empty() {
+          String::new()
+        } else {
+          format!(" {}", unit)
+        };
+        let before_fmt = format!("{}{}", before_str, unit_suffix);
+        let after_fmt = format!("{}{}", after_str, unit_suffix);
+        let delta_summary = compute_delta_summary(before_str, &after_str, unit);
+        execution_logs.push(format!(
+          "🔗 [Coupled Invariant • Priority ∞] {} ({}): {} → {} [{}]",
+          label, key, before_fmt, after_fmt, rule_name
+        ));
+        rule_changes.push(RuleBeforeAfterChange {
+          rule_id: rule_id.to_string(),
+          rule_name: rule_name.to_string(),
+          rule_icon: "🔗".to_string(),
+          rule_category: "Coupled Invariant".to_string(),
+          step_number: epilogue_step_num,
+          rule_priority: i32::MAX,
+          param_key: key.to_string(),
+          param_label: label,
+          before_value: before_fmt,
+          after_value: after_fmt,
+          delta_summary,
+          rule_log,
+          shadow_kind: None,
+          shadowed_by_step: None,
+          shadowed_by_rule_id: None,
+          shadowed_by_rule_name: None,
+          shadowed_final_value: None,
+        });
+      };
+
+      // (a) First-Layer vs. Other-Layers Thermal Continuity:
+      // `nozzle_temperature_initial_layer` must stay within [-5 °C, +20 °C] of `nozzle_temperature`
+      // (and respect `bounds[init_key]` if present) whenever a rule touched or constrained temperatures.
+      for (cont_key, init_key) in [
+        ("nozzle_temperature", "nozzle_temperature_initial_layer"),
+        (
+          "nozzle_temperature_HS",
+          "nozzle_temperature_initial_layer_HS",
+        ),
+      ] {
+        let temp_touched = rule_sources.contains_key(cont_key)
+          || rule_sources.contains_key(init_key)
+          || parameter_bounds.contains_key(cont_key)
+          || parameter_bounds.contains_key(init_key);
+        if !temp_touched {
+          continue;
+        }
+        let Some(cont_str) = cmap.get(cont_key).map(&extract_scalar) else {
+          continue;
+        };
+        let Some(init_str) = cmap.get(init_key).map(&extract_scalar) else {
+          continue;
+        };
+        if let (Ok(t_cont), Ok(t_init)) = (
+          cont_str.trim().parse::<f64>(),
+          init_str.trim().parse::<f64>(),
+        ) {
+          let mut lo = t_cont - 5.0;
+          let mut hi = t_cont + 20.0;
+          if let Some(b) = parameter_bounds.get(init_key) {
+            if let Some(b_lo) = b.min {
+              lo = lo.max(b_lo);
+            }
+            if let Some(b_hi) = b.max {
+              hi = hi.min(b_hi);
+            }
+          }
+          if lo <= hi && (t_init < lo - 1e-9 || t_init > hi + 1e-9) {
+            let clamped = t_init.max(lo).min(hi);
+            record_coupled_clamp(
+              cmap,
+              &mut rule_sources,
+              init_key,
+              &init_str,
+              clamped,
+              "coupled_constraint_thermal_continuity",
+              &format!(
+                "Clamped by Coupled First-Layer Thermal Continuity ([{:.0} °C, {:.0} °C] from {} = {:.0} °C)",
+                lo, hi, cont_key, t_cont
+              ),
+              format!(
+                "Enforced T_initial_layer ∈ [T_nozzle - 5 °C, T_nozzle + 20 °C] relative to {} = {:.0} °C",
+                cont_key, t_cont
+              ),
+            );
+          }
+        }
+      }
+
+      // (b) Retraction Prime Speed <= Retraction Pull Speed:
+      // `filament_deretraction_speed <= filament_retraction_speed` when deretraction speed > 0.
+      if let (Some(deret_str), Some(ret_str)) = (
+        cmap.get("filament_deretraction_speed").map(&extract_scalar),
+        cmap.get("filament_retraction_speed").map(&extract_scalar),
+      ) {
+        if let (Ok(deret), Ok(ret)) = (
+          deret_str.trim().parse::<f64>(),
+          ret_str.trim().parse::<f64>(),
+        ) {
+          if deret > 0.0 && ret > 0.0 && deret > ret + 1e-9 {
+            record_coupled_clamp(
+              cmap,
+              &mut rule_sources,
+              "filament_deretraction_speed",
+              &deret_str,
+              ret,
+              "coupled_constraint_deretraction_speed",
+              &format!(
+                "Clamped by Coupled Retraction Prime ≤ Pull Speed (≤ {} mm/s)",
+                ret_str.trim()
+              ),
+              format!(
+                "Enforced filament_deretraction_speed ≤ filament_retraction_speed ({} mm/s) to prevent nozzle tip blobbing on prime",
+                ret_str.trim()
+              ),
+            );
+          }
+        }
+      }
+
+      // (c) Z-Hop >= Layer Height Floor on Spiral Lift:
+      // When `filament_z_hop_types` / `z_hop_types` == "Spiral Lift" and Z-hop > 0,
+      // ensure `filament_z_hop >= 0.5 * layer_height` (respecting `bounds["filament_z_hop"].max`).
+      let zhop_type = cmap
+        .get("filament_z_hop_types")
+        .or_else(|| cmap.get("z_hop_types"))
+        .map(&extract_scalar)
+        .unwrap_or_default();
+      if zhop_type.eq_ignore_ascii_case("Spiral Lift") {
+        let lh_opt = cmap
+          .get("layer_height")
+          .map(&extract_scalar)
+          .and_then(|s| s.trim().parse::<f64>().ok())
+          .or_else(|| {
+            context.get("layer_height").and_then(|v| {
+              v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+            })
+          });
+        if let Some(lh) = lh_opt {
+          for zhop_key in ["filament_z_hop", "z_hop"] {
+            let zhop_touched = rule_sources.contains_key(zhop_key)
+              || rule_sources.contains_key("filament_z_hop_types")
+              || rule_sources.contains_key("z_hop_types")
+              || parameter_bounds.contains_key(zhop_key);
+            if !zhop_touched {
+              continue;
+            }
+            let Some(z_str) = cmap.get(zhop_key).map(&extract_scalar) else {
+              continue;
+            };
+            if let Ok(z_val) = z_str.trim().parse::<f64>() {
+              if z_val > 0.0 {
+                let mut floor = 0.5 * lh;
+                if let Some(b_max) = parameter_bounds.get(zhop_key).and_then(|b| b.max) {
+                  floor = floor.min(b_max);
+                }
+                if z_val < floor - 1e-9 {
+                  record_coupled_clamp(
+                    cmap,
+                    &mut rule_sources,
+                    zhop_key,
+                    &z_str,
+                    floor,
+                    "coupled_constraint_spiral_zhop_floor",
+                    &format!(
+                      "Clamped by Coupled Spiral Lift Z-Hop Floor (≥ {:.2} mm for {:.2} mm layer)",
+                      floor, lh
+                    ),
+                    format!(
+                      "Enforced {} ≥ 0.5 × layer_height ({:.2} mm) for Spiral Lift helix clearance",
+                      zhop_key, lh
+                    ),
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     let mut diff_items = Vec::new();
     let mut flush_matrix = Vec::new();
     let mut safe_speed_ceiling = 250.0;
@@ -2040,7 +2522,11 @@ end
         let meta = catalog.get(k);
         let is_modified = base_val_str != curr_val_str;
 
-        if is_modified || meta.is_some() || rule_sources.contains_key(k) {
+        if is_modified
+          || meta.is_some()
+          || rule_sources.contains_key(k)
+          || parameter_bounds.contains_key(k)
+        {
           let label = meta
             .map(|m| m.label.clone())
             .unwrap_or_else(|| k.replace('_', " "));
@@ -2093,6 +2579,7 @@ end
         .filter(|s| s.would_touch_keys.iter().any(|k| k == &item.param_key))
         .cloned()
         .collect();
+      item.active_bound = parameter_bounds.get(&item.param_key).cloned();
     }
 
     let mut res_profile = base_profile.clone();
@@ -2131,6 +2618,8 @@ end
       active_rule_count,
       total_rule_count: rules.len(),
       skipped_rules,
+      parameter_bounds,
+      infeasible_constraints,
     }
   }
 
@@ -2192,6 +2681,7 @@ end
         is_modified: item.is_modified,
         skipped_steps: Vec::new(),
         has_shadowed_steps,
+        active_bound: None,
       });
     }
     result.sort_by(|a, b| {
@@ -2797,6 +3287,47 @@ end
             "⚠️ POTENTIALLY DANGEROUS: Custom startup G-code replaces the factory macro. Never home Z (`G28 W` / `G28 Z`) above 140°C, and ensure models sit ≥5mm inside X=0 when using the Adaptive KAMP prime line.".to_string()
           },
         });
+      }
+    }
+
+    // 5. Check for infeasible monotonic interval bounds (L_k > U_k) in `_bounds`
+    if let Some(bounds_obj) = derived_profile
+      .values
+      .get("_bounds")
+      .and_then(|v| v.as_object())
+    {
+      let mut keys: Vec<&String> = bounds_obj.keys().collect();
+      keys.sort();
+      for k in keys {
+        if let Some(b_map) = bounds_obj.get(k).and_then(|v| v.as_object()) {
+          if let (Some(lo), Some(hi)) = (
+            b_map.get("min").and_then(|v| v.as_f64()),
+            b_map.get("max").and_then(|v| v.as_f64()),
+          ) {
+            if lo > hi + 1e-9 {
+              let min_by = b_map
+                .get("min_by")
+                .and_then(|v| v.as_str())
+                .unwrap_or("lower bound rule");
+              let max_by = b_map
+                .get("max_by")
+                .and_then(|v| v.as_str())
+                .unwrap_or("upper bound rule");
+              push_warn(SafetyWarning {
+                id: format!("infeasible_bound:{}", k),
+                severity: SafetySeverity::Danger,
+                scope_label: "Constraint Lattice (Infeasible Configuration)".to_string(),
+                param_key: k.clone(),
+                current_value: format!("L = {:.2} > U = {:.2}", lo, hi),
+                safe_range: format!("≤ {:.2} ({}) & ≥ {:.2} ({})", hi, max_by, lo, min_by),
+                explanation: format!(
+                  "Infeasible Configuration: `{}` requires ≥ {:.2} (set by '{}'), which exceeds the hardware/rule ceiling of ≤ {:.2} (set by '{}').",
+                  k, lo, min_by, hi, max_by
+                ),
+              });
+            }
+          }
+        }
       }
     }
 
@@ -5837,5 +6368,303 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       .find(|f| f.name.contains("My Clear Spool"))
       .expect("renamed PETG-declared spool imported");
     assert_eq!(back.material_type, "PCTG");
+  }
+
+  #[test]
+  fn test_two_track_constraint_propagation_monotonic_lattice_and_epilogue_projection() {
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base
+      .values
+      .insert("nozzle_temperature".to_string(), json!(["300"]));
+    base.values.insert(
+      "nozzle_temperature_initial_layer".to_string(),
+      json!(["300"]),
+    );
+    base
+      .values
+      .insert("filament_retraction_length".to_string(), json!(["0.80"]));
+    base
+      .values
+      .insert("filament_retraction_speed".to_string(), json!(["40"]));
+    base
+      .values
+      .insert("filament_flow_ratio".to_string(), json!(["0.960"]));
+    base
+      .values
+      .insert("filament_z_hop".to_string(), json!(["0.15"]));
+    base.set_str("inner_wall_line_width", "0.50");
+
+    let mk_rule = |id: &str, name: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: name.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    // 1. Real P10 (thermal_conductivity) drops 300 -> 295°C and declares `constrain(..., 175, 300, ...)`
+    //    and real P12 (rig_addons_cooling) compresses retraction to 0.70mm and declares `constrain("filament_retraction_length", 0.35, 1.15, ...)`.
+    //    A late P35 rule adds +10°C (295 -> 305°C) and +0.75mm retraction (0.70 -> 1.45mm).
+    //    The Priority = ∞ Epilogue Projection clamps temperature back to 300°C and retraction to 1.15mm
+    //    with explicit Provenance & Lineage attribution!
+    let p10 = mk_rule(
+      "thermal_conductivity",
+      "P10 Thermal Conductivity",
+      10,
+      include_str!("../transformations/thermal_conductivity.lua"),
+    );
+    let p12 = mk_rule(
+      "rig_addons_cooling",
+      "P12 FlowTech Hotend",
+      12,
+      include_str!("../transformations/rig_addons_cooling.lua"),
+    );
+    let p15_tpl = TransformationEngine::get_parameterized_calibration_templates()
+      .into_iter()
+      .find(|t| t.id == "line_width_geometry")
+      .expect("line_width_geometry");
+    let (_, _, _, p15_lua) = p15_tpl.generate_from_answers(&p15_tpl.default_answers(), "all");
+    let p15 = mk_rule("line_width_geometry", "P15 Line Width Geometry", 15, &p15_lua);
+    let p35_boost = mk_rule(
+      "high_flow_boost",
+      "P35 High-Speed Volumetric & Structural Boost",
+      35,
+      r#"
+        function apply(config, ctx)
+          config["nozzle_temperature"] = map_num(config["nozzle_temperature"], function(t) return t + 10 end, "%.0f")
+          config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r) return r + 0.75 end, "%.2f")
+          local iw = scalar_num(config["inner_wall_line_width"], 0.50)
+          config["inner_wall_line_width"] = string.format("%.2f", iw * 1.35)
+        end
+      "#,
+    );
+
+    let ctx = json!({
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_type": "diamondback",
+      "nozzle_diameter": "0.4",
+      "addons": ["flowtech_hotend"],
+      "filament_is_elastomer": false,
+    });
+
+    let eval = TransformationEngine::evaluate_stack(&base, &[p10, p12, p15, p35_boost], &ctx);
+
+    // Temperature: 300 -> 295 (P10) -> 305 (P35) -> Clamped to 300 (Priority ∞)
+    assert_eq!(
+      eval.resulting_profile.get_str("nozzle_temperature").as_deref(),
+      Some("300")
+    );
+    let temp_prov = eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "nozzle_temperature")
+      .expect("nozzle_temperature provenance");
+    assert_eq!(temp_prov.steps.len(), 3);
+    assert_eq!(temp_prov.steps[0].after_value, "295 °C");
+    assert_eq!(temp_prov.steps[1].after_value, "305 °C");
+    assert_eq!(temp_prov.steps[2].rule_priority, i32::MAX);
+    assert_eq!(temp_prov.steps[2].after_value, "300 °C");
+    assert!(
+      temp_prov.steps[2]
+        .rule_name
+        .contains("Clamped by DiamondBack + FlowTech 300C thermal ceiling"),
+      "unexpected clamp attribution: {}",
+      temp_prov.steps[2].rule_name
+    );
+    assert_eq!(
+      temp_prov.active_bound.as_ref().and_then(|b| b.max),
+      Some(300.0)
+    );
+
+    // Retraction length: 0.80 -> 0.70 (P12) -> 1.45 (P35) -> Clamped to 1.15 (Priority ∞)
+    assert_eq!(
+      eval
+        .resulting_profile
+        .get_str("filament_retraction_length")
+        .as_deref(),
+      Some("1.15")
+    );
+    let ret_prov = eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "filament_retraction_length")
+      .expect("filament_retraction_length provenance");
+    assert!(
+      ret_prov
+        .steps
+        .last()
+        .unwrap()
+        .rule_name
+        .contains("Clamped by FlowTech all-metal heat-creep ceiling"),
+      "unexpected retraction clamp: {}",
+      ret_prov.steps.last().unwrap().rule_name
+    );
+
+    // Inner wall line width: 0.50 (P15: 1.25d) -> 0.68 (P35: *1.35 = 1.69d) -> Clamped to 0.64 (1.60d)
+    assert_eq!(
+      eval
+        .resulting_profile
+        .get_str("inner_wall_line_width")
+        .as_deref(),
+      Some("0.64")
+    );
+
+    // 2. Order-Independence of Interval Intersection ([175, 300] ∩ [180, 225] = [180, 225])
+    let r_hw = mk_rule(
+      "r_hw",
+      "Hardware Bound",
+      5,
+      r#"constrain("nozzle_temperature", 175, 300, "FlowTech ceiling")"#,
+    );
+    let r_pva = mk_rule(
+      "r_pva",
+      "PVA Polymer Bound",
+      50,
+      r#"constrain("nozzle_temperature", 180, 225, "PVA thermal degradation ceiling")"#,
+    );
+    let eval_fwd =
+      TransformationEngine::evaluate_stack(&base, &[r_hw.clone(), r_pva.clone()], &json!({}));
+    let mut r_hw_late = r_hw;
+    r_hw_late.priority = 99;
+    let eval_rev = TransformationEngine::evaluate_stack(&base, &[r_pva, r_hw_late], &json!({}));
+    let b_fwd = eval_fwd.parameter_bounds.get("nozzle_temperature").unwrap();
+    let b_rev = eval_rev.parameter_bounds.get("nozzle_temperature").unwrap();
+    assert_eq!((b_fwd.min, b_fwd.max), (Some(180.0), Some(225.0)));
+    assert_eq!((b_rev.min, b_rev.max), (Some(180.0), Some(225.0)));
+    assert_eq!(b_fwd.min_by, "PVA thermal degradation ceiling");
+    assert_eq!(b_fwd.max_by, "PVA thermal degradation ceiling");
+    assert_eq!(
+      eval_fwd
+        .resulting_profile
+        .get_str("nozzle_temperature")
+        .as_deref(),
+      Some("225")
+    );
+    assert_eq!(
+      eval_rev
+        .resulting_profile
+        .get_str("nozzle_temperature")
+        .as_deref(),
+      Some("225")
+    );
+  }
+
+  #[test]
+  fn test_infeasible_constraint_conflict_detection_and_coupled_relational_invariants() {
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base
+      .values
+      .insert("nozzle_temperature".to_string(), json!(["250"]));
+    base.values.insert(
+      "nozzle_temperature_initial_layer".to_string(),
+      json!(["220"]),
+    );
+    base
+      .values
+      .insert("filament_retraction_speed".to_string(), json!(["35"]));
+    base
+      .values
+      .insert("filament_deretraction_speed".to_string(), json!(["45"]));
+    base
+      .values
+      .insert("filament_z_hop".to_string(), json!(["0.08"]));
+    base
+      .values
+      .insert("filament_z_hop_types".to_string(), json!(["Spiral Lift"]));
+    base.set_str("layer_height", "0.28");
+
+    let mk_rule = |id: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: id.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    // 1. Coupled Relational Invariants:
+    //    - First-layer temp 220°C vs continuous 250°C (< 250 - 5 = 245°C) -> clamped to 245°C
+    //    - Deretraction speed 45 mm/s > retraction speed 35 mm/s -> clamped to 35 mm/s
+    //    - Spiral Lift Z-hop 0.08 mm < 0.5 * 0.28 = 0.14 mm -> clamped to 0.14 mm
+    let touch_rule = mk_rule(
+      "touch_rule",
+      10,
+      r#"
+        config["nozzle_temperature"] = { "250" }
+        config["filament_z_hop"] = { "0.08" }
+      "#,
+    );
+    let eval_coupled = TransformationEngine::evaluate_stack(&base, &[touch_rule], &json!({}));
+    assert_eq!(
+      eval_coupled
+        .resulting_profile
+        .get_str("nozzle_temperature_initial_layer")
+        .as_deref(),
+      Some("245")
+    );
+    assert_eq!(
+      eval_coupled
+        .resulting_profile
+        .get_str("filament_deretraction_speed")
+        .as_deref(),
+      Some("35")
+    );
+    assert_eq!(
+      eval_coupled
+        .resulting_profile
+        .get_str("filament_z_hop")
+        .as_deref(),
+      Some("0.14")
+    );
+
+    // 2. Conflict / Infeasibility Detection (L > U):
+    //    Hotend ceiling <= 300°C vs High-Temp Polymer requirement >= 310°C
+    let r_hotend = mk_rule(
+      "hotend_limit",
+      10,
+      r#"constrain("nozzle_temperature", 175, 300, "FlowTech 300C ceiling")"#,
+    );
+    let r_peek = mk_rule(
+      "peek_polymer",
+      20,
+      r#"constrain("nozzle_temperature", 310, 340, "PEEK minimum melt temperature")"#,
+    );
+    let eval_conflict =
+      TransformationEngine::evaluate_stack(&base, &[r_hotend, r_peek], &json!({}));
+    assert_eq!(eval_conflict.infeasible_constraints.len(), 1);
+    let inf = &eval_conflict.infeasible_constraints[0];
+    assert_eq!(inf.param_key, "nozzle_temperature");
+    assert!(inf.is_infeasible());
+    assert_eq!((inf.min, inf.max), (Some(310.0), Some(300.0)));
+    assert!(eval_conflict
+      .execution_logs
+      .iter()
+      .any(|l| l.contains("Infeasible Constraint Conflict")));
+
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let warnings = TransformationEngine::evaluate_safety_warnings(
+      &rig,
+      &[],
+      &eval_conflict.resulting_profile,
+      &[],
+      &[],
+    );
+    assert!(
+      warnings
+        .iter()
+        .any(|w| w.id == "infeasible_bound:nozzle_temperature"
+          && w.severity == SafetySeverity::Danger),
+      "expected Danger safety warning for infeasible bound L > U, got: {:?}",
+      warnings
+    );
   }
 }

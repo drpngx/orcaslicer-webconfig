@@ -1156,10 +1156,13 @@ pub fn resolve_effective_orca_profile_values(
     {
       continue;
     }
-    if k == "travel_acceleration" {
-      // Travel-accel guard, per printer motion class (constants.json `printer_classes`):
-      // a rule value below the class floor is replaced with the class stock value — the
-      // Kobra S1 CoreXY floor/stock is 9000/10000; a bed-slinger gets its gentler policy.
+    if k == "travel_acceleration"
+      && !derived_overrides.contains_key("_bounds")
+      && !derived_overrides.contains_key("_lua_touched_keys")
+    {
+      // Fallback for synthetic override maps that bypassed `TransformationEngine::evaluate_stack`
+      // (stacks evaluated through `evaluate_stack` enforce `travel_acceleration` bounds via
+      // `constrain("travel_acceleration", ...)` and the Priority = ∞ Epilogue Projection pass).
       let accel_policy = rig.travel_accel_policy();
       if let Some(ta) = v.as_str().and_then(|s| s.parse::<f64>().ok()) {
         if ta < accel_policy.travel_accel_floor_mm2 as f64 {

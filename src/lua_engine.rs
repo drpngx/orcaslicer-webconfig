@@ -1126,9 +1126,11 @@ impl LuaEnv {
     self.set_local("pairs", LuaVal::NativeFn("pairs".to_string()));
     self.set_local("ipairs", LuaVal::NativeFn("ipairs".to_string()));
     // Curve helpers implemented natively in Rust (single deterministic evaluator, shared by
-    // every rule — see `pwl` / `clamp` arms in `call_native`).
+    // every rule — see `pwl` / `clamp` / `constrain` arms in `call_native`).
     self.set_local("pwl", LuaVal::NativeFn("pwl".to_string()));
     self.set_local("clamp", LuaVal::NativeFn("clamp".to_string()));
+    self.set_local("constrain", LuaVal::NativeFn("constrain".to_string()));
+    self.set_local("bounds", LuaVal::Table(Rc::new(RefCell::new(HashMap::new()))));
 
     // string library
     let mut str_lib = HashMap::new();
@@ -1171,6 +1173,7 @@ impl LuaEnv {
       "sqrt".to_string(),
       LuaVal::NativeFn("math.sqrt".to_string()),
     );
+    math_lib.insert("huge".to_string(), LuaVal::Number(f64::INFINITY));
     self.set_local("math", LuaVal::Table(Rc::new(RefCell::new(math_lib))));
 
     // table library
@@ -1455,6 +1458,8 @@ impl Interpreter {
         Ok(())
       }
       Expr::TableField(tbl_expr, field) => {
+        let is_bounds_target =
+          matches!(tbl_expr.as_ref(), Expr::Variable(v) if v == "bounds") || field == "_bounds";
         let tbl_val = self.eval_expr(tbl_expr, env)?;
         if let LuaVal::Table(t) = tbl_val {
           let is_new_key = !t.borrow().contains_key(field);
@@ -1470,15 +1475,18 @@ impl Interpreter {
             .map(|v| v.to_lua_string())
             .unwrap_or_else(|| "nil".to_string());
           t.borrow_mut().insert(field.clone(), val.clone());
-          self
-            .modified_keys
-            .push((field.clone(), old_val, val.to_lua_string()));
+          if !is_bounds_target {
+            self
+              .modified_keys
+              .push((field.clone(), old_val, val.to_lua_string()));
+          }
           Ok(())
         } else {
           Err(format!("Attempt to index a non-table: {:?}", tbl_val))
         }
       }
       Expr::TableIndex(tbl_expr, idx_expr) => {
+        let is_bounds_target = matches!(tbl_expr.as_ref(), Expr::Variable(v) if v == "bounds");
         let tbl_val = self.eval_expr(tbl_expr, env.clone())?;
         let idx_val = self.eval_expr(idx_expr, env)?;
         let key_str = match idx_val {
@@ -1506,9 +1514,11 @@ impl Interpreter {
             .map(|v| v.to_lua_string())
             .unwrap_or_else(|| "nil".to_string());
           t.borrow_mut().insert(key_str.clone(), val.clone());
-          self
-            .modified_keys
-            .push((key_str, old_val, val.to_lua_string()));
+          if !is_bounds_target && key_str != "_bounds" {
+            self
+              .modified_keys
+              .push((key_str, old_val, val.to_lua_string()));
+          }
           Ok(())
         } else {
           Err(format!("Attempt to index a non-table: {:?}", tbl_val))
@@ -1742,7 +1752,7 @@ impl Interpreter {
   ) -> Result<LuaVal, String> {
     self.check_gas()?;
     match func {
-      LuaVal::NativeFn(name) => self.call_native(name, args),
+      LuaVal::NativeFn(name) => self.call_native(name, args, &env),
       LuaVal::Function(_name, params, body) => {
         if self.call_depth >= MAX_LUA_CALL_DEPTH {
           return Err(format!(
@@ -1764,7 +1774,12 @@ impl Interpreter {
     }
   }
 
-  fn call_native(&mut self, name: &str, args: Vec<LuaVal>) -> Result<LuaVal, String> {
+  fn call_native(
+    &mut self,
+    name: &str,
+    args: Vec<LuaVal>,
+    env: &Rc<RefCell<LuaEnv>>,
+  ) -> Result<LuaVal, String> {
     match name {
       "tonumber" => {
         if let Some(arg) = args.get(0) {
@@ -2192,6 +2207,180 @@ impl Interpreter {
           }
           _ => Err("clamp expects numeric (x, lo, hi)".to_string()),
         }
+      }
+      // constrain(key, min_val, max_val, reason): monotonically narrows the feasible interval
+      // I_k = [L_k, U_k] via interval intersection [max(L_old, min_val), min(U_old, max_val)],
+      // recording provenance attribution (min_by / max_by, rule_id, step_num) in `bounds[key]`
+      // (which is shared with `config["_bounds"]` across stack steps).
+      "constrain" => {
+        let key = match args.get(0) {
+          Some(LuaVal::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+          Some(other) if !matches!(other, LuaVal::Nil) => {
+            let s = other.to_lua_string();
+            if s.trim().is_empty() {
+              return Ok(LuaVal::Nil);
+            }
+            s.trim().to_string()
+          }
+          _ => return Ok(LuaVal::Nil),
+        };
+        let coerce_opt = |v: Option<&LuaVal>| -> Option<f64> {
+          match v {
+            Some(LuaVal::Number(n)) if n.is_finite() => Some(*n),
+            Some(LuaVal::String(s)) => s.trim().parse::<f64>().ok().filter(|n| n.is_finite()),
+            _ => None,
+          }
+        };
+        let min_v = coerce_opt(args.get(1));
+        let max_v = coerce_opt(args.get(2));
+        let reason_arg = match args.get(3) {
+          Some(LuaVal::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+          _ => None,
+        };
+
+        let (ctx_rule_name, ctx_rule_id, ctx_step_num) = {
+          let mut r_name = None;
+          let mut r_id = String::new();
+          let mut s_num = 0usize;
+          if let LuaVal::String(s) = env.borrow().get("current_rule_name") {
+            if !s.trim().is_empty() {
+              r_name = Some(s.trim().to_string());
+            }
+          }
+          if let LuaVal::Table(ctx_tbl) = env.borrow().get("ctx") {
+            let cb = ctx_tbl.borrow();
+            if r_name.is_none() {
+              if let Some(LuaVal::String(s)) = cb.get("_current_rule_name") {
+                if !s.trim().is_empty() {
+                  r_name = Some(s.trim().to_string());
+                }
+              }
+            }
+            if let Some(LuaVal::String(s)) = cb.get("_current_rule_id") {
+              r_id = s.trim().to_string();
+            }
+            if let Some(LuaVal::Number(n)) = cb.get("_current_step_num") {
+              if *n > 0.0 {
+                s_num = *n as usize;
+              }
+            }
+          }
+          if r_name.is_none() || r_id.is_empty() {
+            if let LuaVal::Table(meta_tbl) = env.borrow().get("meta") {
+              let mb = meta_tbl.borrow();
+              if r_name.is_none() {
+                if let Some(LuaVal::String(s)) = mb.get("name") {
+                  if !s.trim().is_empty() {
+                    r_name = Some(s.trim().to_string());
+                  }
+                }
+              }
+              if r_id.is_empty() {
+                if let Some(LuaVal::String(s)) = mb.get("id") {
+                  r_id = s.trim().to_string();
+                }
+              }
+            }
+          }
+          (
+            r_name.unwrap_or_else(|| "default".to_string()),
+            r_id,
+            s_num,
+          )
+        };
+        let reason = reason_arg.unwrap_or(ctx_rule_name);
+
+        let bounds_tbl = match env.borrow().get("bounds") {
+          LuaVal::Table(t) => t,
+          _ => {
+            let t = Rc::new(RefCell::new(HashMap::new()));
+            env.borrow_mut().set("bounds", LuaVal::Table(t.clone()));
+            t
+          }
+        };
+        if bounds_tbl.borrow().len() >= MAX_LUA_TABLE_ENTRIES
+          && !bounds_tbl.borrow().contains_key(&key)
+        {
+          return Err(format!(
+            "[Lua Sandbox Security Violation] bounds table exceeded maximum size ({} entries).",
+            MAX_LUA_TABLE_ENTRIES
+          ));
+        }
+
+        let entry_tbl = {
+          let existing = bounds_tbl.borrow().get(&key).cloned();
+          match existing {
+            Some(LuaVal::Table(t)) => t,
+            _ => {
+              let mut init_map = HashMap::new();
+              init_map.insert("min".to_string(), LuaVal::Number(f64::NEG_INFINITY));
+              init_map.insert("max".to_string(), LuaVal::Number(f64::INFINITY));
+              init_map.insert("min_by".to_string(), LuaVal::String("default".to_string()));
+              init_map.insert("max_by".to_string(), LuaVal::String("default".to_string()));
+              let t = Rc::new(RefCell::new(init_map));
+              bounds_tbl
+                .borrow_mut()
+                .insert(key.clone(), LuaVal::Table(t.clone()));
+              t
+            }
+          }
+        };
+
+        {
+          let mut eb = entry_tbl.borrow_mut();
+          let cur_min = match eb.get("min") {
+            Some(LuaVal::Number(n)) if !n.is_nan() => *n,
+            Some(LuaVal::String(s)) => s.trim().parse::<f64>().unwrap_or(f64::NEG_INFINITY),
+            _ => f64::NEG_INFINITY,
+          };
+          let cur_max = match eb.get("max") {
+            Some(LuaVal::Number(n)) if !n.is_nan() => *n,
+            Some(LuaVal::String(s)) => s.trim().parse::<f64>().unwrap_or(f64::INFINITY),
+            _ => f64::INFINITY,
+          };
+          if !eb.contains_key("min") || matches!(eb.get("min"), Some(LuaVal::Nil)) {
+            eb.insert("min".to_string(), LuaVal::Number(cur_min));
+          }
+          if !eb.contains_key("max") || matches!(eb.get("max"), Some(LuaVal::Nil)) {
+            eb.insert("max".to_string(), LuaVal::Number(cur_max));
+          }
+
+          if let Some(mv) = min_v {
+            if mv > cur_min {
+              eb.insert("min".to_string(), LuaVal::Number(mv));
+              eb.insert("min_by".to_string(), LuaVal::String(reason.clone()));
+              if !ctx_rule_id.is_empty() {
+                eb.insert(
+                  "min_rule_id".to_string(),
+                  LuaVal::String(ctx_rule_id.clone()),
+                );
+              }
+              if ctx_step_num > 0 {
+                eb.insert("min_step".to_string(), LuaVal::Number(ctx_step_num as f64));
+              }
+            }
+          }
+          if let Some(xv) = max_v {
+            if xv < cur_max {
+              eb.insert("max".to_string(), LuaVal::Number(xv));
+              eb.insert("max_by".to_string(), LuaVal::String(reason));
+              if !ctx_rule_id.is_empty() {
+                eb.insert("max_rule_id".to_string(), LuaVal::String(ctx_rule_id));
+              }
+              if ctx_step_num > 0 {
+                eb.insert("max_step".to_string(), LuaVal::Number(ctx_step_num as f64));
+              }
+            }
+          }
+        }
+
+        if let LuaVal::Table(cfg_tbl) = env.borrow().get("config") {
+          cfg_tbl
+            .borrow_mut()
+            .insert("_bounds".to_string(), LuaVal::Table(bounds_tbl));
+        }
+
+        Ok(LuaVal::Table(entry_tbl))
       }
       "table.insert" => {
         if let Some(LuaVal::Table(t)) = args.get(0) {
@@ -2954,6 +3143,27 @@ pub fn execute_transformation_lua_with_params(
   let lua_config = LuaVal::from_json(config);
   let lua_context = LuaVal::from_json(context);
 
+  // Link `bounds` global to `config["_bounds"]` (normalizing unbounded nil endpoints back to ±math.huge).
+  if let LuaVal::Table(cfg_tbl) = &lua_config {
+    let existing_bounds = cfg_tbl.borrow().get("_bounds").cloned();
+    if let Some(LuaVal::Table(b_tbl)) = existing_bounds {
+      for v in b_tbl.borrow().values() {
+        if let LuaVal::Table(eb) = v {
+          let mut eb_mut = eb.borrow_mut();
+          if !eb_mut.contains_key("min") || matches!(eb_mut.get("min"), Some(LuaVal::Nil)) {
+            eb_mut.insert("min".to_string(), LuaVal::Number(f64::NEG_INFINITY));
+          }
+          if !eb_mut.contains_key("max") || matches!(eb_mut.get("max"), Some(LuaVal::Nil)) {
+            eb_mut.insert("max".to_string(), LuaVal::Number(f64::INFINITY));
+          }
+        }
+      }
+      env
+        .borrow_mut()
+        .set_local("bounds", LuaVal::Table(b_tbl.clone()));
+    }
+  }
+
   let mut params_map = HashMap::new();
   for (k, v) in &validated_params {
     params_map.insert(k.clone(), LuaVal::String(v.clone()));
@@ -2984,6 +3194,15 @@ pub fn execute_transformation_lua_with_params(
       vec![lua_config.clone(), lua_context, lua_params],
       env.clone(),
     )?;
+  }
+
+  if let (LuaVal::Table(cfg_tbl), LuaVal::Table(b_tbl)) = (&lua_config, env.borrow().get("bounds"))
+  {
+    if !b_tbl.borrow().is_empty() {
+      cfg_tbl
+        .borrow_mut()
+        .insert("_bounds".to_string(), LuaVal::Table(b_tbl));
+    }
   }
 
   let mut resulting_config = lua_config.to_json();

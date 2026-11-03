@@ -52,6 +52,7 @@ function apply(config, ctx)
     }
     local temp_keys = { "nozzle_temperature", "nozzle_temperature_initial_layer", "nozzle_temperature_HS", "nozzle_temperature_initial_layer_HS" }
     for _, key in ipairs(temp_keys) do
+      constrain(key, 175, hotend_ceiling, "DiamondBack + FlowTech 300C thermal ceiling")
       if config[key] then
         config[key] = map_num(config[key], function(t0)
           return clamp(t0 + pwl(t0, pcd_temp_pwl), 175, hotend_ceiling)
@@ -64,6 +65,7 @@ function apply(config, ctx)
     --    normalization leaves low-flow matte/CF calibrations (f0 <= 0.90) virtually untouched
     --    and only trims glossy high-flow profiles (f0 ~ 0.96-1.00) by up to ~1.2%. Output band
     --    [0.900, 1.050] matches the app-wide flow sanity band (audit + pipeline-A clamp).
+    constrain("filament_flow_ratio", 0.85, 1.08, "PCD capillary flow bounds")
     if config["filament_flow_ratio"] then
       local orifice_factor = math.sqrt(0.4 / math.max(d, 0.2))
       config["filament_flow_ratio"] = map_num(config["filament_flow_ratio"], function(f0)
@@ -72,6 +74,9 @@ function apply(config, ctx)
         return clamp(f0 * (1.0 - trim), 0.900, 1.050)
       end, "%.3f")
     end
+
+    local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
+    constrain("filament_z_hop", cur_zhop > 0 and 0.10 or 0.0, math.max(0.25, d * 0.65), "Orifice-scaled Z-hop envelope")
 
     local new_temp = scalar_num(config["nozzle_temperature"], cur_temp)
     print("[ThermalConductivity] MicroSwiss Diamondback PCD (543 W/mK): nozzle_type=brass + nozzle_hrc=68, PWL temp curve -5..-11C by base (-> " .. tostring(new_temp) .. "C), quadratic die-swell flow trim <= 1.2%")

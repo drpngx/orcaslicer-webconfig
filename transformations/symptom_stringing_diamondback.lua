@@ -81,11 +81,13 @@ function apply(config, ctx)
   --    Ceiling max(z0 + 0.04, 0.65*d) guarantees a small-orifice spool's existing z0 is never
   --    REDUCED by an anti-stringing rule.
   if config["filament_z_hop"] then
+    local z0_ref = scalar_num(config["filament_z_hop"], 0.15)
     local hop_bump = 0.02 + 0.05 * ((d / 0.4) ^ 1.15)
     config["filament_z_hop"] = map_num(config["filament_z_hop"], function(z0)
       local max_hop = math.max(z0 + 0.04, d * 0.65)
       return clamp(z0 + hop_bump, 0.12, max_hop)
     end, "%.2f")
+    constrain("filament_z_hop", z0_ref > 0 and 0.10 or 0.0, math.max(z0_ref + 0.04, d * 0.65), "Orifice-scaled Z-hop envelope")
   end
   config["filament_z_hop_types"] = { "Spiral Lift" }
 
@@ -98,6 +100,7 @@ function apply(config, ctx)
   local ta_floor = scalar_num(ctx.travel_accel_floor_mm2, 9000)
   local a_new = a0 + 0.35 * math.max(0, ta_target - a0)
   config["travel_acceleration"] = tostring(math.floor(math.max(a_new, ta_floor)))
+  constrain("travel_acceleration", ta_floor, math.max(15000, a0), "Printer kinematics travel acceleration envelope")
 
   -- 6. Mechanical inward wipe before the travel move shears the strand off the tip.
   config["wipe_on_loops"] = "1"
