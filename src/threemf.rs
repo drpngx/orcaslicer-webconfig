@@ -251,6 +251,79 @@ pub const FILAMENT_SETTING_KEYS: &[&str] = &[
   "textured_plate_temp_initial_layer",
 ];
 
+/// Returns `true` if `key` belongs to OrcaSlicer's **Filament** scope (per-extruder / per-slot
+/// vector in `project_settings.config` and standalone `filament/*.json` presets).
+/// Filament-scoped keys must NEVER be emitted into Process (`process/*.json`,
+/// `different_settings_to_system[0]`) or Machine (`machine/*.json`,
+/// `different_settings_to_system[N+1]`) presets.
+pub fn is_filament_scoped_key(key: &str) -> bool {
+  if FILAMENT_SETTING_KEYS.contains(&key) {
+    return true;
+  }
+  key.starts_with("filament_")
+    || key.starts_with("nozzle_temperature")
+    || key.ends_with("_plate_temp")
+    || key.ends_with("_plate_temp_initial_layer")
+    || key.starts_with("fan_min_speed")
+    || key.starts_with("fan_max_speed")
+    || matches!(
+      key,
+      "overhang_fan_speed"
+        | "overhang_fan_threshold"
+        | "enable_overhang_bridge_fan"
+        | "close_fan_the_first_x_layers"
+        | "slow_down_layer_time"
+        | "slow_down_min_speed"
+        | "slow_down_for_layer_cooling"
+        | "additional_cooling_fan_speed"
+        | "during_print_exhaust_fan_speed"
+        | "complete_print_exhaust_fan_speed"
+        | "chamber_fan_speed"
+        | "chamber_temperature"
+        | "reduce_fan_stop_start_freq"
+        | "fan_cooling_layer_time"
+        | "pressure_advance"
+        | "enable_pressure_advance"
+        | "temperature_vitrification"
+        | "required_nozzle_HRC"
+        | "default_filament_colour"
+    )
+}
+
+/// Returns `true` if `key` belongs to OrcaSlicer's **Machine** scope (`machine/*.json` and
+/// `different_settings_to_system[N+1]`). Machine-scoped keys must NEVER be emitted into Process
+/// (`process/*.json`, `different_settings_to_system[0]`) or Filament (`filament/*.json`) presets.
+pub fn is_machine_scoped_key(key: &str) -> bool {
+  matches!(
+    key,
+    "nozzle_type"
+      | "nozzle_hrc"
+      | "nozzle_diameter"
+      | "retraction_length"
+      | "retraction_speed"
+      | "retraction_distances_when_cut"
+      | "deretraction_speed"
+      | "retract_before_wipe"
+      | "retract_restart_extra"
+      | "retraction_minimum_travel"
+      | "z_hop"
+      | "z_hop_types"
+      | "wipe"
+      | "wipe_distance"
+      | "printer_notes"
+      | "printable_area"
+      | "printable_height"
+      | "before_layer_change_gcode"
+      | "change_filament_gcode"
+      | "machine_end_gcode"
+      | "machine_start_gcode"
+      | "layer_change_gcode"
+      | "time_lapse_gcode"
+      | "machine_pause_gcode"
+  ) || key.starts_with("machine_")
+    || key.starts_with("extruder_")
+}
+
 fn first_str_from_map(
   map: &serde_json::Map<String, serde_json::Value>,
   key: &str,
@@ -1122,7 +1195,7 @@ pub fn resolve_effective_orca_profile_values(
   };
 
   for (k, v) in derived_overrides {
-    if k.starts_with('_') {
+    if k.starts_with('_') || is_filament_scoped_key(k) {
       continue;
     }
     // Do not let single-process/single-filament speed caps from `derived_overrides` overwrite
@@ -1334,7 +1407,6 @@ pub const EXTRA_PROCESS_OVERRIDE_KEYS: &[&str] = &[
   "overhang_2_4_speed",
   "overhang_3_4_speed",
   "overhang_4_4_speed",
-  "overhang_fan_speed",
   "wall_loops",
   "alternate_extra_wall",
   "top_shell_layers",
@@ -1393,7 +1465,9 @@ pub fn build_process_preset_json(
         | "notes"
         | "version"
         | "filename_format"
-    ) {
+    ) || is_filament_scoped_key(k)
+      || is_machine_scoped_key(k)
+    {
       continue;
     }
     if let Some(eff_val) = effective.get(k) {
@@ -1437,6 +1511,9 @@ pub fn build_process_preset_json(
     .and_then(|v| v.as_str())
     .map(|s| s.split(';').filter(|k| !k.is_empty()).collect());
   for &extra_key in EXTRA_PROCESS_OVERRIDE_KEYS {
+    if is_filament_scoped_key(extra_key) || is_machine_scoped_key(extra_key) {
+      continue;
+    }
     let is_touched = match &lua_touched_set {
       Some(set) => set.contains(extra_key),
       None => derived_overrides.contains_key(extra_key),
@@ -1754,7 +1831,9 @@ pub fn build_project_settings_config_json(
         | "notes"
         | "version"
         | "filename_format"
-    ) {
+    ) || is_filament_scoped_key(k)
+      || is_machine_scoped_key(k)
+    {
       continue;
     }
     if let Some(eff_val) = effective.get(k) {
@@ -1799,6 +1878,9 @@ pub fn build_project_settings_config_json(
     .and_then(|v| v.as_str())
     .map(|s| s.split(';').filter(|k| !k.is_empty()).collect());
   for &extra_key in EXTRA_PROCESS_OVERRIDE_KEYS {
+    if is_filament_scoped_key(extra_key) || is_machine_scoped_key(extra_key) {
+      continue;
+    }
     let is_touched = match &lua_touched_set {
       Some(set) => set.contains(extra_key),
       None => derived_overrides.contains_key(extra_key),
@@ -2058,6 +2140,18 @@ pub fn verify_project_settings_matches_standalone_presets(
     if is_ignored_meta_key(k) {
       continue;
     }
+    if is_filament_scoped_key(k) {
+      errors.push(format!(
+        "Process preset leaked filament-scoped key '{}' ({:?})",
+        k, v
+      ));
+    }
+    if is_machine_scoped_key(k) {
+      errors.push(format!(
+        "Process preset leaked machine-scoped key '{}' ({:?})",
+        k, v
+      ));
+    }
     if !proc_diff.contains(k) {
       errors.push(format!(
         "Process key '{}' is in standalone process .json ({:?}) but missing from different_settings_to_system[0]",
@@ -2076,6 +2170,18 @@ pub fn verify_project_settings_matches_standalone_presets(
     if is_ignored_meta_key(k) {
       continue;
     }
+    if is_filament_scoped_key(k) {
+      errors.push(format!(
+        "different_settings_to_system[0] (Process) leaked filament-scoped key '{}'",
+        k
+      ));
+    }
+    if is_machine_scoped_key(k) {
+      errors.push(format!(
+        "different_settings_to_system[0] (Process) leaked machine-scoped key '{}'",
+        k
+      ));
+    }
     match (proc_obj.get(k), proj_obj.get(k)) {
       (Some(dv), Some(pv)) if dv == pv => {}
       (dv, pv) => errors.push(format!(
@@ -2090,6 +2196,12 @@ pub fn verify_project_settings_matches_standalone_presets(
   for (k, v) in &mach_obj {
     if is_ignored_meta_key(k) {
       continue;
+    }
+    if is_filament_scoped_key(k) {
+      errors.push(format!(
+        "Machine preset leaked filament-scoped key '{}' ({:?})",
+        k, v
+      ));
     }
     if !mach_diff.contains(k) {
       errors.push(format!(
@@ -2110,6 +2222,13 @@ pub fn verify_project_settings_matches_standalone_presets(
   for k in mach_diff {
     if is_ignored_meta_key(k) {
       continue;
+    }
+    if is_filament_scoped_key(k) {
+      errors.push(format!(
+        "different_settings_to_system[{}] (Machine) leaked filament-scoped key '{}'",
+        slot_ids.len() + 1,
+        k
+      ));
     }
     match (mach_obj.get(k), proj_obj.get(k)) {
       (Some(dv), Some(pv)) if dv == pv => {}
@@ -2151,6 +2270,15 @@ pub fn verify_project_settings_matches_standalone_presets(
     for (k, v) in &fil_obj {
       if is_ignored_meta_key(k) {
         continue;
+      }
+      if !is_filament_scoped_key(k) {
+        errors.push(format!(
+          "Slot {} ({}) filament preset leaked non-filament key '{}' ({:?})",
+          slot_idx + 1,
+          fid,
+          k,
+          v
+        ));
       }
       if !fil_diff.contains(k) {
         errors.push(format!(
@@ -3046,5 +3174,117 @@ end
     assert_eq!(p_028_spd["top_shell_thickness"], serde_json::json!("1.68"));
     assert_eq!(p_028_spd["outer_wall_speed"], serde_json::json!("188"));
     assert_eq!(p_028_spd["sparse_infill_speed"], serde_json::json!("256"));
+  }
+
+  #[test]
+  fn test_filament_process_machine_scope_isolation_and_heterogeneous_slots() {
+    let catalog = crate::catalog::load_merged_catalog();
+    let mut rig = MachineRig::kobra_s1_hardened_steel_png();
+    rig.nozzle_type = "diamondback".to_string();
+    rig.nozzle_material = "diamond".to_string();
+    rig.hotend = "FlowTech (All-Metal)".to_string();
+    rig.melt_zone_multiplier = 1.35;
+
+    let proc = ProcessProfile::get_default_processes().remove(0);
+
+    // Build a heterogeneous 4-slot ACE Pro loadout: PLA, PETG, ASA, TPU for AMS
+    let mut spools = Vec::new();
+    for (idx, code) in ["PLA", "PETG", "ASA", "TPU for AMS"].iter().enumerate() {
+      let entry = catalog
+        .filaments
+        .iter()
+        .find(|f| f.code == *code)
+        .unwrap_or_else(|| panic!("Missing {} in catalog", code));
+      let mut sp = FilamentSpool::from_catalog_entry(idx + 1, entry, "diamondback");
+      sp.id = format!("slot_{}", idx + 1);
+      spools.push(sp);
+    }
+
+    // Simulate a Lua evaluation output containing mixed Process, Machine, and Filament keys
+    // (including `overhang_fan_speed` from `bridge_overhang_tuning` and `nozzle_temperature` /
+    // `filament_retraction_length` from `thermal_conductivity` + `symptom_stringing_diamondback`).
+    let mut mixed_overrides = serde_json::Map::new();
+    mixed_overrides.insert("nozzle_temperature".to_string(), serde_json::json!(["202"]));
+    mixed_overrides.insert(
+      "nozzle_temperature_initial_layer".to_string(),
+      serde_json::json!(["212"]),
+    );
+    mixed_overrides.insert("hot_plate_temp".to_string(), serde_json::json!(["60"]));
+    mixed_overrides.insert("chamber_temperature".to_string(), serde_json::json!(["45"]));
+    mixed_overrides.insert(
+      "filament_retraction_length".to_string(),
+      serde_json::json!(["0.50"]),
+    );
+    mixed_overrides.insert(
+      "filament_retraction_speed".to_string(),
+      serde_json::json!(["44"]),
+    );
+    mixed_overrides.insert("filament_z_hop".to_string(), serde_json::json!(["0.15"]));
+    mixed_overrides.insert("overhang_fan_speed".to_string(), serde_json::json!("100"));
+    mixed_overrides.insert("bridge_flow".to_string(), serde_json::json!("0.92"));
+    mixed_overrides.insert("bridge_speed".to_string(), serde_json::json!("28"));
+    mixed_overrides.insert("overhang_4_4_speed".to_string(), serde_json::json!("15"));
+    mixed_overrides.insert(
+      "_lua_touched_keys".to_string(),
+      serde_json::json!(
+        "nozzle_temperature;filament_retraction_length;overhang_fan_speed;bridge_flow;bridge_speed;overhang_4_4_speed"
+      ),
+    );
+
+    let proc_json = build_process_preset_json(&proc, &rig, &mixed_overrides);
+    let proc_val: serde_json::Value = serde_json::from_str(&proc_json).unwrap();
+    let proc_obj = proc_val.as_object().unwrap();
+
+    // 1. Process preset keeps true Process keys (`bridge_flow`, `bridge_speed`, `overhang_4_4_speed`)
+    //    and rejects ALL Filament-scoped and Machine-scoped keys (`overhang_fan_speed`, `nozzle_temperature`, etc.)
+    assert_eq!(proc_obj.get("bridge_flow"), Some(&serde_json::json!("0.92")));
+    assert_eq!(proc_obj.get("bridge_speed"), Some(&serde_json::json!("28")));
+    assert_eq!(
+      proc_obj.get("overhang_4_4_speed"),
+      Some(&serde_json::json!("15"))
+    );
+    for k in proc_obj.keys() {
+      assert!(
+        !is_filament_scoped_key(k),
+        "Process preset must NEVER contain filament-scoped key '{}'",
+        k
+      );
+      assert!(
+        !is_machine_scoped_key(k),
+        "Process preset must NEVER contain machine-scoped key '{}'",
+        k
+      );
+    }
+
+    // 2. Machine preset contains zero Filament-scoped keys
+    let mach_json = build_machine_preset_json_with_overrides(&rig, Some(&mixed_overrides));
+    let mach_val: serde_json::Value = serde_json::from_str(&mach_json).unwrap();
+    let mach_obj = mach_val.as_object().unwrap();
+    for k in mach_obj.keys() {
+      assert!(
+        !is_filament_scoped_key(k),
+        "Machine preset must NEVER contain filament-scoped key '{}'",
+        k
+      );
+    }
+
+    // 3. 3MF `project_settings.config` evaluates each slot independently via the per-spool Lua pipeline
+    //    without Slot 1's PLA `nozzle_temperature` (202°C) overwriting Slot 2 (PETG) or Slot 3 (ASA)!
+    let flush_matrix = vec!["0".to_string(); 16];
+    let proj_json =
+      build_project_settings_config_json(&rig, &proc, &spools, &flush_matrix, &mixed_overrides);
+    let proj_val: serde_json::Value = serde_json::from_str(&proj_json).unwrap();
+    let noz_temps = proj_val["nozzle_temperature"].as_array().unwrap();
+    assert_eq!(noz_temps.len(), 4);
+    let pla_t: i32 = noz_temps[0].as_str().unwrap().parse().unwrap();
+    let petg_t: i32 = noz_temps[1].as_str().unwrap().parse().unwrap();
+    let asa_t: i32 = noz_temps[2].as_str().unwrap().parse().unwrap();
+    assert!(
+      pla_t < petg_t && petg_t < asa_t,
+      "Expected independent per-slot DiamondBack temperatures PLA ({}°C) < PETG ({}°C) < ASA ({}°C)",
+      pla_t,
+      petg_t,
+      asa_t
+    );
   }
 }

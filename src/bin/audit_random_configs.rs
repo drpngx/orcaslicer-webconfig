@@ -1373,6 +1373,18 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
             ) {
               continue;
             }
+            if orcaslicer_webconfig::threemf::is_filament_scoped_key(k) {
+              cfg_failures.push(format!(
+                "[{}] Process '{}' leaked filament-scoped key '{}'={:?}!",
+                cfg_name, proc_id, k, v
+              ));
+            }
+            if orcaslicer_webconfig::threemf::is_machine_scoped_key(k) {
+              cfg_failures.push(format!(
+                "[{}] Process '{}' leaked machine-scoped key '{}'={:?}!",
+                cfg_name, proc_id, k, v
+              ));
+            }
             if !proc_diff_set.contains(k.as_str()) {
               cfg_failures.push(format!(
                 "[{}] Process '{}' disk key '{}' is MISSING from different_settings_to_system[0]!",
@@ -1430,6 +1442,12 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
                 | "version"
             ) {
               continue;
+            }
+            if orcaslicer_webconfig::threemf::is_filament_scoped_key(k) {
+              cfg_failures.push(format!(
+                "[{}] Machine '{}' leaked filament-scoped key '{}'={:?}!",
+                cfg_name, mach_id, k, v
+              ));
             }
             if !mach_diff_set.contains(k.as_str()) {
               cfg_failures.push(format!(
