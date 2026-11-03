@@ -637,10 +637,7 @@ async fn api_local_slicer_save(Json(req): Json<LocalFsSaveRequest>) -> impl Into
           .next()
           .unwrap_or(&file_item.content)
           .trim();
-        if let (
-          Ok(serde_json::Value::Object(mut ex_map)),
-          Ok(serde_json::Value::Object(in_map)),
-        ) = (
+        if let (Ok(serde_json::Value::Object(mut ex_map)), Ok(serde_json::Value::Object(in_map))) = (
           serde_json::from_str::<serde_json::Value>(ex_json_part),
           serde_json::from_str::<serde_json::Value>(in_json_part),
         ) {
@@ -1128,10 +1125,7 @@ fn server_base64_decode(input: &str) -> Option<Vec<u8>> {
   for (i, &b) in TABLE.iter().enumerate() {
     lut[b as usize] = i as u8;
   }
-  let clean: Vec<u8> = input
-    .bytes()
-    .filter(|b| !b.is_ascii_whitespace())
-    .collect();
+  let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
   if clean.is_empty() || clean.len() % 4 != 0 {
     return None;
   }
@@ -1178,7 +1172,13 @@ fn server_decode_anycubic_obfuscated_str(encoded: &str) -> Option<String> {
   let pass2_raw = server_base64_decode(pass1_str)?;
   let pass2_shifted: Vec<u8> = pass2_raw.into_iter().map(|b| b.wrapping_sub(5)).collect();
   let plain = String::from_utf8(pass2_shifted).ok()?;
-  Some(plain.trim().trim_matches('"').trim_matches('\'').to_string())
+  Some(
+    plain
+      .trim()
+      .trim_matches('"')
+      .trim_matches('\'')
+      .to_string(),
+  )
 }
 
 fn server_infer_material(profile_name: &str) -> String {
@@ -1285,20 +1285,19 @@ fn server_sniff_conf_text(conf_text: &str) -> Result<AnycubicSniffedPrinterState
         .filter(|n| n.starts_with("OC -") || n.starts_with("OC:"))
         .count();
       let is_exact_active = !active_machine_preset.is_empty() && mach == active_machine_preset;
-      let priority =
-        if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC")) {
-          40 + oc_fil_count
-        } else if is_exact_active && oc_fil_count > 0 {
-          30 + oc_fil_count
-        } else if is_exact_active {
-          20
-        } else if (mach.contains("Kobra S1") || mach.starts_with("OC")) && oc_fil_count > 0 {
-          15 + oc_fil_count
-        } else if mach.contains("Kobra S1") {
-          10
-        } else {
-          0
-        };
+      let priority = if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC")) {
+        40 + oc_fil_count
+      } else if is_exact_active && oc_fil_count > 0 {
+        30 + oc_fil_count
+      } else if is_exact_active {
+        20
+      } else if (mach.contains("Kobra S1") || mach.starts_with("OC")) && oc_fil_count > 0 {
+        15 + oc_fil_count
+      } else if mach.contains("Kobra S1") {
+        10
+      } else {
+        0
+      };
       if priority > best_priority && !f_names.is_empty() {
         best_priority = priority;
         if active_machine_preset.is_empty() {
@@ -1324,10 +1323,13 @@ fn server_sniff_conf_text(conf_text: &str) -> Result<AnycubicSniffedPrinterState
   ];
   let mut slots = Vec::new();
   for (idx, prof_name) in slot_names.iter().enumerate() {
-    let color_hex = slot_colors
-      .get(idx)
-      .cloned()
-      .unwrap_or_else(|| default_colors.get(idx).copied().unwrap_or("#3B82F6").to_string());
+    let color_hex = slot_colors.get(idx).cloned().unwrap_or_else(|| {
+      default_colors
+        .get(idx)
+        .copied()
+        .unwrap_or("#3B82F6")
+        .to_string()
+    });
     slots.push(AnycubicAceSlotInfo {
       slot_index: idx + 1,
       profile_name: prof_name.clone(),
@@ -1409,7 +1411,10 @@ async fn api_anycubic_auto_discover(
   let lan_trimmed = req.lan_printer_url.trim();
   if !lan_trimmed.is_empty() && lan_trimmed != "http://192.168.1.100:7125" {
     let base_lan = normalize_http_base_url(lan_trimmed, "http://192.168.1.100:7125");
-    let probe_url = format!("{}/printer/objects/query?ace&extruder&heater_bed&print_stats", base_lan);
+    let probe_url = format!(
+      "{}/printer/objects/query?ace&extruder&heater_bed&print_stats",
+      base_lan
+    );
     if let Ok((status, body_text)) = hyper_request_json(Method::GET, &probe_url, None).await {
       if status.is_success() {
         sniffed.lan_rinkhals_reachable = true;
@@ -1477,9 +1482,7 @@ async fn api_anycubic_auto_discover(
   with_cors(res)
 }
 
-async fn api_anycubic_push_slots(
-  Json(req): Json<AnycubicPushSlotsRequest>,
-) -> impl IntoResponse {
+async fn api_anycubic_push_slots(Json(req): Json<AnycubicPushSlotsRequest>) -> impl IntoResponse {
   let cfg = load_local_slicer_config();
   let mut status_parts: Vec<String> = Vec::new();
   let mut ok = false;
@@ -1528,7 +1531,10 @@ async fn api_anycubic_push_slots(
             "filament_06",
             "filament_07",
           ];
-          if let Some(arr) = val.get_mut("anycubic_presets").and_then(|a| a.as_array_mut()) {
+          if let Some(arr) = val
+            .get_mut("anycubic_presets")
+            .and_then(|a| a.as_array_mut())
+          {
             for preset in arr.iter_mut() {
               let mach = preset
                 .get("machine")
@@ -1542,7 +1548,10 @@ async fn api_anycubic_push_slots(
                 if let Some(obj) = preset.as_object_mut() {
                   for (i, key) in keys.iter().enumerate() {
                     if let Some(p_name) = req.slot_profile_names.get(i) {
-                      obj.insert((*key).to_string(), serde_json::Value::String(p_name.clone()));
+                      obj.insert(
+                        (*key).to_string(),
+                        serde_json::Value::String(p_name.clone()),
+                      );
                     } else {
                       obj.remove(*key);
                     }
@@ -1662,7 +1671,9 @@ fn is_allowed_preset_deletion_target(rel: &str) -> bool {
     return false;
   };
   let fname = subpath.rsplit('/').next().unwrap_or("");
-  (subpath.starts_with("machine/") || subpath.starts_with("process/") || subpath.starts_with("filament/"))
+  (subpath.starts_with("machine/")
+    || subpath.starts_with("process/")
+    || subpath.starts_with("filament/"))
     && !subpath.contains("/base/")
     && fname.starts_with("OC")
     && (fname.ends_with(".json") || fname.ends_with(".info"))
@@ -1680,13 +1691,21 @@ mod tests {
     assert!(allowed(
       "user/default/filament/OC - PETG • 0.4 Hardened.json"
     ));
-    assert!(allowed("user/434139/process/OC - 0.20mm Standard @Kobra S1.json"));
-    assert!(allowed("user/434139/machine/OC - Kobra S1 • 0.4 Hardened.info"));
+    assert!(allowed(
+      "user/434139/process/OC - 0.20mm Standard @Kobra S1.json"
+    ));
+    assert!(allowed(
+      "user/434139/machine/OC - Kobra S1 • 0.4 Hardened.info"
+    ));
 
     // User/slicer-created presets are never deletable.
-    assert!(!allowed("user/434139/machine/Anycubic Kobra S1 0.4 nozzle - png.json"));
+    assert!(!allowed(
+      "user/434139/machine/Anycubic Kobra S1 0.4 nozzle - png.json"
+    ));
     assert!(!allowed("user/434139/filament/Anycubic PETG - hotbed.json"));
-    assert!(!allowed("user/434139/filament/base/CHCKX PETG PCTG @Anycubic Kobra S1 0.4 nozzle.json"));
+    assert!(!allowed(
+      "user/434139/filament/base/CHCKX PETG PCTG @Anycubic Kobra S1 0.4 nozzle.json"
+    ));
     // Wrong location / traversal / arbitrary files are rejected.
     assert!(!allowed("AnycubicSlicerNext.conf"));
     assert!(!allowed("user/434139/OC - evil.json"));

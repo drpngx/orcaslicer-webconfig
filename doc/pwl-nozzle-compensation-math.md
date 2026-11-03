@@ -1,0 +1,290 @@
+# Composable PWL nozzle compensation — the mathematics
+
+How the MicroSwiss FlowTech / Diamondback (PCD) nozzle rules compute their values: the
+relative piecewise-linear (PWL) curve mathematics, the Rust-provided helper surface the Lua
+rules are written against, the verified per-polymer computation matrix, and how the computed
+values reach the exported presets. Written 2026-11-03.
+
+The matrix in §6 is asserted by
+`lua_engine::tests::test_diamondback_pwl_compensation_chain_matrix`, and the headline export
+values by `test_diamondback_pwl_wiring_ships_rule_values_to_exports`, so this document and
+the engine cannot silently drift apart.
+
+## 1. Model: relative PWL curves, evaluated per spool
+
+Every nozzle rule is a **strictly relative, monotonic function** over its incoming value:
+`x_k = f_k(x_{k-1}, d)`, where `x_0` is the spool's brass baseline and `d` is the nozzle
+orifice diameter (0.25 / 0.4 / 0.6 / 0.8 / 1.0 mm). Rules execute in ascending priority and
+later writes win — but because every write is a function of the current value, "winning"
+means *composing on top*, never discarding the previous step. A brand that ships an unusual
+retraction or flow keeps it, transformed rather than replaced.
+
+The curves are piecewise-linear because the underlying physics is regime-based — part-cooling
+fan duty bands, viscoelastic vs elastomeric retraction, polymer glass-transition bands — with
+smooth transitions between regimes. That is exactly what a 4–5 knot PWL expresses and what a
+single offset cannot.
+
+### 1.1 Rust engine surface
+
+The curve machinery lives in the engine, not in each rule file:
+
+| Surface | Kind | Semantics |
+|---|---|---|
+| `pwl(x, pts)` | Rust-native builtin | `pts` = array of `{x, y}` pairs (any order). Knots are sorted by x, linear interpolation between neighbors, **flat extrapolation** on both ends. Returns a number. Errors on non-table / empty / non-numeric points. |
+| `clamp(x, lo, hi)` | Rust-native builtin | `min(max(x, lo), hi)` with max applied first (inverted bounds resolve to `hi`). |
+| `math.sqrt(n)` | Rust-native builtin | Standard square root; domain error on negatives. |
+| `^` operator | Rust parser/eval | Right-associative, binds tighter than unary minus (`-x^2 == -(x^2)`), unary accepted on the right (`2^-2 == 0.25`) — same precedence as real Lua. |
+| `scalar_num(val, default)` | Rust-owned Lua prelude, evaluated into every rule environment | Reads a config slot that may be `"235"` or `{"235"}` → number either way, `default` if absent/non-numeric. |
+| `map_num(tbl, fn, fmt)` | Rust-owned Lua prelude | Applies `fn` to every numeric slot of an array- or scalar-valued key, re-formats each with `string.format(fmt)` (default `"%.3f"`), passes non-numeric slots (and non-number callback results) through, **preserves the key's shape**. |
+
+### 1.2 Semantics notes
+
+- **Rounding:** `%.Nf` is round-half-to-even at exact decimal ties (245 °C base → 235.5 →
+  **236**, not 235). This matters at PWL knots.
+- **Formatted-string handoff:** rules pass values to each other as formatted strings. P25
+  reads P12's `%.2f` output, so TPU's exact P12 product 1.154 mm becomes `"1.15"` before P25
+  adds its recovery bump (computed on 1.15 → 1.16, not on 1.154). The matrix in §6 encodes
+  this semantics.
+- **Determinism:** the random-config audit maps `--seed 0` to a fixed constant and defaults
+  to a fixed seed, so audit runs are reproducible. The generated catalog selects the best
+  profile per filament code by iterating profile names in **sorted** order — equal-score ties
+  resolve alphabetically — keeping the catalog (and therefore every export) byte-reproducible
+  across generator executions.
+
+## 2. Hardware basis
+
+- Printer: **Anycubic Kobra S1** (CoreXY, direct drive, dual ACE Pro multi-material).
+- Hotend: **MicroSwiss FlowTech all-metal hotend** (unitary thermal cylinder; retractions
+  beyond ~1.2–1.5 mm pull melt into the short, sharp cold zone — heat creep — so 1.25 mm is
+  treated as the retraction ceiling everywhere below). MicroSwiss nozzles fit **only**
+  FlowTech hotends; selecting any MicroSwiss nozzle auto-installs the FlowTech add-on.
+- Nozzle: **MicroSwiss FlowTech DiamondBack** — PCD tip in a CuCrZr body, electroless nickel
+  plated. Thermal conductivity **543 W/m·K** (≈ 4.7× brass), hardness **49.8 GPa** (the
+  OrcaSlicer schema caps `nozzle_hrc` near 68, so 68 is emitted with this document as the
+  provenance), friction coefficient **0.01** (vs ≈ 0.18 for brass), rated 350 °C with a
+  **300 °C** community ceiling for the FlowTech heater assembly. Manufactured orifices
+  0.25 / 0.4 / 0.6 / 0.8 / 1.0 mm — all selectable.
+- Community calibration guidance: print ~−10 °C below brass-baseline temperatures;
+  direct-drive retraction 0.8–1.2 mm @ 25–40 mm/s; Diamondback stringing is a **temperature**
+  problem, not a retraction problem.
+
+## 3. Rule P10 — `thermal_conductivity.lua` (PCD branch), priority 10
+
+This rule owns what the nozzle *material* physics owns: the temperature curve, the die-swell
+flow trim, and the machine-level `nozzle_type = brass` / `nozzle_hrc = 68` declarations
+(PCD is non-magnetic and abrasion-proof like brass-class tooling; the slicer treats it as
+brass for filament compatibility). It deliberately does not write retraction, speed, or
+pressure advance — retraction belongs to the hotend (P12) and anti-stringing (P25) rules,
+pressure advance to the spool model's `pa_multiplier`.
+
+### 3.1 Temperature curve ΔT_PCD(T0)
+
+Brass nozzles lag the thermistor (radial gradient + tip fan cooling); PCD at 543 W/m·K is
+nearly isothermal, so the brass profile's inflation can be removed — but the size of the
+correction depends on the regime:
+
+- 190–220 °C (PLA/TPU, fans 80–100 %): full −10…−11 °C.
+- 225–250 °C (PETG/PCTG, fans 30–50 %): −10 °C (matches the community number at 235 °C).
+- 255–300 °C (ABS/ASA/PA-CF/PC, enclosed, fans 0–20 %): taper to −5 °C — inter-layer chain
+  reptation needs the enthalpy; over-cooling structural parts delaminates them.
+
+$$\Delta T_{PCD}(T_0) = \mathrm{PWL}\big(T_0;\ [(190,-8),\ (215,-11),\ (240,-10),\ (265,-7.5),\ (300,-5)]\big)$$
+$$T_1 = \mathrm{round}_{\%.0f}\big(\mathrm{clamp}(T_0 + \Delta T_{PCD}(T_0),\ 175,\ 300)\big)$$
+
+Applied independently to `nozzle_temperature`, `nozzle_temperature_initial_layer`,
+`nozzle_temperature_HS`, and `nozzle_temperature_initial_layer_HS` — each over its **own**
+base value. The 300 °C clamp doubles as the FlowTech assembly ceiling: a 300 °C PA/PC base
+lands at 294–295 °C, never above.
+
+### 3.2 Die-swell flow trim f1(f0, d)
+
+PCD's μ = 0.01 introduces partial wall slip → less die swell → marginally less delivered
+flow. The trim scales with the orifice (slip effects ∝ √(0.4/d)) and, via a quadratic in the
+flow headroom `u`, leaves pre-thinned matte/CF profiles (f0 ≈ 0.88–0.92, negligible die
+swell) virtually untouched while trimming glossy high-flow profiles (f0 ≈ 0.96–1.00) by up
+to ~1.2 %:
+
+$$u = \mathrm{clamp}\big((f_0 - 0.85)/0.15,\ 0,\ 1.2\big),\qquad \mathrm{trim} = 0.012\sqrt{0.4/\max(d,0.2)}\;u^2$$
+$$f_1 = \mathrm{clamp}\big(f_0 (1 - \mathrm{trim}),\ 0.900,\ 1.050\big)\ \ (\%.3f)$$
+
+The output band [0.900, 1.050] matches the app-wide flow sanity band.
+
+- PETG f0 = 0.960, d = 0.4: u = 0.733 → trim 0.65 % → **0.954**
+- Matte/CF f0 = 0.900, d = 0.4: u = 0.333 → trim 0.13 % → raw 0.899, clamped to **0.900**
+- PLA f0 = 0.980, d = 0.25: u = 0.867 → trim 1.14 % → **0.969** (strongest, smallest orifice)
+
+## 4. Rule P12 — `rig_addons_cooling.lua` (`flowtech_hotend` branch), priority 12
+
+This rule owns what the *hotend* owns: retraction shaping for the all-metal thermal break.
+
+### 4.1 Viscoelastic retraction length r1(r0, d)
+
+Rigid filament is a stiff piston: base 0.6–0.9 mm compresses ~10–13 % to stay clear of the
+sharp transition zone. Elastomers (r0 ≥ 1.1 mm) are a spring: the first ~0.4 mm only
+relieves axial compression, so their travel must be preserved. The molten meniscus volume
+scales with orifice area, and the linear displacement needed to evacuate it with √(d/0.4):
+
+$$r_{pwl} = \mathrm{PWL}\big(r_0;\ [(0.40,0.36),(0.80,0.70),(1.00,0.86),(1.50,1.35)]\big),\quad S_d = 0.88 + 0.12\sqrt{d/0.4}$$
+$$r_1 = \mathrm{clamp}(r_{pwl} \cdot S_d,\ 0.35,\ 1.40)\ \ (\%.2f)$$
+
+On a 0.4 nozzle (S_d = 1.0): 0.60→0.53, 0.80→0.70, 1.30→1.15. On 1.0 mm (S_d = 1.070):
+0.80→0.75. On 0.25 mm (S_d = 0.975): 0.60→0.52.
+
+### 4.2 Retraction speed s1(s0)
+
+Crisper pressure relief through the short transition for the rigid 30–44 band, a hard cap
+for hot rods — and **elastomer families skip the boost entirely** (via
+`ctx.filament_is_elastomer`), keeping their calibrated speed: AMS-grade TPU ships 35 mm/s
+and stays 35, matching the app-wide flexible-filament speed policy:
+
+$$s_1 = \mathrm{round}_{\%.0f}\big(\mathrm{PWL}(s_0;\ [(20,20),(25,26),(35,40),(40,44),(50,46)])\big)\quad(\text{rigid only})$$
+
+## 5. Rule P25 — `symptom_stringing_diamondback.lua`, priority 25
+
+Anti-stringing mitigation, composing on P10 + P12 outputs. Its PCD-friction-specific parts
+apply **only to actual PCD nozzles** (`is_pcd` gate on `ctx.nozzle_type`): the rule is
+enabled on every MicroSwiss rig for its generic writes, but a CM2/CHT copper or steel tip is
+not a near-zero-friction diamond and must not be cooled or damped as one.
+
+### 5.1 Gated temperature trim T2(T1, r1)
+
+−2 °C only in the sticky PLA/PETG band, **zero** above 248 °C (structural welds) and **zero**
+for elastomers (cooling TPU further raises viscosity exponentially until it buckles in the
+direct-drive gears). The elastomer gate is primary on `ctx.filament_is_elastomer` (derived
+in Rust from `constants.json` `hardware_limits.elastomer_family_tokens`) — every app TPU
+default ships 0.6 mm retraction, so a retraction-length heuristic alone can never identify
+an elastomer; the `(1.10 − r1)/0.25` term stays as a secondary guard for unflagged
+long-travel profiles:
+
+$$\Delta T_{str} = \mathrm{PWL}(T_1;\ [(180,-1),(202,-2),(226,-2),(248,0),(300,0)]),\qquad g_{rigid} = \mathrm{clamp}\big((1.10 - r_1)/0.25,\ 0,\ 1\big)$$
+$$T_2 = \mathrm{round}_{\%.0f}\big(\max(T_1 + \Delta T_{str}\cdot g_{rigid},\ 175)\big)$$
+
+g_rigid is 1 for rigid filaments (r1 ≤ 0.85), 0 for elastomers, linear between.
+PETG: 225→**223**. PLA: 204→**202**. ASA 258→**258**. TPU 214→**214** (gate 0).
+
+### 5.2 Retraction recovery r2(r1)
+
+A small bump helps break the low-friction meniscus, tapering to zero at the 1.25 mm
+heat-creep ceiling and clamped at 1.35:
+
+$$r_2 = \min\big(r_1 + 0.07\cdot\mathrm{clamp}((1.25 - r_1)/0.75,\ 0,\ 1),\ 1.35\big)\ \ (\%.2f)$$
+
+The headroom is normalized to [0, 1], so the bump never exceeds +0.07 mm and a rigid
+filament never ends above its brass base (the 1.0 mm draft case lands exactly on 0.80 = r0),
+while short-retraction elastomers round-trip back to ≈ their base.
+
+### 5.3 Speed damping s2(s1)
+
+With μ = 0.01 there is no wall drag to hold the melt column together — yanking at 44–50 mm/s
+snaps it and leaves a drooling droplet. Quadratic damper, floor 22; PCD-only (wall-drag
+physics) and elastomer-skipping:
+
+$$s_2 = \mathrm{round}_{\%.0f}\big(\max(22,\ s_1 - 0.018\max(0, s_1 - 25)^2)\big)$$
+
+44→**38**, 40→**36**, 26→**26**.
+
+### 5.4 Orifice-scaled Z-hop z1(z0, d) — on the per-filament key
+
+OrcaSlicer's per-filament `filament_z_hop` overrides the process-level `z_hop`, so the
+anti-stringing lift is written there (plus `filament_z_hop_types = Spiral Lift`), scaled by
+a power law in d:
+
+$$\Delta z(d) = 0.02 + 0.05\,(d/0.4)^{1.15},\qquad z_1 = \mathrm{clamp}\big(z_0 + \Delta z(d),\ 0.12,\ \max(z_0 + 0.04,\ 0.65 d)\big)$$
+
+The ceiling form is deliberate: with `max(z0 + 0.04, 0.65 d)` the rule can never ship *less*
+hop than the spool base — a plain `min(·, 0.65 d)` would reduce a small-orifice spool's
+existing z0 inside an anti-stringing rule. Examples: 0.25 mm z0 = 0.12 → **0.16** (ceiling
+binds), 0.4 mm z0 = 0.20 → **0.26** (ceiling binds), 1.0 mm z0 = 0.20 → **0.36**.
+
+### 5.5 Breakaway travel acceleration a1(a0)
+
+Snap the strand at the perimeter exit instead of dragging it: asymptotic boost toward
+12 000 mm/s² with a 9 000 floor — which always clears the export-side `< 8000 → 10000`
+clamp, so the rule's number ships verbatim:
+
+$$a_1 = \big\lfloor \max(9000,\ a_0 + 0.35\max(0, 12000 - a_0)) \big\rfloor$$
+
+10 000 → **10 700**. Plus `wipe_on_loops = 1` (mechanical shear before travel).
+
+## 6. Verified computation matrix (8 polymer/nozzle cases)
+
+Stage chain `x0 → P10 → P12 → P25`. Reproduce with
+`cargo test --lib test_diamondback_pwl_compensation_chain_matrix -- --nocapture`.
+
+| Case (d, polymer) | Stage | Temp °C | Retract mm | Speed mm/s | Flow | filament_z_hop | travel_accel |
+|---|---|---|---|---|---|---|---|
+| 0.4 PETG (235 / 0.80 @ 40 / 0.960 / 0.15) | x0 → P10 → P12 → **P25** | 235 → 225 → 225 → **223** | 0.80 → 0.80 → 0.70 → **0.75** | 40 → 40 → 44 → **38** | 0.960 → **0.954** | 0.15 → · → · → **0.22 Spiral** | **10700** |
+| 0.4 PLA (215 / 0.60 @ 35 / 0.980 / 0.10) | x0 → P10 → P12 → **P25** | 215 → 204 → 204 → **202** | 0.60 → 0.60 → 0.53 → **0.60** | 35 → 35 → 40 → **36** | 0.980 → **0.971** | 0.10 → · → **0.17** | **10700** |
+| 0.4 ASA (265 / 0.80 @ 40 / 0.930 / 0.10) | x0 → P10 → P12 → **P25** | 265 → 258 → 258 → **258** | 0.80 → 0.80 → 0.70 → **0.75** | 40 → 40 → 44 → **38** | 0.930 → **0.927** | 0.10 → · → **0.17** | **10700** |
+| 0.4 TPU 95A, long-travel brand (225 / 1.30 @ 25 / 1.000 / 0.20) | x0 → P10 → P12 → **P25** | 225 → 214 → 214 → **214** | 1.30 → 1.30 → 1.15 → **1.16** | 25 → 25 → 25 → **25** | 1.000 → **0.988** | 0.20 → · → **0.26** | **10700** |
+| 0.4 TPU 95A, app defaults (225 / 0.60 @ 35 / 0.980 / 0.20) | x0 → P10 → P12 → **P25** | 225 → 214 → 214 → **214** | 0.60 → 0.60 → 0.53 → **0.60** | 35 → 35 → 35 → **35** | 0.980 → **0.969** | 0.20 → · → **0.26** | **10700** |
+| 0.6 PA-CF (290 / 0.90 @ 35 / 0.900 / 0.15) | x0 → P10 → P12 → **P25** | 290 → 284 → 284 → **284** | 0.90 → 0.90 → 0.80 → **0.84** | 35 → 35 → 40 → **36** | 0.900 → **0.900** (raw 0.899, floor-clamped) | 0.15 → · → **0.25** | **10700** |
+| 0.25 PLA (210 / 0.60 @ 35 / 0.980 / 0.12) | x0 → P10 → P12 → **P25** | 210 → 200 → 200 → **198** | 0.60 → 0.60 → 0.52 → **0.59** | 35 → 35 → 40 → **36** | 0.980 → **0.969** | 0.12 → · → **0.16** | **10700** |
+| 1.0 PETG draft (240 / 0.80 @ 40 / 0.960 / 0.20) | x0 → P10 → P12 → **P25** | 240 → 230 → 230 → **228** | 0.80 → 0.80 → 0.75 → **0.80** | 40 → 40 → 44 → **38** | 0.960 → **0.956** | 0.20 → · → **0.36** | **10700** |
+
+Machine-verified invariants (asserted for every row): total temp drop ∈ [4, 13] °C and
+≤ 8 °C for bases ≥ 265 °C; rigid r2 ≤ r0; elastomer r2 ≥ 85 % of base and s2 = s0 exactly;
+elastomer final temp = P10 output exactly (no P25 trim); flow never increases and stays
+within [0.900, 1.050]; z1 ∈ [z0, max(z0 + 0.04, 0.65 d)]; a1 ≥ 9000.
+
+## 7. How the rule values reach the exports
+
+Both export paths (standalone filament `.json` and 3MF per-slot columns) build from one
+resolver, which runs the rule stack once **per spool**:
+
+- **Seed** = the spool's brass baseline `x_0` composed with every app-level side channel
+  *except* nozzle physics (climate deltas, structural boost, wet filament, Kobra
+  unbottleneck, brand/disk retraction), so the stack's output is the final value. A
+  hand-tuned `print_temp` (user edit or disk override) is honored as the effective baseline
+  by inverting the nozzle offset — a 268 °C PCTG spool never snaps back to the catalog
+  baseline.
+- **Rule-owned keys**: `nozzle_temperature` (+ `_BRASS`/`_HS`/initial-layer variants),
+  `filament_flow_ratio`, `filament_retraction_length`, `filament_retraction_speed`,
+  `filament_z_hop`, `filament_z_hop_types`. Each is applied only when the stack actually
+  changed the seeded value, so rigs without applicable rules keep byte-identical exports.
+- **Guards:** Siraya foaming-air and foaming-TPU spools skip the stack entirely (their
+  zero/foam-specific retraction is material physics the curves must not touch); z-hop is
+  only overridden when the base polymer z-hop is non-zero; temperatures re-clamp to the
+  polymer safe band.
+- **Policy constants** all live in `constants.json` `hardware_limits` — no inline numbers in
+  the resolver, the audit, or the Lua: `elastomer_family_tokens` +
+  `elastomer_max_retraction_speed_mms` for the flexible-family speed clamp (exported to the
+  rules as `ctx.filament_is_elastomer`), `nozzle_temp_floor_relax_c` for the approved
+  excursion below a polymer's `safe_nozzle_min_c` (the final temp clamps to floor−relax,
+  letting Anycubic PETG ship 223 while its conservative floor is 225; the initial-layer temp
+  keeps the hard floor), `hs_base_temp_delta_c` for the hardened-steel base inversion, and
+  `min_extrusion_temp_c` as the absolute floor.
+- **Process keys** (`travel_acceleration`, `wipe_on_loops`) ship through the process preset
+  builder; the a1 floor of 9000 always clears the `< 8000 → 10000` export clamp.
+- Because both paths share the resolver, standalone `.json` and 3MF per-slot parity holds by
+  construction (and each slot carries its own polymer's curve — sibling slots differ).
+
+## 8. Open follow-ups
+
+1. The **non-PCD branches** of `thermal_conductivity.lua` (MS-Brass, CM2, CHT) still write
+   absolute retraction/flow constants, which now land in exports for MicroSwiss
+   non-diamondback nozzles. Rewrite them as relative curves the way the PCD branch was.
+2. `FilamentSpool::recompute_for_nozzle()` still applies the flat `temp_offset_from_brass_c`
+   to `print_temp` (UI display + compatibility checks); exports no longer consume it. Decide
+   whether the UI should display the rule-stack value instead of the flat approximation.
+3. Machine notes / toasts quote curve ranges; once (2) is decided they can quote real
+   effective per-spool values.
+4. `filament_pctg_antistringing.lua` (priority 48, default-enabled) writes absolute
+   retraction 1.00 @ 45 / z-hop 0.10 / travel-accel 10000 for **PCTG** slots, which ships
+   and overrides the Diamondback chain for PCTG spools. Decide: rewrite it relative so the
+   PCD curves compose through it, or scope it off MicroSwiss/Diamondback rigs.
+
+## 9. Sources
+
+- MicroSwiss FlowTech DiamondBack product page (specs, fits list):
+  https://store.micro-swiss.com/products/flowtech-diamondback-nozzles
+- Prusa forum, Diamondback temperature (~−10 °C consensus):
+  https://forum.prusa3d.com/forum/english-forum-general-discussion-announcements-and-releases/anyone-try-diamondback-nozzles/paged/3
+- Prusa forum, stringing after Diamondback (temperature, not retraction):
+  https://forum.prusa3d.com/forum/original-prusa-i3-mk3s-mk3-hardware-firmware-and-software-help/stringing-after-switching-to-diamondback-nozzle
+- Direct-drive retraction guidance (0.8–1.2 mm @ 25–40 mm/s):
+  https://craftlayerindia.com/blogs/3d-printer-settings/best-retraction-distance-direct-drive
+  and https://www.3dmag.com/3d-wikipedia/3d-printer-retraction-settings-stringing-fix-guide
+- 300 °C max-temp report for the MicroSwiss collab nozzle:
+  https://www.reddit.com/r/Creality_k2/comments/1q528s0/microswiss_diamond_nozzle_above_300c
+- E3D DiamondBack (background): https://e3d-online.com/pages/diamondback-nozzles

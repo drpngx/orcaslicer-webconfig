@@ -2614,6 +2614,8 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                             {for chain.iter().map(|step_ch| {
                               let sh_badge = match step_ch.shadow_kind {
                                 Some(RuleShadowKind::Overwritten) => Some("⚡ Overwritten"),
+                                Some(RuleShadowKind::Recomputed) => Some("♻ Recomputed"),
+                                Some(RuleShadowKind::Accepted) => Some("✔ Accepted"),
                                 None => None,
                               };
                               html! {
@@ -2980,6 +2982,14 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                           let sh_tag = match ch.shadow_kind {
                             Some(RuleShadowKind::Overwritten) => Some(format!(
                               "⚡ Overwritten by Step #{}",
+                              ch.shadowed_by_step.unwrap_or(0)
+                            )),
+                            Some(RuleShadowKind::Recomputed) => Some(format!(
+                              "♻ Recomputed by Step #{}",
+                              ch.shadowed_by_step.unwrap_or(0)
+                            )),
+                            Some(RuleShadowKind::Accepted) => Some(format!(
+                              "✔ Accepted by Step #{}",
                               ch.shadowed_by_step.unwrap_or(0)
                             )),
                             None => None,

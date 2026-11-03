@@ -314,18 +314,21 @@ fn build_merged_catalog() -> CombinedCatalog {
       f.requires_hardened =
         crate::models::FilamentSpool::is_abrasive_material_or_finish(&f.code, &f.default_finish);
       if !c.is_esd_or_foaming(&f.code, &f.default_finish) {
-        f.base_nozzle_c = f
-          .base_nozzle_c
-          .clamp(poly.catalog_nozzle_bounds_c[0], poly.catalog_nozzle_bounds_c[1]);
+        f.base_nozzle_c = f.base_nozzle_c.clamp(
+          poly.catalog_nozzle_bounds_c[0],
+          poly.catalog_nozzle_bounds_c[1],
+        );
         f.base_bed_c = f
           .base_bed_c
           .clamp(poly.catalog_bed_bounds_c[0], poly.catalog_bed_bounds_c[1]);
-        f.fan_pct = f
-          .fan_pct
-          .clamp(poly.catalog_fan_bounds_pct[0], poly.catalog_fan_bounds_pct[1]);
-        f.max_vol_mm3s = f
-          .max_vol_mm3s
-          .clamp(poly.catalog_mvs_bounds_mm3s[0], poly.catalog_mvs_bounds_mm3s[1]);
+        f.fan_pct = f.fan_pct.clamp(
+          poly.catalog_fan_bounds_pct[0],
+          poly.catalog_fan_bounds_pct[1],
+        );
+        f.max_vol_mm3s = f.max_vol_mm3s.clamp(
+          poly.catalog_mvs_bounds_mm3s[0],
+          poly.catalog_mvs_bounds_mm3s[1],
+        );
       }
       f.base_nozzle_c = f.base_nozzle_c.max(poly.safe_nozzle_min_c as u16);
       f.base_bed_c = f

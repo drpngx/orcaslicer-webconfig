@@ -94,7 +94,9 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
             lan_printer_url: lan_url,
             cloud_token: String::new(),
           };
-          if let Ok(req) = gloo_net::http::Request::post("/api/anycubic/auto-discover").json(&req_body) {
+          if let Ok(req) =
+            gloo_net::http::Request::post("/api/anycubic/auto-discover").json(&req_body)
+          {
             if let Ok(resp) = req.send().await {
               if let Ok(parsed) = resp.json::<AnycubicAutoDiscoverResponse>().await {
                 if parsed.ok {

@@ -111,7 +111,7 @@ impl RigAddOn {
         id: "flowtech_hotend".to_string(),
         name: "MicroSwiss FlowTech™ All-Metal Hotend (Required for MicroSwiss Nozzles)".to_string(),
         category: "Hotend (Auto-Installed with MicroSwiss Nozzles)".to_string(),
-        effect_summary: "The hotend BODY that ALL MicroSwiss nozzles (Diamondback PCD / CM2 / CHT / Plated Brass) thread into — they do NOT fit the stock hotend. Selecting any MicroSwiss nozzle installs this hotend automatically. Leak-proof ceramic cylindrical heater; tightens retraction to 0.65mm @ 50mm/s and boosts melt-zone multiplier 1.15x.".to_string(),
+        effect_summary: "The hotend BODY that ALL MicroSwiss nozzles (Diamondback PCD / CM2 / CHT / Plated Brass) thread into — they do NOT fit the stock hotend. Selecting any MicroSwiss nozzle installs this hotend automatically. Leak-proof ceramic cylindrical heater; compresses retraction through a viscoelastic curve (rigid filaments ~0.88–0.95×, TPU travel preserved, scaled by nozzle orifice) and boosts melt-zone multiplier 1.15x.".to_string(),
       },
     ]
   }
@@ -367,7 +367,7 @@ impl MachineRig {
   }
 
   /// Returns the manufactured orifice diameters `(value_str, label_str)` supported by a given `nozzle_type`:
-  /// - MicroSwiss Diamondback PCD: `0.25, 0.4, 0.6, 0.8 mm`
+  /// - MicroSwiss Diamondback PCD: `0.25, 0.4, 0.6, 0.8, 1.0 mm` (official FlowTech DiamondBack lineup)
   /// - MicroSwiss CM2 & CHT CM2: `0.4, 0.6, 0.8 mm`
   /// - MicroSwiss CHT High-Flow: `0.4, 0.6, 0.8, 1.0 mm`
   /// - MicroSwiss FlowTech Plated Brass: `0.2, 0.3, 0.4, 0.6, 0.8, 1.0 mm`
@@ -383,6 +383,7 @@ impl MachineRig {
         ("0.4", "0.40 mm"),
         ("0.6", "0.60 mm"),
         ("0.8", "0.80 mm"),
+        ("1.0", "1.00 mm"),
       ]
     } else if nt.contains("cm2") {
       &[("0.4", "0.40 mm"), ("0.6", "0.60 mm"), ("0.8", "0.80 mm")]
@@ -508,7 +509,7 @@ impl MachineRig {
   pub fn generate_descriptive_notes(&self) -> String {
     let (orca_nt, hrc) = self.orca_machine_nozzle_type_and_hrc();
     let thermal_note = match self.short_nozzle_tag() {
-      "Diamondback" => "-10°C PCD diamond conductivity offset, nozzle_type=brass + nozzle_hrc=68, 0.94 flow, 0.60mm retract @ 45mm/s",
+      "Diamondback" => "PCD 543 W/m·K thermal curve (−5…−11°C by polymer band; see transformation stack), quadratic die-swell flow trim ≤1.2%, nozzle_type=brass + nozzle_hrc=68 (PCD hardness 49.8 GPa)",
       "Ruby-Brass" => "0°C Brass thermal conductivity, nozzle_type=brass + nozzle_hrc=60 (Ruby gemstone tip enabled for -CF/-GF composites)",
       "MS-Brass" => "0°C TwinClad XT low-friction plated brass (nozzle_type=brass, nozzle_hrc=35), 0.99 flow, 0.70mm retract @ 45mm/s",
       "MS-CM2" => "0°C Copper-core + M2 HSS tip (nozzle_type=hardened_steel, nozzle_hrc=55), 0.60mm retract @ 45mm/s",
@@ -987,15 +988,17 @@ impl FilamentSpool {
   /// ensuring that values tuned specifically for a Hardened Steel nozzle (`_HS`) are NEVER used on
   /// a Brass, Ruby-Brass, or Diamondback PCD nozzle!
   pub fn recompute_for_nozzle(&mut self, new_nozzle_type: &str) {
+    let c = crate::constants::constants();
+    let hs_delta = c.hardware_limits.hs_base_temp_delta_c;
     let brass = if self.brass_base_temp > 0 {
       self.brass_base_temp
     } else {
-      (self.base_print_temp - 5).max(190)
+      (self.base_print_temp - hs_delta).max(190)
     };
     let hs = if self.hs_base_temp > 0 {
       self.hs_base_temp
     } else {
-      brass + 5
+      brass + hs_delta
     };
     let is_external_disk_spool = self.id.starts_with("disk_")
       && !self.name.starts_with("OC -")
@@ -1005,7 +1008,6 @@ impl FilamentSpool {
       self.tuned_for_nozzle_type = new_nozzle_type.to_string();
     }
 
-    let c = crate::constants::constants();
     let (min_safe, mut max_safe) = Self::polymer_safe_nozzle_bounds(&self.material_type);
     if self.is_foaming_tpu() {
       max_safe = max_safe.max(c.hardware_limits.max_foaming_tpu_nozzle_temp_c);
@@ -1028,9 +1030,7 @@ impl FilamentSpool {
       self.print_temp = (brass + noz_cfg.temp_offset_from_brass_c).clamp(min_safe, max_safe);
     }
 
-    if !is_external_disk_spool
-      && (self.name.starts_with("OC -") || self.name.starts_with("OC:"))
-    {
+    if !is_external_disk_spool && (self.name.starts_with("OC -") || self.name.starts_with("OC:")) {
       // Canonical tag so filament presets rename in lockstep with the machine title
       // (e.g. `OC - PETG • 0.4 Hardened` -> `OC - PETG • 0.4 Diamondback`).
       let new_short_noz = MachineRig::short_nozzle_tag_for_type(new_nozzle_type);
@@ -1082,7 +1082,9 @@ impl FilamentSpool {
   /// `"Polymaker PETG"`, `"High Speed Matte PETG"`, `"Fibreheart PETG-CF"`, `"Flex TPU 95A HF"`,
   /// `"Panchroma PLA"`, etc.) to its canonical polymer key so switching brands preserves the selected polymer.
   pub fn canonical_polymer_key(mat: &str) -> &'static str {
-    &crate::constants::constants().lookup_polymer(mat).canonical_key
+    &crate::constants::constants()
+      .lookup_polymer(mat)
+      .canonical_key
   }
 
   /// Broad polymer family key for inheritance compatibility & fallback matching across brands.
@@ -1132,12 +1134,24 @@ impl FilamentSpool {
     let max_t = effective_temp.max(initial_temp);
     let min_t = effective_temp.min(initial_temp);
     if max_t > 265 || !p.standard_ams_compatible {
-      let low = hw.high_temp_range_low_c.min(min_t).max(hw.standard_ams_range_low_c);
-      let high = hw.high_temp_range_high_c.max(max_t).min(hw.max_hotend_temp_c);
+      let low = hw
+        .high_temp_range_low_c
+        .min(min_t)
+        .max(hw.standard_ams_range_low_c);
+      let high = hw
+        .high_temp_range_high_c
+        .max(max_t)
+        .min(hw.max_hotend_temp_c);
       (low, high)
     } else {
-      let low = hw.standard_ams_range_low_c.min(min_t - 10).max(hw.min_extrusion_temp_c);
-      let high = hw.standard_ams_range_high_c.max(max_t).min(hw.max_hotend_temp_c);
+      let low = hw
+        .standard_ams_range_low_c
+        .min(min_t - 10)
+        .max(hw.min_extrusion_temp_c);
+      let high = hw
+        .standard_ams_range_high_c
+        .max(max_t)
+        .min(hw.max_hotend_temp_c);
       (low, high)
     }
   }
@@ -1950,8 +1964,8 @@ impl FilamentSpool {
       &finish_type,
       active_nozzle_type,
     );
-    let is_abrasive = mat.requires_hardened
-      || Self::is_abrasive_material_or_finish(&base_mat_code, &finish_type);
+    let is_abrasive =
+      mat.requires_hardened || Self::is_abrasive_material_or_finish(&base_mat_code, &finish_type);
     let req_hrc: u32 = if is_abrasive {
       c.hardware_limits.abrasive_required_hrc
     } else {
@@ -2258,34 +2272,28 @@ impl SpoolmanSpool {
 
     let spool_extra = v.get("extra");
     let fil_extra = fil.get("extra");
-    let extra_flow_ratio = extract_extra_f32(
-      spool_extra,
-      &["flow_ratio", "filament_flow_ratio", "flow"],
-    )
-    .or_else(|| {
-      extract_extra_f32(
-        fil_extra,
-        &["flow_ratio", "filament_flow_ratio", "flow"],
-      )
-    });
-    let extra_pressure_advance = extract_extra_f32(
-      spool_extra,
-      &["pressure_advance", "pa", "k_value"],
-    )
-    .or_else(|| {
-      extract_extra_f32(
-        fil_extra,
-        &["pressure_advance", "pa", "k_value"],
-      )
-    });
+    let extra_flow_ratio =
+      extract_extra_f32(spool_extra, &["flow_ratio", "filament_flow_ratio", "flow"])
+        .or_else(|| extract_extra_f32(fil_extra, &["flow_ratio", "filament_flow_ratio", "flow"]));
+    let extra_pressure_advance =
+      extract_extra_f32(spool_extra, &["pressure_advance", "pa", "k_value"])
+        .or_else(|| extract_extra_f32(fil_extra, &["pressure_advance", "pa", "k_value"]));
     let extra_max_volumetric_speed = extract_extra_f32(
       spool_extra,
-      &["max_volumetric_speed", "filament_max_volumetric_speed", "mvs"],
+      &[
+        "max_volumetric_speed",
+        "filament_max_volumetric_speed",
+        "mvs",
+      ],
     )
     .or_else(|| {
       extract_extra_f32(
         fil_extra,
-        &["max_volumetric_speed", "filament_max_volumetric_speed", "mvs"],
+        &[
+          "max_volumetric_speed",
+          "filament_max_volumetric_speed",
+          "mvs",
+        ],
       )
     });
 
@@ -2353,28 +2361,21 @@ impl SpoolmanSpool {
   pub fn to_filament_spool(&self, active_nozzle_type: &str) -> FilamentSpool {
     let c = crate::constants::constants();
     let catalog = crate::catalog::load_merged_catalog();
-    let combined_text = format!("{} {} {}", self.vendor_name, self.material, self.filament_name);
-    let raw_poly = c.detect_polymer_from_profile_texts(
-      &combined_text,
-      Some(self.material.as_str()),
-      None,
+    let combined_text = format!(
+      "{} {} {}",
+      self.vendor_name, self.material, self.filament_name
     );
+    let raw_poly =
+      c.detect_polymer_from_profile_texts(&combined_text, Some(self.material.as_str()), None);
     let base_mat = c.base_material_code(&raw_poly).to_string();
-    let fc = c.detect_finish_from_texts(
-      &self.filament_name,
-      &self.material,
-      &raw_poly,
-      &base_mat,
-    );
+    let fc = c.detect_finish_from_texts(&self.filament_name, &self.material, &raw_poly, &base_mat);
     let finish_code = fc.code.clone();
     let norm_brand = FilamentSpool::normalized_brand(&self.vendor_name);
 
     let mut spool = if let Some(cat_entry) = catalog
       .filaments
       .iter()
-      .find(|f| {
-        f.brand.eq_ignore_ascii_case(&norm_brand) && f.code.eq_ignore_ascii_case(&base_mat)
-      })
+      .find(|f| f.brand.eq_ignore_ascii_case(&norm_brand) && f.code.eq_ignore_ascii_case(&base_mat))
       .or_else(|| {
         catalog
           .filaments
@@ -2528,10 +2529,7 @@ fn base64_decode_bytes(input: &str) -> Option<Vec<u8>> {
   for (i, &b) in TABLE.iter().enumerate() {
     lut[b as usize] = i as u8;
   }
-  let clean: Vec<u8> = input
-    .bytes()
-    .filter(|b| !b.is_ascii_whitespace())
-    .collect();
+  let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
   if clean.is_empty() || clean.len() % 4 != 0 {
     return None;
   }
@@ -2603,7 +2601,13 @@ pub fn decode_anycubic_obfuscated_str(encoded: &str) -> Option<String> {
   let pass2_raw = base64_decode_bytes(pass1_str)?;
   let pass2_shifted: Vec<u8> = pass2_raw.into_iter().map(|b| b.wrapping_sub(5)).collect();
   let plain = String::from_utf8(pass2_shifted).ok()?;
-  Some(plain.trim().trim_matches('"').trim_matches('\'').to_string())
+  Some(
+    plain
+      .trim()
+      .trim_matches('"')
+      .trim_matches('\'')
+      .to_string(),
+  )
 }
 
 /// Encodes a string using AnycubicSlicerNext's 2-pass `(byte + 5 -> base64_encode)` obfuscation.
@@ -2747,22 +2751,21 @@ impl AnycubicSniffedPrinterState {
           .iter()
           .filter(|n| n.starts_with("OC -") || n.starts_with("OC:"))
           .count();
-        let is_exact_active =
-          !active_machine_preset.is_empty() && mach == active_machine_preset;
-        let priority =
-          if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC")) {
-            40 + oc_fil_count
-          } else if is_exact_active && oc_fil_count > 0 {
-            30 + oc_fil_count
-          } else if is_exact_active {
-            20
-          } else if (mach.contains("Kobra S1") || mach.starts_with("OC")) && oc_fil_count > 0 {
-            15 + oc_fil_count
-          } else if mach.contains("Kobra S1") {
-            10
-          } else {
-            0
-          };
+        let is_exact_active = !active_machine_preset.is_empty() && mach == active_machine_preset;
+        let priority = if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC"))
+        {
+          40 + oc_fil_count
+        } else if is_exact_active && oc_fil_count > 0 {
+          30 + oc_fil_count
+        } else if is_exact_active {
+          20
+        } else if (mach.contains("Kobra S1") || mach.starts_with("OC")) && oc_fil_count > 0 {
+          15 + oc_fil_count
+        } else if mach.contains("Kobra S1") {
+          10
+        } else {
+          0
+        };
         if priority > best_priority && !f_names.is_empty() {
           best_priority = priority;
           if active_machine_preset.is_empty() {
@@ -2788,10 +2791,13 @@ impl AnycubicSniffedPrinterState {
     ];
     let mut slots = Vec::new();
     for (idx, prof_name) in slot_names.iter().enumerate() {
-      let color_hex = slot_colors
-        .get(idx)
-        .cloned()
-        .unwrap_or_else(|| default_colors.get(idx).copied().unwrap_or("#3B82F6").to_string());
+      let color_hex = slot_colors.get(idx).cloned().unwrap_or_else(|| {
+        default_colors
+          .get(idx)
+          .copied()
+          .unwrap_or("#3B82F6")
+          .to_string()
+      });
       slots.push(AnycubicAceSlotInfo {
         slot_index: idx + 1,
         profile_name: prof_name.clone(),
@@ -2861,7 +2867,10 @@ impl AnycubicSniffedPrinterState {
       "filament_07",
     ];
 
-    if let Some(arr) = val.get_mut("anycubic_presets").and_then(|a| a.as_array_mut()) {
+    if let Some(arr) = val
+      .get_mut("anycubic_presets")
+      .and_then(|a| a.as_array_mut())
+    {
       for preset in arr.iter_mut() {
         let mach = preset
           .get("machine")
@@ -2875,7 +2884,10 @@ impl AnycubicSniffedPrinterState {
           if let Some(obj) = preset.as_object_mut() {
             for (i, key) in keys.iter().enumerate() {
               if let Some(p_name) = slot_profile_names.get(i) {
-                obj.insert((*key).to_string(), serde_json::Value::String(p_name.clone()));
+                obj.insert(
+                  (*key).to_string(),
+                  serde_json::Value::String(p_name.clone()),
+                );
               } else {
                 obj.remove(*key);
               }
@@ -3137,13 +3149,12 @@ impl WebConfigStateSnapshot {
           } else {
             poly_cfg.default_flow_ratio
           };
-          let exp_dry_c = if poly_cfg.translucent_z_hop_mm.is_some()
-            && sp.finish_type == "Translucent"
-          {
-            65
-          } else {
-            cat_entry.dry_temp_c as i32
-          };
+          let exp_dry_c =
+            if poly_cfg.translucent_z_hop_mm.is_some() && sp.finish_type == "Translucent" {
+              65
+            } else {
+              cat_entry.dry_temp_c as i32
+            };
           let needs_flow_or_dry_heal = !sp.is_foaming_tpu()
             && ((sp.flow_ratio - exp_flow).abs() > 0.005 || sp.drying_temp_c != exp_dry_c);
           let needs_temp_heal = !sp.is_foaming_tpu()
@@ -3183,9 +3194,12 @@ impl WebConfigStateSnapshot {
           sp.recompute_for_nozzle(&noz);
           sp.rebuild_synthetic_disk_json(&noz);
         } else if let Some(ref raw) = sp.raw_disk_json {
-          if let Ok(serde_json::Value::Object(mut rmap)) = serde_json::from_str::<serde_json::Value>(raw) {
+          if let Ok(serde_json::Value::Object(mut rmap)) =
+            serde_json::from_str::<serde_json::Value>(raw)
+          {
             if rmap.remove("compatible_printers").is_some() {
-              sp.raw_disk_json = serde_json::to_string_pretty(&serde_json::Value::Object(rmap)).ok();
+              sp.raw_disk_json =
+                serde_json::to_string_pretty(&serde_json::Value::Object(rmap)).ok();
             }
           }
         }
@@ -3276,20 +3290,14 @@ impl WebConfigStateSnapshot {
         if proc.print_sequence.eq_ignore_ascii_case("by layer") {
           proc.print_sequence = "by object".to_string();
         }
-        if let Some(canon) = canonical_procs.iter().find(|dp| {
-          dp.id == proc.id
-            || dp.name.split(" @").next() == proc.name.split(" @").next()
-        }) {
-          let was_corrupted = matches!(
-            proc.outer_wall_speed.round() as i32,
-            51 | 151 | 162 | 238
-          ) || matches!(
-            proc.inner_wall_speed.round() as i32,
-            128 | 151 | 162 | 238
-          ) || matches!(
-            proc.sparse_infill_speed.round() as i32,
-            151 | 162 | 238
-          ) || (proc.initial_layer_speed - 18.0).abs() < 1.0
+        if let Some(canon) = canonical_procs
+          .iter()
+          .find(|dp| dp.id == proc.id || dp.name.split(" @").next() == proc.name.split(" @").next())
+        {
+          let was_corrupted = matches!(proc.outer_wall_speed.round() as i32, 51 | 151 | 162 | 238)
+            || matches!(proc.inner_wall_speed.round() as i32, 128 | 151 | 162 | 238)
+            || matches!(proc.sparse_infill_speed.round() as i32, 151 | 162 | 238)
+            || (proc.initial_layer_speed - 18.0).abs() < 1.0
             || (proc.layer_height - canon.layer_height).abs() > 0.01;
           if was_corrupted {
             proc.layer_height = canon.layer_height;
@@ -3771,8 +3779,8 @@ mod tests {
     )
     .expect("patches conf");
     assert!(patched.contains("# MD5 checksum 78EEA34537C082A7933147457EA67CA5"));
-    let resniffed = AnycubicSniffedPrinterState::sniff_from_conf_str(&patched)
-      .expect("re-sniffs patched conf");
+    let resniffed =
+      AnycubicSniffedPrinterState::sniff_from_conf_str(&patched).expect("re-sniffs patched conf");
     assert_eq!(resniffed.slots.len(), 2);
     assert_eq!(resniffed.slots[0].material_type, "ASA");
     assert_eq!(resniffed.slots[0].color_hex, "#112233");

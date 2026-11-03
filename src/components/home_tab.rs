@@ -1168,6 +1168,10 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                           .steps
                           .iter()
                           .any(|s| s.shadow_kind == Some(RuleShadowKind::Overwritten));
+                        let has_recomputed_step = prov
+                          .steps
+                          .iter()
+                          .any(|s| s.shadow_kind == Some(RuleShadowKind::Recomputed));
                         let cb_jump_wizard = props.on_switch_tab.clone();
                         html! {
                           <div class={format!(
@@ -1210,6 +1214,11 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                 if has_overwritten_step {
                                   <span class="bg-amber-950/60 text-amber-300 border border-amber-500/50 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
                                     {"⚡ Overwritten by later rule"}
+                                  </span>
+                                } else if has_recomputed_step {
+                                  <span class="bg-surface-container-lowest text-secondary border border-secondary/50 px-2 py-0.5 rounded text-[10px] font-mono font-bold"
+                                    title="A later rule discarded this step's direct write but re-derived the value from this step's other outputs — the intent survives.">
+                                    {"♻ Recomputed by later rule (intent preserved)"}
                                   </span>
                                 }
                                 if prov.has_shadowed_steps {
@@ -1264,9 +1273,18 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                               {for prov.steps.iter().enumerate().map(|(s_idx, step)| {
                                 let earlier_overwritten_steps: Vec<String> = prov.steps[..s_idx]
                                   .iter()
-                                  .filter(|earlier| earlier.shadowed_by_step == Some(step.step_number))
+                                  .filter(|earlier| earlier.shadowed_by_step == Some(step.step_number)
+                                    && earlier.shadow_kind == Some(RuleShadowKind::Overwritten))
                                   .map(|earlier| {
                                     format!("⚡ Overwrites Step #{} ({})", earlier.step_number, earlier.after_value)
+                                  })
+                                  .collect();
+                                let earlier_recomputed_steps: Vec<String> = prov.steps[..s_idx]
+                                  .iter()
+                                  .filter(|earlier| earlier.shadowed_by_step == Some(step.step_number)
+                                    && earlier.shadow_kind == Some(RuleShadowKind::Recomputed))
+                                  .map(|earlier| {
+                                    format!("♻ Recomputes Step #{} ({})", earlier.step_number, earlier.after_value)
                                   })
                                   .collect();
                                 html! {
@@ -1277,7 +1295,11 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                     </div>
                                     <div class={format!(
                                       "bg-surface-container-lowest p-2.5 rounded-lg border flex flex-col justify-between min-w-[230px] flex-1 {}",
-                                      if step.shadow_kind.is_some() {
+                                      if !earlier_overwritten_steps.is_empty() {
+                                        "border-amber-500/70"
+                                      } else if !earlier_recomputed_steps.is_empty() {
+                                        "border-secondary/60"
+                                      } else if step.shadow_kind == Some(RuleShadowKind::Overwritten) {
                                         "border-amber-500/70"
                                       } else {
                                         "border-primary/50"
@@ -1325,14 +1347,22 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                         let by_step = step.shadowed_by_step.unwrap_or(0);
                                         let by_name = step.shadowed_by_rule_name.as_deref().unwrap_or("later rule");
                                         let by_val = step.shadowed_final_value.as_deref().unwrap_or("");
-                                        let msg = match kind {
-                                          RuleShadowKind::Overwritten => format!(
-                                            "⚡ Overwritten by Step #{}: {} (→ {})",
-                                            by_step, by_name, by_val
+                                        let (msg, cls) = match kind {
+                                          RuleShadowKind::Overwritten => (
+                                            format!("⚡ Overwritten by Step #{}: {} (→ {})", by_step, by_name, by_val),
+                                            "text-amber-300 bg-amber-950/50 border-amber-500/50",
+                                          ),
+                                          RuleShadowKind::Recomputed => (
+                                            format!("♻ Recomputed by Step #{}: {} (→ {}) — intent preserved via sibling key", by_step, by_name, by_val),
+                                            "text-secondary bg-secondary/10 border-secondary/50",
+                                          ),
+                                          RuleShadowKind::Accepted => (
+                                            format!("✔ Accepted by Step #{}: {} — value satisfied its guard and passed through unchanged (→ {})", by_step, by_name, by_val),
+                                            "text-emerald-300 bg-emerald-950/40 border-emerald-500/50",
                                           ),
                                         };
                                         html! {
-                                          <div class="text-[10px] font-bold text-amber-300 bg-amber-950/50 px-2 py-1 rounded border border-amber-500/50 mt-0.5 break-words">
+                                          <div class={format!("text-[10px] font-bold px-2 py-1 rounded border mt-0.5 break-words {}", cls)}>
                                             {msg}
                                           </div>
                                         }
@@ -1344,6 +1374,17 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                         html! {
                                           <div class="text-[10px] font-bold text-tertiary bg-tertiary/10 px-2 py-0.5 rounded border border-tertiary/40 mt-0.5 break-words">
                                             {earlier_overwritten_steps.join(" • ")}
+                                          </div>
+                                        }
+                                      } else {
+                                        html! {}
+                                      }}
+
+                                      {if !earlier_recomputed_steps.is_empty() {
+                                        html! {
+                                          <div class="text-[10px] font-bold text-secondary bg-secondary/10 px-2 py-0.5 rounded border border-secondary/40 mt-0.5 break-words"
+                                            title="This step discarded the earlier step's direct write but re-derived the value from that step's other outputs — its intent survives.">
+                                            {earlier_recomputed_steps.join(" • ")}
                                           </div>
                                         }
                                       } else {

@@ -14,6 +14,72 @@ pub const MAX_LUA_STRING_BYTES: usize = 16_384;
 pub const MAX_LUA_TABLE_ENTRIES: usize = 1_024;
 pub const MAX_LUA_STDOUT_LINES: usize = 200;
 
+/// Rust-owned helper prelude evaluated into every rule's environment before the rule script.
+/// Rules never redefine these; keeping them here gives all `transformations/*.lua` files one
+/// shared, versioned implementation of the table-shape plumbing (single `["225"]`-slot arrays
+/// vs bare scalars) while the numeric curve helpers (`pwl`, `clamp`, `math.sqrt`, `^`) are
+/// native Rust builtins.
+const LUA_RULE_PRELUDE: &str = r#"
+-- scalar_num(val, default): read a possibly array-wrapped numeric config slot.
+-- Slicer keys arrive either as "235" or {"235"}; this returns 235.0 either way,
+-- or `default` when absent / non-numeric.
+function scalar_num(val, default)
+  if type(val) == "table" then
+    return tonumber(val[1]) or default
+  end
+  return tonumber(val) or default
+end
+
+-- map_num(tbl, fn, fmt): apply `fn` to every numeric slot of a config key (either an
+-- array-valued key like {"235"} or a bare scalar "235"), re-formatting each result with
+-- `string.format(fmt)` (default "%.3f"); non-numeric slots pass through untouched and the
+-- key's shape (array vs scalar) is preserved. A callback returning a non-number passes the
+-- ORIGINAL slot through (never the string.format "0.00" placeholder) so a buggy future
+-- callback cannot silently corrupt a config value.
+function map_num(tbl, fn, fmt)
+  if type(tbl) ~= "table" then
+    local n = tonumber(tbl)
+    if n then
+      local r = fn(n)
+      if type(r) == "number" then
+        return string.format(fmt or "%.3f", r)
+      end
+      return tbl
+    end
+    return tbl
+  end
+  local out = {}
+  for k, v in pairs(tbl) do
+    local n = tonumber(v)
+    if n then
+      local r = fn(n)
+      if type(r) == "number" then
+        out[k] = string.format(fmt or "%.3f", r)
+      else
+        out[k] = v
+      end
+    else
+      out[k] = v
+    end
+  end
+  return out
+end
+"#;
+
+/// Evaluate `LUA_RULE_PRELUDE` into `env`. Called by every code path that executes rule Lua
+/// (transformation, `validate(params, ctx)`, `describe(params, ctx)`) so the helper surface is
+/// identical no matter which entry point runs the script.
+fn eval_rule_prelude(
+  interpreter: &mut Interpreter,
+  env: &Rc<RefCell<LuaEnv>>,
+) -> Result<(), String> {
+  let prelude_lexer = Lexer::new(LUA_RULE_PRELUDE);
+  let mut prelude_parser = Parser::new(prelude_lexer)?;
+  let prelude_stmts = prelude_parser.parse_chunk()?;
+  interpreter.eval_chunk(&prelude_stmts, env.clone())?;
+  Ok(())
+}
+
 /// Pre-validates a user or rule Lua script for forbidden host/filesystem/OS/process APIs,
 /// script size limits, and token limits before execution.
 pub fn validate_lua_sandbox_security(script: &str) -> Result<(), String> {
@@ -250,6 +316,7 @@ pub enum BinaryOp {
   Mul,
   Div,
   Mod,
+  Pow,
   Concat,
   Eq,
   Neq,
@@ -321,6 +388,7 @@ pub enum Token {
   Star,
   Slash,
   Percent,
+  Caret,
   DotDot,
   Dot,
   Colon,
@@ -403,6 +471,7 @@ impl<'a> Lexer<'a> {
       '*' => Ok(Token::Star),
       '/' => Ok(Token::Slash),
       '%' => Ok(Token::Percent),
+      '^' => Ok(Token::Caret),
       '#' => Ok(Token::Hash),
       '(' => Ok(Token::LParen),
       ')' => Ok(Token::RParen),
@@ -869,8 +938,19 @@ impl Parser {
       let expr = self.parse_unary()?;
       Ok(Expr::UnaryOp(UnaryOp::Length, Box::new(expr)))
     } else {
-      self.parse_suffixed_expr()
+      self.parse_power()
     }
+  }
+
+  /// `^` power operator: binds tighter than unary minus (`-x^2` = `-(x^2)`),
+  /// right-associative, and accepts a unary expression on the right (`2^-2`).
+  fn parse_power(&mut self) -> Result<Expr, String> {
+    let mut expr = self.parse_suffixed_expr()?;
+    if self.match_token(&Token::Caret) {
+      let right = self.parse_unary()?;
+      expr = Expr::BinaryOp(BinaryOp::Pow, Box::new(expr), Box::new(right));
+    }
+    Ok(expr)
   }
 
   fn parse_suffixed_expr(&mut self) -> Result<Expr, String> {
@@ -1045,6 +1125,10 @@ impl LuaEnv {
     self.set_local("type", LuaVal::NativeFn("type".to_string()));
     self.set_local("pairs", LuaVal::NativeFn("pairs".to_string()));
     self.set_local("ipairs", LuaVal::NativeFn("ipairs".to_string()));
+    // Curve helpers implemented natively in Rust (single deterministic evaluator, shared by
+    // every rule — see `pwl` / `clamp` arms in `call_native`).
+    self.set_local("pwl", LuaVal::NativeFn("pwl".to_string()));
+    self.set_local("clamp", LuaVal::NativeFn("clamp".to_string()));
 
     // string library
     let mut str_lib = HashMap::new();
@@ -1083,6 +1167,10 @@ impl LuaEnv {
       LuaVal::NativeFn("math.ceil".to_string()),
     );
     math_lib.insert("abs".to_string(), LuaVal::NativeFn("math.abs".to_string()));
+    math_lib.insert(
+      "sqrt".to_string(),
+      LuaVal::NativeFn("math.sqrt".to_string()),
+    );
     self.set_local("math", LuaVal::Table(Rc::new(RefCell::new(math_lib))));
 
     // table library
@@ -1589,6 +1677,10 @@ impl Interpreter {
             (LuaVal::Number(a), LuaVal::Number(b)) => Ok(LuaVal::Number(a % b)),
             _ => Err("Arithmetic '%' on non-numbers".to_string()),
           },
+          BinaryOp::Pow => match (&left, &right) {
+            (LuaVal::Number(a), LuaVal::Number(b)) => Ok(LuaVal::Number(a.powf(*b))),
+            _ => Err("Arithmetic '^' on non-numbers".to_string()),
+          },
           BinaryOp::Concat => {
             let s1 = left.to_lua_string();
             let s2 = right.to_lua_string();
@@ -2009,6 +2101,98 @@ impl Interpreter {
           Ok(LuaVal::Number(0.0))
         }
       }
+      "math.sqrt" => {
+        if let Some(LuaVal::Number(n)) = args.get(0) {
+          if *n < 0.0 {
+            Err("math.sqrt domain error (negative argument)".to_string())
+          } else {
+            Ok(LuaVal::Number(n.sqrt()))
+          }
+        } else {
+          Err("math.sqrt expects a number".to_string())
+        }
+      }
+      // pwl(x, points): piecewise-linear curve evaluation with flat extrapolation.
+      // `points` is an array of {x, y} pairs in any order: pwl(12, {{0,0},{10,10},{20,30}}) == 12.
+      // Implemented natively in Rust so every rule shares one deterministic, sorted evaluator
+      // (Lua-side `pairs` iteration is unordered in this interpreter).
+      "pwl" => {
+        let coerce = |v: Option<&LuaVal>| -> Option<f64> {
+          match v {
+            Some(LuaVal::Number(n)) => Some(*n),
+            Some(LuaVal::String(s)) => s.trim().parse::<f64>().ok(),
+            _ => None,
+          }
+        };
+        let x = match coerce(args.get(0)) {
+          Some(x) => x,
+          None => return Err("pwl expects a numeric x value".to_string()),
+        };
+        let pts_tbl = match args.get(1) {
+          Some(LuaVal::Table(t)) => t.clone(),
+          _ => return Err("pwl expects a table of {x, y} points".to_string()),
+        };
+        let pts_map = pts_tbl.borrow();
+        let mut pts: Vec<(f64, f64)> = Vec::new();
+        for i in 1..=pts_map.len() {
+          let pair = match pts_map.get(&i.to_string()) {
+            Some(LuaVal::Table(p)) => p.clone(),
+            _ => return Err(format!("pwl point #{} is not a {{x, y}} pair table", i)),
+          };
+          let borrowed = pair.borrow();
+          let px = coerce(borrowed.get(&"1".to_string()))
+            .ok_or_else(|| format!("pwl point #{} is missing a numeric x (index 1)", i))?;
+          let py = coerce(borrowed.get(&"2".to_string()))
+            .ok_or_else(|| format!("pwl point #{} is missing a numeric y (index 2)", i))?;
+          pts.push((px, py));
+        }
+        if pts.is_empty() {
+          return Err("pwl expects at least one {x, y} point".to_string());
+        }
+        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if x <= pts[0].0 {
+          return Ok(LuaVal::Number(pts[0].1));
+        }
+        let last = pts[pts.len() - 1];
+        if x >= last.0 {
+          return Ok(LuaVal::Number(last.1));
+        }
+        for w in pts.windows(2) {
+          let (x0, y0) = w[0];
+          let (x1, y1) = w[1];
+          if x >= x0 && x <= x1 {
+            let t = if (x1 - x0).abs() < f64::EPSILON {
+              0.0
+            } else {
+              (x - x0) / (x1 - x0)
+            };
+            return Ok(LuaVal::Number(y0 + t * (y1 - y0)));
+          }
+        }
+        Ok(LuaVal::Number(last.1))
+      }
+      // clamp(x, lo, hi): min(max(x, lo), hi) with max applied first, so inverted bounds
+      // (lo > hi) resolve to hi — matching the Lua-side math.min(math.max(x, lo), hi) idiom.
+      "clamp" => {
+        let coerce = |v: Option<&LuaVal>| -> Option<f64> {
+          match v {
+            Some(LuaVal::Number(n)) => Some(*n),
+            Some(LuaVal::String(s)) => s.trim().parse::<f64>().ok(),
+            _ => None,
+          }
+        };
+        match (
+          coerce(args.get(0)),
+          coerce(args.get(1)),
+          coerce(args.get(2)),
+        ) {
+          (Some(x), Some(lo), Some(hi)) => {
+            let maxed = if x < lo { lo } else { x };
+            Ok(LuaVal::Number(if maxed > hi { hi } else { maxed }))
+          }
+          _ => Err("clamp expects numeric (x, lo, hi)".to_string()),
+        }
+      }
       "table.insert" => {
         if let Some(LuaVal::Table(t)) = args.get(0) {
           if t.borrow().len() >= MAX_LUA_TABLE_ENTRIES {
@@ -2269,6 +2453,7 @@ pub fn extract_lua_rule_spec(script: &str) -> Result<LuaRuleSpec, String> {
 
   let mut interpreter = Interpreter::new();
   let env = Rc::new(RefCell::new(LuaEnv::new()));
+  eval_rule_prelude(&mut interpreter, &env)?;
 
   let dummy_cfg = LuaVal::from_json(&serde_json::json!({}));
   let dummy_ctx = LuaVal::from_json(&serde_json::json!({}));
@@ -2527,6 +2712,7 @@ pub fn validate_lua_rule_params(
 
     let mut interpreter = Interpreter::new();
     let env = Rc::new(RefCell::new(LuaEnv::new()));
+    eval_rule_prelude(&mut interpreter, &env)?;
 
     let lua_context = LuaVal::from_json(context);
     let mut params_map = HashMap::new();
@@ -2609,6 +2795,7 @@ pub fn describe_lua_rule(
 
   let mut interpreter = Interpreter::new();
   let env = Rc::new(RefCell::new(LuaEnv::new()));
+  eval_rule_prelude(&mut interpreter, &env)?;
 
   let mut ctx_json = context.clone();
   if let Some(obj) = ctx_json.as_object_mut() {
@@ -2761,6 +2948,9 @@ pub fn execute_transformation_lua_with_params(
   let mut interpreter = Interpreter::new();
   let env = Rc::new(RefCell::new(LuaEnv::new()));
 
+  // Rust-owned helper prelude (scalar_num / map_num) so rules share one implementation.
+  eval_rule_prelude(&mut interpreter, &env)?;
+
   let lua_config = LuaVal::from_json(config);
   let lua_context = LuaVal::from_json(context);
 
@@ -2905,8 +3095,77 @@ mod tests {
   }
 
   #[test]
+  fn test_rust_native_pwl_clamp_sqrt_and_power_operator() {
+    let cfg = serde_json::json!({});
+    let ctx = serde_json::json!({});
+
+    // pwl: interpolation, flat extrapolation on both ends, unordered input points.
+    // Also covers clamp, math.sqrt, and the `^` operator (right-assoc, binds tighter
+    // than unary minus so -2^2 == -4, and accepts a unary right side: 2^-2 == 0.25).
+    let script = r#"
+      function apply(config, ctx)
+        local curve = { {265, -7.5}, {190, -8.0}, {240, -10.0}, {215, -11.0}, {300, -5.0} }
+        print(string.format("%.2f", pwl(150, curve)))   -- below first x -> flat -8.0
+        print(string.format("%.2f", pwl(235, curve)))   -- 215..240 segment -> -10.20
+        print(string.format("%.2f", pwl(290, curve)))   -- 265..300 segment -> -5.71
+        print(string.format("%.2f", pwl(400, curve)))   -- beyond last x -> flat -5.0
+        print(string.format("%.2f", pwl(215, curve)))   -- exactly on a knot -> -11.0
+        print(string.format("%.3f", clamp(0.96 * 0.99, 0.85, 1.1)))
+        print(string.format("%.3f", clamp(5.0, 0.0, 1.0)))
+        print(string.format("%.4f", math.sqrt(0.4 / 0.25)))
+        print(string.format("%.4f", (0.5 / 0.4) ^ 1.15))
+        print(string.format("%.2f", -2 ^ 2))
+        print(string.format("%.2f", 2 ^ -2))
+      end
+    "#;
+    let (_, stdout, _) = execute_transformation_lua(script, &cfg, &ctx).unwrap();
+    let expected = [
+      "-8.00", "-10.20", "-5.71", "-5.00", "-11.00", "0.950", "1.000", "1.2649", "1.2925", "-4.00",
+      "0.25",
+    ];
+    assert_eq!(stdout, expected.to_vec());
+  }
+
+  #[test]
+  fn test_rust_prelude_scalar_num_and_map_num() {
+    let cfg = serde_json::json!({
+      "nozzle_temperature": ["235"],
+      "filament_flow_ratio": ["0.96", "0.90"],
+      "filament_retraction_length": "0.8"
+    });
+    let ctx = serde_json::json!({});
+    let script = r#"
+      function apply(config, ctx)
+        -- scalar_num unwraps single-slot arrays and bare strings, falls back to default.
+        print(string.format("%.1f", scalar_num(config["nozzle_temperature"], 220)))
+        print(string.format("%.2f", scalar_num(config["filament_retraction_length"], 1.5)))
+        print(string.format("%.1f", scalar_num(config["missing_key"], 42)))
+        -- map_num maps every numeric slot, preserves array shape & non-numeric slots.
+        local mapped = map_num(config["filament_flow_ratio"], function(f)
+          return f * 0.99
+        end, "%.3f")
+        config["filament_flow_ratio"] = mapped
+        config["nozzle_temperature"] = map_num(config["nozzle_temperature"], function(t)
+          return t - 10
+        end, "%.0f")
+        -- Scalar-shaped keys map too (shape preserved: scalar in, scalar out).
+        config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r)
+          return r * 0.8
+        end, "%.2f")
+      end
+    "#;
+    let (result, stdout, _) = execute_transformation_lua(script, &cfg, &ctx).unwrap();
+    assert_eq!(stdout, vec!["235.0", "0.80", "42.0"]);
+    assert_eq!(result["filament_flow_ratio"][0], "0.950");
+    assert_eq!(result["filament_flow_ratio"][1], "0.891");
+    assert_eq!(result["nozzle_temperature"][0], "225");
+    assert_eq!(result["filament_retraction_length"], "0.64");
+  }
+
+  #[test]
   fn test_all_embedded_lua_transformations() {
     let thermal_lua = include_str!("../transformations/thermal_conductivity.lua");
+    let addons_lua = include_str!("../transformations/rig_addons_cooling.lua");
     let speed_lua = include_str!("../transformations/volumetric_speed_ceiling.lua");
     let flush_lua = include_str!("../transformations/flush_volumes_matrix.lua");
     let stringing_lua = include_str!("../transformations/symptom_stringing_diamondback.lua");
@@ -2918,6 +3177,10 @@ mod tests {
         "nozzle_temperature": ["240"],
         "nozzle_temperature_initial_layer": ["245"],
         "hot_plate_temp_initial_layer": ["80"],
+        "filament_flow_ratio": ["0.96"],
+        "filament_retraction_length": ["0.80"],
+        "filament_retraction_speed": ["40"],
+        "filament_z_hop": ["0.15"],
         "filament_max_volumetric_speed": ["15.0"],
         "layer_height": "0.20",
         "outer_wall_line_width": "0.42",
@@ -2927,13 +3190,15 @@ mod tests {
         "flush_multiplier": "1.0"
     });
 
-    // 8-slot Double ACE Pro 2 context
+    // 8-slot Double ACE Pro 2 context (FlowTech hotend installed — always true for MicroSwiss nozzles)
     let ctx = serde_json::json!({
         "nozzle_material": "Diamondback PCD",
         "nozzle_type": "diamondback",
+        "nozzle_diameter": "0.4",
         "hotend_max_flow": 22.0,
         "filament_max_flow": 15.0,
         "melt_zone_multiplier": 1.25,
+        "addons": ["flowtech_hotend"],
         "slots": [
             { "material_type": "PLA",  "color_hex": "#1A1A1A", "opacity": 1.0, "pigment_stickiness": 1.6 },
             { "material_type": "PLA",  "color_hex": "#FFFFFF", "opacity": 0.9, "pigment_stickiness": 0.6 },
@@ -2946,11 +3211,20 @@ mod tests {
         ]
     });
 
+    // P10 thermal: 240 sits exactly on the PWL knot (240, -10) -> 230; init layer 245 ->
+    // dT -9.5 -> 235.5 -> "%.0f" rounds half-to-even -> 236; flow 0.96 -> 0.954
+    // (u = 0.733, trim = 0.65%); retraction untouched here (owned by P12/P25).
     let (c1, _, _) = execute_transformation_lua(thermal_lua, &config, &ctx).unwrap();
     assert_eq!(c1["nozzle_temperature"][0], "230");
-    assert_eq!(c1["filament_flow_ratio"][0], "0.94");
+    assert_eq!(c1["nozzle_temperature_initial_layer"][0], "236");
+    assert_eq!(c1["filament_flow_ratio"][0], "0.954");
 
-    let (c2, _, _) = execute_transformation_lua(speed_lua, &c1, &ctx).unwrap();
+    // P12 FlowTech: 0.80 -> pwl(0.80)=0.70 (d_scale=1.0 at 0.4mm); 40 -> 44 mm/s.
+    let (c1b, _, _) = execute_transformation_lua(addons_lua, &c1, &ctx).unwrap();
+    assert_eq!(c1b["filament_retraction_length"][0], "0.70");
+    assert_eq!(c1b["filament_retraction_speed"][0], "44");
+
+    let (c2, _, _) = execute_transformation_lua(speed_lua, &c1b, &ctx).unwrap();
     // min(22.0, 15.0) / (0.20 * 0.42) = 15.0 / 0.084 = 178 mm/s
     assert_eq!(c2["computed_safe_speed_ceiling"], "178");
     assert_eq!(c2["outer_wall_speed"], "178");
@@ -2965,9 +3239,16 @@ mod tests {
     // Slot 1 (PLA, stickiness 1.6 -> capped 1.25x) -> Slot 3 (PETG) polymer cross-contamination -> 300 * 1.25 = 375 at 1.0x (563 at 1.5x)
     assert_eq!(matrix[2], "375");
 
+    // P25 stringing: 230 -> 228 (gated -1.6); retract 0.70 -> 0.75 (+0.051 recovery);
+    // speed 44 -> 38 (quadratic damp); z_hop 0.15 -> 0.22 Spiral; travel accel 10000 -> 10700.
     let (c4, _, _) = execute_transformation_lua(stringing_lua, &c3, &ctx).unwrap();
-    assert_eq!(c4["filament_retraction_length"][0], "0.95");
-    assert_eq!(c4["z_hop_types"][0], "Spiral Lift");
+    assert_eq!(c4["nozzle_temperature"][0], "228");
+    assert_eq!(c4["filament_retraction_length"][0], "0.75");
+    assert_eq!(c4["filament_retraction_speed"][0], "38");
+    assert_eq!(c4["filament_z_hop"][0], "0.22");
+    assert_eq!(c4["filament_z_hop_types"][0], "Spiral Lift");
+    assert_eq!(c4["travel_acceleration"], "10700");
+    assert_eq!(c4["wipe_on_loops"], "1");
 
     let (c5, _, _) = execute_transformation_lua(clog_lua, &c4, &ctx).unwrap();
     assert_eq!(c5["flush_multiplier"], "1.45");
@@ -2979,6 +3260,301 @@ mod tests {
     let (c7, _, _) = execute_transformation_lua(spaghetti_lua, &c6, &ctx).unwrap();
     assert_eq!(c7["sparse_infill_pattern"], "gyroid");
     assert_eq!(c7["reduce_crossing_wall"], "1");
+  }
+
+  /// End-to-end verification matrix for the Diamondback PWL compensation chain
+  /// (P10 thermal_conductivity -> P12 rig_addons_cooling/flowtech -> P25
+  /// symptom_stringing_diamondback), mirroring §5 of
+  /// `doc/pwl-nozzle-compensation-math.md`. Every expected value is a literal so the
+  /// engineering report and the engine can never silently drift apart.
+  #[test]
+  fn test_diamondback_pwl_compensation_chain_matrix() {
+    let thermal_lua = include_str!("../transformations/thermal_conductivity.lua");
+    let addons_lua = include_str!("../transformations/rig_addons_cooling.lua");
+    let stringing_lua = include_str!("../transformations/symptom_stringing_diamondback.lua");
+
+    // (label, nozzle_diameter, base config keys): T0, r0, s0, f0, z0
+    struct Case {
+      label: &'static str,
+      diam: &'static str,
+      t0: f64,
+      init0: f64,
+      r0: f64,
+      s0: f64,
+      f0: f64,
+      z0: f64,
+      elastomer: bool,
+    }
+    let cases = [
+      Case {
+        label: "PETG 0.4 (audit config_007)",
+        diam: "0.4",
+        t0: 235.0,
+        init0: 235.0,
+        r0: 0.80,
+        s0: 40.0,
+        f0: 0.960,
+        z0: 0.15,
+        elastomer: false,
+      },
+      Case {
+        label: "PLA 0.4",
+        diam: "0.4",
+        t0: 215.0,
+        init0: 220.0,
+        r0: 0.60,
+        s0: 35.0,
+        f0: 0.980,
+        z0: 0.10,
+        elastomer: false,
+      },
+      Case {
+        label: "ASA 0.4 (structural)",
+        diam: "0.4",
+        t0: 265.0,
+        init0: 265.0,
+        r0: 0.80,
+        s0: 40.0,
+        f0: 0.930,
+        z0: 0.10,
+        elastomer: false,
+      },
+      Case {
+        label: "TPU 95A 0.4 (elastomer)",
+        diam: "0.4",
+        t0: 225.0,
+        init0: 230.0,
+        r0: 1.30,
+        s0: 25.0,
+        f0: 1.000,
+        z0: 0.20,
+        elastomer: true,
+      },
+      Case {
+        label: "PA-CF 0.6 (high-temp)",
+        diam: "0.6",
+        t0: 290.0,
+        init0: 290.0,
+        r0: 0.90,
+        s0: 35.0,
+        f0: 0.900,
+        z0: 0.15,
+        elastomer: false,
+      },
+      Case {
+        label: "PLA 0.25 (fine detail)",
+        diam: "0.25",
+        t0: 210.0,
+        init0: 215.0,
+        r0: 0.60,
+        s0: 35.0,
+        f0: 0.980,
+        z0: 0.12,
+        elastomer: false,
+      },
+      Case {
+        label: "PETG 1.0 (draft)",
+        diam: "1.0",
+        t0: 240.0,
+        init0: 240.0,
+        r0: 0.80,
+        s0: 40.0,
+        f0: 0.960,
+        z0: 0.20,
+        elastomer: false,
+      },
+      Case {
+        label: "TPU 95A 0.4 (app defaults: 0.60 @ 35)",
+        diam: "0.4",
+        t0: 225.0,
+        init0: 230.0,
+        r0: 0.60,
+        s0: 35.0,
+        f0: 0.980,
+        z0: 0.20,
+        elastomer: true,
+      },
+    ];
+
+    for case in &cases {
+      let config = serde_json::json!({
+        "nozzle_temperature": [format!("{}", case.t0)],
+        "nozzle_temperature_initial_layer": [format!("{}", case.init0)],
+        "filament_flow_ratio": [format!("{:.3}", case.f0)],
+        "filament_retraction_length": [format!("{:.2}", case.r0)],
+        "filament_retraction_speed": [format!("{}", case.s0)],
+        "filament_z_hop": [format!("{:.2}", case.z0)],
+        "travel_acceleration": "10000",
+      });
+      let ctx = serde_json::json!({
+        "nozzle_material": "Diamondback PCD",
+        "nozzle_type": "diamondback",
+        "nozzle_diameter": case.diam,
+        "addons": ["flowtech_hotend"],
+        "filament_is_elastomer": case.elastomer,
+      });
+
+      let get1 = |v: &serde_json::Value, k: &str| -> String {
+        v[k][0].as_str().unwrap_or("<missing>").to_string()
+      };
+
+      let (p10, _, _) = execute_transformation_lua(thermal_lua, &config, &ctx)
+        .unwrap_or_else(|e| panic!("{}: P10 failed: {}", case.label, e));
+      let (p12, _, _) = execute_transformation_lua(addons_lua, &p10, &ctx)
+        .unwrap_or_else(|e| panic!("{}: P12 failed: {}", case.label, e));
+      let (p25, _, _) = execute_transformation_lua(stringing_lua, &p12, &ctx)
+        .unwrap_or_else(|e| panic!("{}: P25 failed: {}", case.label, e));
+
+      println!(
+        "[{}] T {}->{}->{}->{} | r {}->{}->{}->{} | s {}->{}->{}->{} | f {}->{} | z {}->{}",
+        case.label,
+        case.t0,
+        get1(&p10, "nozzle_temperature"),
+        get1(&p12, "nozzle_temperature"),
+        get1(&p25, "nozzle_temperature"),
+        format!("{:.2}", case.r0),
+        get1(&p10, "filament_retraction_length"),
+        get1(&p12, "filament_retraction_length"),
+        get1(&p25, "filament_retraction_length"),
+        case.s0,
+        get1(&p10, "filament_retraction_speed"),
+        get1(&p12, "filament_retraction_speed"),
+        get1(&p25, "filament_retraction_speed"),
+        format!("{:.3}", case.f0),
+        get1(&p10, "filament_flow_ratio"),
+        format!("{:.2}", case.z0),
+        get1(&p25, "filament_z_hop"),
+      );
+
+      // Global invariants that must hold for EVERY case (the specific per-case numbers are
+      // printed above and tabulated in the doc; these asserts are the physics guards).
+      let t_final: f64 = get1(&p25, "nozzle_temperature").parse().unwrap();
+      let t_base: f64 = case.t0;
+      // Elastomers get NO P25 trim at all: final temp == P10's curve output exactly.
+      if case.elastomer {
+        let t_p10: f64 = get1(&p10, "nozzle_temperature").parse().unwrap();
+        assert!(
+          (t_final - t_p10).abs() < 1e-9,
+          "{}: elastomer temp trimmed by P25 ({} -> {})",
+          case.label,
+          t_p10,
+          t_final
+        );
+      }
+      assert!(
+        t_base - t_final >= 4.0 && t_base - t_final <= 13.0,
+        "{}: total temp drop {} out of [-13, -4] band",
+        case.label,
+        t_base - t_final
+      );
+      assert!(
+        t_final >= 175.0 && t_final <= 300.0,
+        "{}: temp out of bounds",
+        case.label
+      );
+
+      let r_final: f64 = get1(&p25, "filament_retraction_length").parse().unwrap();
+      let s_final: f64 = get1(&p25, "filament_retraction_speed").parse().unwrap();
+      let f_final: f64 = get1(&p10, "filament_flow_ratio").parse().unwrap();
+      let z_final: f64 = get1(&p25, "filament_z_hop").parse().unwrap();
+      let d: f64 = case.diam.parse().unwrap();
+
+      // Rigid filaments never end ABOVE their brass base retraction; elastomers never lose
+      // more than 15% of their spring travel (the designed P12 elastomer-PWL compression is
+      // ~12% at 1.30 mm; short app-default TPU retraction round-trips back to its base).
+      if !case.elastomer {
+        assert!(
+          r_final <= case.r0 + 1e-9,
+          "{}: rigid retraction {} exceeded base {}",
+          case.label,
+          r_final,
+          case.r0
+        );
+      } else {
+        assert!(
+          r_final >= case.r0 * 0.85 - 1e-9,
+          "{}: elastomer retraction {} crushed below 85% of base {}",
+          case.label,
+          r_final,
+          case.r0
+        );
+        // Elastomers keep their calibrated speed through BOTH the P12 skip and the P25
+        // damper (even above the 25 mm/s soft zone — TPU for AMS ships 35 and must stay 35).
+        assert!(
+          (s_final - case.s0).abs() < 1e-9,
+          "{}: elastomer retraction speed changed {} -> {}",
+          case.label,
+          case.s0,
+          s_final
+        );
+      }
+      // PCD temp drop must taper (never more than 12 C below base; high-temp never below -9).
+      if case.t0 >= 265.0 {
+        assert!(
+          t_base - t_final <= 8.0,
+          "{}: high-temp polymer over-cooled by {}",
+          case.label,
+          t_base - t_final
+        );
+      }
+      // Flow trim is a pure reduction bounded by 1.2% and floored at 0.85.
+      assert!(
+        f_final <= case.f0 + 1e-9,
+        "{}: flow trim must never increase flow",
+        case.label
+      );
+      assert!(f_final >= 0.85, "{}: flow floor", case.label);
+      // Z-hop lift respects the small-orifice ceiling and never reduces the spool base z0.
+      assert!(
+        z_final >= case.z0 - 1e-9 && z_final <= (case.z0 + 0.04).max(d * 0.65) + 1e-9,
+        "{}: z-hop {} out of [{}, {}]",
+        case.label,
+        z_final,
+        case.z0,
+        (case.z0 + 0.04).max(d * 0.65)
+      );
+      // Travel accel boost always clears the <8000 -> 10000 export clamp.
+      let a_final: f64 = p25["travel_acceleration"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+      assert!(
+        a_final >= 9000.0,
+        "{}: travel accel {} below 9000 floor",
+        case.label,
+        a_final
+      );
+    }
+
+    // Spot-check the headline per-case numbers from the engineering report (PETG 0.4).
+    let config = serde_json::json!({
+      "nozzle_temperature": ["235"],
+      "nozzle_temperature_initial_layer": ["235"],
+      "filament_flow_ratio": ["0.960"],
+      "filament_retraction_length": ["0.80"],
+      "filament_retraction_speed": ["40"],
+      "filament_z_hop": ["0.15"],
+      "travel_acceleration": "10000",
+    });
+    let ctx = serde_json::json!({
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_type": "diamondback",
+      "nozzle_diameter": "0.4",
+      "addons": ["flowtech_hotend"],
+    });
+    let (p10, _, _) = execute_transformation_lua(thermal_lua, &config, &ctx).unwrap();
+    let (p12, _, _) = execute_transformation_lua(addons_lua, &p10, &ctx).unwrap();
+    let (p25, _, _) = execute_transformation_lua(stringing_lua, &p12, &ctx).unwrap();
+    assert_eq!(p10["nozzle_temperature"][0], "225"); // -10.2 -> 225
+    assert_eq!(p10["filament_flow_ratio"][0], "0.954");
+    assert_eq!(p12["filament_retraction_length"][0], "0.70");
+    assert_eq!(p12["filament_retraction_speed"][0], "44");
+    assert_eq!(p25["nozzle_temperature"][0], "223"); // gated -2.0
+    assert_eq!(p25["filament_retraction_length"][0], "0.75");
+    assert_eq!(p25["filament_retraction_speed"][0], "38");
+    assert_eq!(p25["filament_z_hop"][0], "0.22");
+    assert_eq!(p25["travel_acceleration"], "10700");
   }
 
   #[test]

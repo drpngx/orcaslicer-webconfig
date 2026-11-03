@@ -6,7 +6,9 @@
 --   - "microswiss_duct": MicroSwiss High-Velocity Dual-Fang Duct -> concentrates static pressure,
 --     scales max fan speed by 0.85x to prevent over-cooling warping while keeping 100% overhang bridge cooling.
 --   - "flowtech_hotend": MicroSwiss FlowTech Hotend -> sets melt_zone_multiplier = 1.15x,
---     tightens retraction length to 0.65mm @ 50mm/s.
+--     compresses retraction through a viscoelastic PWL curve (rigid ~0.88-0.95x, TPU travel
+--     preserved) scaled by nozzle orifice, and re-shapes retraction speed through a PWL
+--     (20->20, 25->26, 35->40, 40->44, 50->46 mm/s).
 
 local function has_addon(addons, target)
   if not addons then
@@ -52,8 +54,47 @@ function apply(config, ctx)
   end
 
   if has_addon(addons, "flowtech_hotend") then
-    config["filament_retraction_length"] = { "0.65" }
-    config["filament_retraction_speed"] = { "50" }
-    print("[AddOn:FlowTechHotend] Set retraction to 0.65mm @ 50mm/s for leak-proof all-metal thermal break")
+    -- FlowTech unitary all-metal thermal cylinder: retraction must be compressed to keep molten
+    -- filament out of the sharp, short cold zone, but the compression is viscoelastic — a stiff
+    -- PETG/PLA column (r0 0.6-0.9mm) compresses ~10-13%, while an elastomer (TPU, r0 >= 1.1mm)
+    -- wastes its first ~0.4mm relieving axial spring compression and must KEEP its travel.
+    -- Orifice scaling S_d = 0.88 + 0.12*sqrt(d/0.4) compensates the molten meniscus volume that
+    -- grows with nozzle area. All relative (PWL) over the spool base — never an absolute write.
+    local d = scalar_num(ctx.nozzle_diameter, 0.4)
+    local d_scale = 0.88 + 0.12 * math.sqrt(d / 0.4)
+
+    local flowtech_retract_pwl = {
+      { 0.40, 0.36 }, -- ultra-short rigid PLA
+      { 0.80, 0.70 }, -- PETG / ABS standard band
+      { 1.00, 0.86 }, -- upper rigid ceiling
+      { 1.50, 1.35 }  -- elastomeric TPU decompression travel preserved
+    }
+    if config["filament_retraction_length"] then
+      config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r0)
+        return clamp(pwl(r0, flowtech_retract_pwl) * d_scale, 0.35, 1.40)
+      end, "%.2f")
+    end
+
+    -- Speed PWL: +4..+5 mm/s responsiveness boost through the crisp 30-44 band; excessive
+    -- speeds (>= 50) clamped down to 46. Elastomer families skip the boost entirely —
+    -- flexible filament must never be yanked faster than its calibrated speed (gear slip /
+    -- cavitation). The flag comes from Rust (`ctx.filament_is_elastomer`, derived from
+    -- constants.json `hardware_limits.elastomer_family_tokens`) so the token list has a
+    -- single source; nil (standalone rule testing without a rig ctx) means rigid.
+    local is_elastomer = ctx.filament_is_elastomer == true
+    local flowtech_speed_pwl = {
+      { 20, 20 },
+      { 25, 26 },
+      { 35, 40 },
+      { 40, 44 },
+      { 50, 46 }
+    }
+    if config["filament_retraction_speed"] and not is_elastomer then
+      config["filament_retraction_speed"] = map_num(config["filament_retraction_speed"], function(s0)
+        return pwl(s0, flowtech_speed_pwl)
+      end, "%.0f")
+    end
+
+    print("[AddOn:FlowTechHotend] All-metal viscoelastic retraction curve (0.80 -> 0.70mm on a 0.4 nozzle, x" .. string.format("%.3f", d_scale) .. " orifice scale), speed PWL 20..50 -> 20..46 mm/s")
   end
 end

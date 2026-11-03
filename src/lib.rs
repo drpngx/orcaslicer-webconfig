@@ -35,13 +35,10 @@ use crate::models::{
   FilamentSpool, MachineRig, ProcessProfile, SpoolmanSpool, WebConfigStateSnapshot,
 };
 use crate::orca_profile::OrcaProfile;
-use crate::threemf::{
-  build_3mf_project_container, export_standalone_filament_json_with_overrides,
-};
+use crate::threemf::{build_3mf_project_container, export_standalone_filament_json_with_overrides};
 use crate::transformations::{
   PendingDiskUpdate, RuleScopeFilter, SafetySeverity, SafetyWarning, StackEvaluationResult,
-  StackReorderAction,
-  TransformationEngine, TransformationRule,
+  StackReorderAction, TransformationEngine, TransformationRule,
 };
 
 /// Captured inputs used to independently re-evaluate the Lua stack for every exported Process preset.
@@ -68,8 +65,12 @@ impl ExportEvalInputs {
     std::collections::HashMap<String, OverrideMap>,
     ProcessProfile,
   ) {
-    let per_process =
-      TransformationEngine::evaluate_stack_per_process(&self.base, &self.rules, &self.ctx, processes);
+    let per_process = TransformationEngine::evaluate_stack_per_process(
+      &self.base,
+      &self.rules,
+      &self.ctx,
+      processes,
+    );
     let default_proc = processes
       .iter()
       .find(|p| (p.layer_height - 0.20).abs() < 0.01 && p.quality_tier() == "standard")
@@ -417,6 +418,8 @@ pub fn App() -> Html {
     "line_width": active_proc.line_width,
     "filament_type": *active_filament_type,
     "filament_finish": active_filament_finish,
+    "filament_is_elastomer": crate::constants::constants()
+      .is_elastomer_family_material(&active_filament_type),
     "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&active_filament_type).1,
     "all_filament_types": all_filament_types,
     "addons": active_rig.addons,
@@ -1383,8 +1386,7 @@ pub fn App() -> Html {
         if let Some(pos) = m.addons.iter().position(|a| a == &addon_id) {
           // The FlowTech hotend cannot be removed while a MicroSwiss nozzle is installed:
           // MicroSwiss nozzles (Diamondback/CM2/CHT/Plated Brass) only fit the MicroSwiss hotend.
-          if addon_id == "flowtech_hotend"
-            && MachineRig::is_microswiss_nozzle_type(&m.nozzle_type)
+          if addon_id == "flowtech_hotend" && MachineRig::is_microswiss_nozzle_type(&m.nozzle_type)
           {
             toast.set(Some(format!(
               "Cannot remove the MicroSwiss FlowTech™ hotend: the installed {} nozzle only fits this hotend. Switch to a stock nozzle (Brass / Hardened Steel / Ruby) first.",
@@ -1434,7 +1436,7 @@ pub fn App() -> Html {
           "diamondback" | "microswiss_diamondback" => {
             m.nozzle_material = "MicroSwiss Diamondback (PCD)".to_string();
             m.nozzle_name = format!("MicroSwiss Diamondback PCD {}0mm", m.nozzle_diameter);
-            toast_msg = "Installed MicroSwiss Diamondback PCD Nozzle (nozzle_type=brass, HRC 68): all default nozzle & thermal rules applied (-10°C, 0.94 Flow, 0.60mm Retract)!".to_string();
+            toast_msg = "Installed MicroSwiss Diamondback PCD Nozzle (nozzle_type=brass, HRC 68): PCD thermal curve −5…−11°C by polymer + die-swell flow trim + FlowTech retraction curve applied!".to_string();
           }
           "microswiss_brass" | "microswiss_mk8_brass" => {
             m.nozzle_material = "Brass (MicroSwiss TwinClad XT)".to_string();

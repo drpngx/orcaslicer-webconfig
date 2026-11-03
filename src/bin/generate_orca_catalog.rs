@@ -470,12 +470,24 @@ fn main() {
         }
         // Fallback: search any instantiated machine referencing printer_model == model_name
         if !resolved.contains_key("printable_area") {
-          for (k, v) in &by_name {
-            if v.get("printer_model").and_then(|s| s.as_str()) == Some(model_name) {
-              resolved = resolve_profile(k, &by_name, 0);
-              if resolved.contains_key("printable_area") {
-                break;
-              }
+          // Sorted keys: `by_name` is a HashMap, and taking the FIRST matching profile from
+          // it would make the resolved machine base depend on HashMap order (nondeterministic
+          // across generator runs).
+          let mut candidate_names: Vec<&String> = by_name
+            .keys()
+            .filter(|k| {
+              by_name
+                .get(*k)
+                .and_then(|v| v.get("printer_model"))
+                .and_then(|s| s.as_str())
+                == Some(model_name)
+            })
+            .collect();
+          candidate_names.sort();
+          for k in candidate_names {
+            resolved = resolve_profile(k, &by_name, 0);
+            if resolved.contains_key("printable_area") {
+              break;
             }
           }
         }
@@ -830,7 +842,14 @@ fn main() {
   }
 
   for fil_by_name in &all_vendor_fil_maps {
-    for (name, _) in fil_by_name {
+    // Iterate profile names in sorted order: `fil_by_name` is a HashMap, and the
+    // best-by-code selection below tie-breaks with strict `score > prev_score` (first
+    // insertion wins), so HashMap order would make the generated catalog — and therefore
+    // every downstream export — differ between generator runs. Sorted names make equal-score
+    // ties resolve alphabetically and the catalog byte-reproducible.
+    let mut profile_names: Vec<&String> = fil_by_name.keys().collect();
+    profile_names.sort();
+    for name in profile_names {
       let resolved = resolve_profile(name, fil_by_name, 0);
       let Some(ft_raw) = first_str(resolved.get("filament_type")) else {
         continue;

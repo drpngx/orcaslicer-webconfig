@@ -448,7 +448,7 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
                   ("hardened_steel", "🛡️ Hardened Steel", "+5°C Thermal Compensation (230°C → 235°C PETG) • Sizes: 0.2–1.0mm"),
                   ("cm2", "⚙️ MicroSwiss CM2™ (Copper Core + M2 HSS Tip)", "0°C Copper Conductivity + HRC 68 Hardened Tip • Sizes: 0.4, 0.6, 0.8mm"),
                   ("cht_cm2", "🔥⚙️ MicroSwiss CHT CM2™ (High-Flow Copper + M2 HSS Tip)", "+40% High-Flow CHT Splitter + Hardened M2 Tip • Sizes: 0.4, 0.6, 0.8mm"),
-                  ("diamondback", "💎 MicroSwiss Diamondback™ PCD", "-10°C Temp, 0.94 Flow, 0.60mm Retract • Sizes: 0.25, 0.4, 0.6, 0.8mm"),
+                  ("diamondback", "💎 MicroSwiss Diamondback™ PCD", "543 W/m·K PCD: PWL Temp Curve (−5…−11°C by Polymer), Flow Trim ≤1.2% • Sizes: 0.25, 0.4, 0.6, 0.8, 1.0mm"),
                   ("cht", "🔥 MicroSwiss FlowTech™ CHT High-Flow", "+50% High-Flow 3-Bore Melt Splitter • Sizes: 0.4, 0.6, 0.8, 1.0mm"),
                 ].into_iter().map(|(noz_id, noz_label, sub)| {
                   let is_sel = active_rig.nozzle_type == noz_id;

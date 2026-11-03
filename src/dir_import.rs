@@ -285,7 +285,8 @@ pub fn import_scanned_directory(
           .count();
         let is_exact_active =
           !active_machine_name_from_conf.is_empty() && mach == active_machine_name_from_conf;
-        let priority = if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC")) {
+        let priority = if oc_fil_count >= 2 && (mach.contains("Kobra S1") || mach.starts_with("OC"))
+        {
           40 + oc_fil_count
         } else if is_exact_active && oc_fil_count > 0 {
           30 + oc_fil_count
@@ -403,10 +404,7 @@ pub fn import_scanned_directory(
     } else if name_low.contains("ruby") || notes_low.contains("ruby_brass") {
       ("ruby_brass".to_string(), "Ruby-Tipped Brass".to_string())
     } else if name_low.contains("cm2") || notes_low.contains("cm2") {
-      (
-        "cm2".to_string(),
-        "MicroSwiss CM2 Hardened".to_string(),
-      )
+      ("cm2".to_string(), "MicroSwiss CM2 Hardened".to_string())
     } else if name_low.contains("cht") || notes_low.contains("cht") || raw_noz_type == "cht" {
       ("cht".to_string(), "Bi-Metal CHT".to_string())
     } else if name_low.contains("brass")
@@ -415,10 +413,7 @@ pub fn import_scanned_directory(
     {
       ("orca_brass".to_string(), "Brass".to_string())
     } else {
-      (
-        "hardened_steel".to_string(),
-        "Hardened Steel".to_string(),
-      )
+      ("hardened_steel".to_string(), "Hardened Steel".to_string())
     };
 
     let base_sys = system_machines.get(&inherits);
@@ -636,9 +631,9 @@ pub fn import_scanned_directory(
   // swap) are stale incarnations and are skipped during filament import below.
   // Only trust this when the newest OC rig actually came from disk with a `printer_timestamp`.
   let oc_governing_tag: Option<String> = match &newest_oc_rig {
-    Some((ts, idx)) if !ts.is_empty() => machines
-      .get(*idx)
-      .map(|m| m.short_nozzle_tag().to_string()),
+    Some((ts, idx)) if !ts.is_empty() => {
+      machines.get(*idx).map(|m| m.short_nozzle_tag().to_string())
+    }
     _ => None,
   };
 
@@ -712,8 +707,7 @@ pub fn import_scanned_directory(
       && system_filaments.contains_key("yxpoler PA @Anycubic Kobra S1 0.4 nozzle")
     {
       "yxpoler PA @Anycubic Kobra S1 0.4 nozzle"
-    } else if poly_cfg.family == "PA"
-      && !system_filaments.contains_key(&default_inherits_candidate)
+    } else if poly_cfg.family == "PA" && !system_filaments.contains_key(&default_inherits_candidate)
     {
       "Anycubic PA @Anycubic Kobra S1 Max 0.4 nozzle"
     } else {
@@ -1220,11 +1214,8 @@ pub fn import_scanned_directory(
       let c = crate::constants::constants();
       let sys_val = system_filaments.get(&slot_fname);
       let disk_fil_type = sys_val.and_then(|b| extract_str(b, "filament_type"));
-      let mat_type = c.detect_polymer_from_profile_texts(
-        &slot_fname,
-        disk_fil_type.as_deref(),
-        None,
-      );
+      let mat_type =
+        c.detect_polymer_from_profile_texts(&slot_fname, disk_fil_type.as_deref(), None);
       let slot_canon = FilamentSpool::canonical_polymer_key(&mat_type);
       // Check if an `OC -` spool of this polymer already exists in `filaments` (e.g. `OC - PLA-CF • 0.4 Hardened` or `OC - Anycubic PLA-CF • 0.4 Hardened`)
       if let Some(existing_oc_idx) = filaments.iter().position(|f| {
@@ -1302,8 +1293,7 @@ pub fn import_scanned_directory(
       let slot_fc = c.detect_finish_from_texts(&slot_fname, "", &mat_type, &mat_type);
       let slot_fin = slot_fc.code.clone();
       let (dry_c, dry_hr) = (slot_poly.default_dry_temp_c, slot_poly.default_dry_time_hr);
-      let is_slot_abrasive =
-        FilamentSpool::is_abrasive_material_or_finish(&mat_type, &slot_fin);
+      let is_slot_abrasive = FilamentSpool::is_abrasive_material_or_finish(&mat_type, &slot_fin);
       filaments.push(FilamentSpool {
         id: format!("disk_sys_spool_{}", slot_idx + 1),
         name: slot_fname.clone(),
@@ -1432,10 +1422,10 @@ pub fn import_scanned_directory(
     // If this is one of our generated `OC -` process profiles, restore its canonical baseline speeds/layer_height
     // so re-importing from disk never compounds speed reductions or loses `layer_height` stripped by AnycubicSlicerNext.
     if name.starts_with("OC -") {
-      if let Some(canon) = default_oc_procs.iter().find(|dp| {
-        dp.name == name
-          || dp.name.split(" @").next() == name.split(" @").next()
-      }) {
+      if let Some(canon) = default_oc_procs
+        .iter()
+        .find(|dp| dp.name == name || dp.name.split(" @").next() == name.split(" @").next())
+      {
         let mut proc_prof = canon.clone();
         proc_prof.name = name;
         proc_prof.notes = proc_prof.generate_descriptive_notes();
@@ -2052,8 +2042,7 @@ pub fn sync_live_state_to_entries_with_process_overrides(
       crate::threemf::build_machine_preset_json_with_overrides(rig, Some(derived_overrides));
 
     if let Some(existing) = entries.iter_mut().find(|e| {
-      e.relative_path == rel_path
-        || (e.relative_path.starts_with("user/") && e.filename == fname)
+      e.relative_path == rel_path || (e.relative_path.starts_with("user/") && e.filename == fname)
     }) {
       existing.relative_path = rel_path.clone();
       existing.filename = fname;
@@ -2081,8 +2070,7 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     let proc_json = crate::threemf::build_process_preset_json(proc, &active_rig, proc_overrides);
 
     if let Some(existing) = entries.iter_mut().find(|e| {
-      e.relative_path == rel_path
-        || (e.relative_path.starts_with("user/") && e.filename == fname)
+      e.relative_path == rel_path || (e.relative_path.starts_with("user/") && e.filename == fname)
     }) {
       if !proc.id.starts_with("disk_") || existing.bytes != proc_json.as_bytes() {
         existing.bytes = proc_json.as_bytes().to_vec();
@@ -2189,10 +2177,7 @@ pub fn sync_live_state_to_entries_with_process_overrides(
       } else {
         format!("filament_{:02}", idx)
       };
-      preset_obj.insert(
-        key,
-        serde_json::Value::String(sp.format_concise_title()),
-      );
+      preset_obj.insert(key, serde_json::Value::String(sp.format_concise_title()));
     }
     preset_obj.insert(
       "filament_colors".to_string(),
@@ -2269,46 +2254,43 @@ pub fn sync_live_state_to_entries_with_process_overrides(
               .to_string();
             !mach.contains(".3mf)") && !pruned_oc_machine_names.contains(&mach)
           });
-          let update_preset_map =
-            |pmap: &mut serde_json::Map<String, serde_json::Value>, target_machine: &str| {
+          let update_preset_map = |pmap: &mut serde_json::Map<String, serde_json::Value>,
+                                   target_machine: &str| {
+            pmap.insert(
+              "machine".to_string(),
+              serde_json::Value::String(target_machine.to_string()),
+            );
+            pmap.insert(
+              "process".to_string(),
+              serde_json::Value::String(active_proc_name.clone()),
+            );
+            for (idx, sp) in active_slots.iter().enumerate() {
+              let key = if idx == 0 {
+                "filament".to_string()
+              } else {
+                format!("filament_{:02}", idx)
+              };
+              pmap.insert(key, serde_json::Value::String(sp.format_concise_title()));
+            }
+            for idx in active_slots.len()..16 {
+              let key = if idx == 0 {
+                "filament".to_string()
+              } else {
+                format!("filament_{:02}", idx)
+              };
+              pmap.remove(&key);
+            }
+            pmap.insert(
+              "filament_colors".to_string(),
+              serde_json::Value::String(colors_csv.clone()),
+            );
+            if !matrix_pipe.is_empty() {
               pmap.insert(
-                "machine".to_string(),
-                serde_json::Value::String(target_machine.to_string()),
+                "flush_volumes_matrix".to_string(),
+                serde_json::Value::String(matrix_pipe.clone()),
               );
-              pmap.insert(
-                "process".to_string(),
-                serde_json::Value::String(active_proc_name.clone()),
-              );
-              for (idx, sp) in active_slots.iter().enumerate() {
-                let key = if idx == 0 {
-                  "filament".to_string()
-                } else {
-                  format!("filament_{:02}", idx)
-                };
-                pmap.insert(
-                  key,
-                  serde_json::Value::String(sp.format_concise_title()),
-                );
-              }
-              for idx in active_slots.len()..16 {
-                let key = if idx == 0 {
-                  "filament".to_string()
-                } else {
-                  format!("filament_{:02}", idx)
-                };
-                pmap.remove(&key);
-              }
-              pmap.insert(
-                "filament_colors".to_string(),
-                serde_json::Value::String(colors_csv.clone()),
-              );
-              if !matrix_pipe.is_empty() {
-                pmap.insert(
-                  "flush_volumes_matrix".to_string(),
-                  serde_json::Value::String(matrix_pipe.clone()),
-                );
-              }
-            };
+            }
+          };
 
           let mut matched_active = false;
           for preset in arr.iter_mut() {
@@ -3439,8 +3421,9 @@ mod tests {
         spool.name
       );
       assert!(
-        entries.iter().any(|e| e.filename
-          == crate::models::sanitize_profile_filename(&spool.name)),
+        entries
+          .iter()
+          .any(|e| e.filename == crate::models::sanitize_profile_filename(&spool.name)),
         "renamed spool file must exist in entries: {}",
         spool.name
       );
@@ -3598,11 +3581,13 @@ mod tests {
       .machines
       .iter()
       .any(|m| m.name == "OC - Kobra S1 • 0.4 Diamondback"));
-    assert!(!imported
-      .machines
-      .iter()
-      .any(|m| m.name == "OC - Kobra S1 • 0.4 Hardened"),
-      "stale Hardened machine incarnation must not import as a rig");
+    assert!(
+      !imported
+        .machines
+        .iter()
+        .any(|m| m.name == "OC - Kobra S1 • 0.4 Hardened"),
+      "stale Hardened machine incarnation must not import as a rig"
+    );
     let active_rig = imported
       .machines
       .iter()
@@ -3638,16 +3623,16 @@ mod tests {
       &[],
       &serde_json::Map::new(),
     );
-    assert!(plan.deletions.contains(&"user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json".to_string()));
+    assert!(plan
+      .deletions
+      .contains(&"user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json".to_string()));
     assert!(plan
       .deletions
       .contains(&"user/434139/filament/OC - PETG • 0.4 Hardened.json".to_string()));
     // Current Diamondback presets are never deleted (the machine keeps its disk name), and the
     // healed FlowTech hotend is written back into its notes.
-    assert!(!plan
-      .deletions
-      .iter()
-      .any(|d| d.contains("Diamondback")),
+    assert!(
+      !plan.deletions.iter().any(|d| d.contains("Diamondback")),
       "current Diamondback presets must never be deleted: {:?}",
       plan.deletions
     );
@@ -3655,8 +3640,7 @@ mod tests {
       .iter()
       .find(|e| e.filename == "OC - Kobra S1 • 0.4 Diamondback.json")
       .expect("Diamondback machine file must be rewritten in place");
-    assert!(String::from_utf8_lossy(&healed_machine.bytes)
-      .contains("MicroSwiss FlowTech"));
+    assert!(String::from_utf8_lossy(&healed_machine.bytes).contains("MicroSwiss FlowTech"));
     for stale in [
       "user/434139/machine/OC - Kobra S1 • 0.4 Hardened.json",
       "user/434139/filament/OC - PETG • 0.4 Hardened.json",

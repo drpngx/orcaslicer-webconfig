@@ -1,7 +1,11 @@
 -- Dynamic Combination Rule 1: Thermal Conductivity & Nozzle Material Compensation
 -- Adjusts nozzle temperature, flow ratio, and retraction based on the installed nozzle material:
---   - "MicroSwiss Diamondback (PCD)" / "Diamondback PCD": ~500 W/(m*K) thermal conductivity -> drops nozzle temp by -10°C,
---     optimizes flow ratio to 0.94, reduces retraction length to 0.60mm @ 45mm/s.
+--   - "MicroSwiss Diamondback (PCD)" / "Diamondback PCD": 543 W/(m*K) PCD tip (49.8 GPa hardness, 0.01 CoF) ->
+--     piecewise-linear temperature curve dT(T0) by brass base temp (-11C on PLA fans-on profiles,
+--     -10C at 235-240C PETG, tapering to -5C at 300C to preserve inter-layer welds on ABS/ASA/PA-CF/PC),
+--     plus a quadratic die-swell flow trim (0 to -1.2%) that never touches pre-thinned matte/CF
+--     calibrations. Retraction is NOT written here: it is owned by the FlowTech hotend rule (P12)
+--     and the stringing mitigation (P25) as relative curves over the spool base.
 --   - "Brass (MicroSwiss TwinClad XT)": Low-friction TwinClad XT nickel-composite coating -> 0°C temp offset,
 --     reduces retraction length to 0.70mm @ 45mm/s and boosts flow ratio to 0.99.
 --   - "Ruby Tip (Brass Body)" (`ruby_brass`): Brass body (~115 W/(m*K)) with synthetic Ruby gemstone tip (9.0 Mohs) ->
@@ -10,6 +14,9 @@
 --   - "Hardened Steel" / "Stainless Steel": Low thermal conductivity (~20 W/(m*K)) -> adds +5°C to nozzle temp
 --     so the polymer core reaches full melt viscosity.
 --   - "MicroSwiss FlowTech CHT" / "Bi-Metal CHT" / "E3D ObXidian High-Flow": Split-core high-flow geometry -> boosts max volumetric speed +25%.
+--
+-- Curve helpers `pwl` / `clamp` / `math.sqrt` / `^` are Rust-native builtins of the Lua engine;
+-- `scalar_num` / `map_num` come from the Rust-owned prelude (src/lua_engine.rs LUA_RULE_PRELUDE).
 
 function apply(config, ctx)
   local mat = ctx.nozzle_material or "Brass"
@@ -25,19 +32,46 @@ function apply(config, ctx)
   end
 
   if mat == "Diamondback PCD" or mat == "MicroSwiss Diamondback (PCD)" or ntype == "diamondback" or ntype == "microswiss_diamondback" then
-    local new_temp = cur_temp - 10
-    local new_init = cur_init_temp - 10
     config["nozzle_type"] = "brass"
     config["nozzle_hrc"] = "68"
-    config["nozzle_temperature"] = { tostring(new_temp) }
-    config["nozzle_temperature_initial_layer"] = { tostring(new_init) }
-    config["nozzle_temperature_HS"] = { tostring(new_temp) }
-    config["nozzle_temperature_initial_layer_HS"] = { tostring(new_init) }
-    config["filament_flow_ratio"] = { "0.94" }
-    config["filament_retraction_length"] = { "0.60" }
-    config["filament_retraction_speed"] = { "45" }
-    config["pressure_advance"] = { "0.024" }
-    print("[ThermalConductivity] MicroSwiss Diamondback PCD (~500 W/mK): nozzle_type=brass + nozzle_hrc=68, Nozzle temp -10C -> " .. tostring(new_temp) .. "C, Flow -> 0.94, Retract -> 0.60mm @ 45mm/s")
+    local d = scalar_num(ctx.nozzle_diameter, 0.4)
+
+    -- 1. Piecewise-linear PCD temperature curve dT(T0), applied per temperature key over its
+    --    own brass base value (full -10/-11 C in the high-fan PLA/PETG band, tapering to -5 C
+    --    at 300 C where inter-layer chain diffusion needs the enthalpy). Clamped to the
+    --    FlowTech assembly ceiling (300 C) and an absolute floor of 175 C.
+    local pcd_temp_pwl = {
+      { 190, -8.0 },
+      { 215, -11.0 },
+      { 240, -10.0 },
+      { 265, -7.5 },
+      { 300, -5.0 }
+    }
+    local temp_keys = { "nozzle_temperature", "nozzle_temperature_initial_layer", "nozzle_temperature_HS", "nozzle_temperature_initial_layer_HS" }
+    for _, key in ipairs(temp_keys) do
+      if config[key] then
+        config[key] = map_num(config[key], function(t0)
+          return clamp(t0 + pwl(t0, pcd_temp_pwl), 175, 300)
+        end, "%.0f")
+      end
+    end
+
+    -- 2. Quadratic die-swell flow trim f1(f0, d): PCD's 0.01 CoF introduces partial wall slip
+    --    (less die swell -> slightly less flow needed), scaled by orifice sqrt(0.4/d). The u^2
+    --    normalization leaves low-flow matte/CF calibrations (f0 <= 0.90) virtually untouched
+    --    and only trims glossy high-flow profiles (f0 ~ 0.96-1.00) by up to ~1.2%. Output band
+    --    [0.900, 1.050] matches the app-wide flow sanity band (audit + pipeline-A clamp).
+    if config["filament_flow_ratio"] then
+      local orifice_factor = math.sqrt(0.4 / math.max(d, 0.2))
+      config["filament_flow_ratio"] = map_num(config["filament_flow_ratio"], function(f0)
+        local u = clamp((f0 - 0.85) / 0.15, 0.0, 1.2)
+        local trim = 0.012 * orifice_factor * u * u
+        return clamp(f0 * (1.0 - trim), 0.900, 1.050)
+      end, "%.3f")
+    end
+
+    local new_temp = scalar_num(config["nozzle_temperature"], cur_temp)
+    print("[ThermalConductivity] MicroSwiss Diamondback PCD (543 W/mK): nozzle_type=brass + nozzle_hrc=68, PWL temp curve -5..-11C by base (-> " .. tostring(new_temp) .. "C), quadratic die-swell flow trim <= 1.2%")
   elseif mat == "Brass (MicroSwiss TwinClad XT)" or ntype == "microswiss_brass" or ntype == "microswiss_mk8_brass" then
     config["nozzle_type"] = "brass"
     config["nozzle_hrc"] = "35"

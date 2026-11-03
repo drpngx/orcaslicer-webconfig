@@ -46,7 +46,10 @@ function apply(config, ctx)
   end
 
   local melt_mult = tonumber(ctx.melt_zone_multiplier) or 1.0
-  local flush_mult = tonumber(ctx.flush_multiplier) or tonumber(config["flush_multiplier"]) or 1.0
+  -- Prefer a rule-adjusted multiplier (e.g. `symptom_clog_ace_pro` floors it at 1.45x) over the
+  -- raw UI context knob, so the matrix bakes the EFFECTIVE purge scaling instead of clobbering
+  -- the earlier rule's flush_multiplier with the context value.
+  local flush_mult = tonumber(config["flush_multiplier"]) or tonumber(ctx.flush_multiplier) or 1.0
   local matrix = {}
   local idx = 1
 

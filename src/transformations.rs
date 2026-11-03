@@ -111,7 +111,10 @@ fn polymer_matches_scope_key(material: &str, key: &str) -> bool {
     .split(|c: char| !c.is_ascii_alphanumeric())
     .next()
     .unwrap_or("");
-  let base_trim: String = base.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+  let base_trim: String = base
+    .chars()
+    .take_while(|c| c.is_ascii_alphabetic())
+    .collect();
   base_trim == key_up
 }
 
@@ -217,9 +220,12 @@ impl RuleScopeFilter {
       }
       // With no filament information in the context, polymer filters cannot be evaluated: treat as in-scope.
       if !materials.is_empty() {
-        let hit = materials
-          .iter()
-          .any(|m| self.polymers.iter().any(|k| polymer_matches_scope_key(m, k)));
+        let hit = materials.iter().any(|m| {
+          self
+            .polymers
+            .iter()
+            .any(|k| polymer_matches_scope_key(m, k))
+        });
         if !hit {
           let active = context
             .get("filament_type")
@@ -257,8 +263,14 @@ impl RuleScopeFilter {
     }
 
     if !self.nozzle_materials.is_empty() {
-      let nt = context.get("nozzle_type").and_then(|v| v.as_str()).unwrap_or("");
-      let nm = context.get("nozzle_material").and_then(|v| v.as_str()).unwrap_or("");
+      let nt = context
+        .get("nozzle_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+      let nm = context
+        .get("nozzle_material")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
       if !nt.is_empty() || !nm.is_empty() {
         let hit = self
           .nozzle_materials
@@ -284,7 +296,8 @@ impl RuleScopeFilter {
             || ((tl == "0.20mm quality" || tl.contains("quality")) && tier_lc == "quality")
             || ((tl == "0.20mm standard" || tl.contains("standard")) && tier_lc == "standard")
             || ((tl == "0.20mm speed" || tl.contains("speed")) && tier_lc == "speed")
-            || ((tl == "0.28mm" || tl == "0.28mm draft" || tl.contains("draft")) && tier_lc == "draft")
+            || ((tl == "0.28mm" || tl == "0.28mm draft" || tl.contains("draft"))
+              && tier_lc == "draft")
             || (tl == "0.20mm" && matches!(tier_lc.as_str(), "quality" | "standard" | "speed"))
         });
         if !matches_tier {
@@ -379,6 +392,18 @@ pub enum RuleShadowKind {
   /// step's change removed yields the identical result, so this step's contribution was forgotten
   /// (`⚡ Overwritten by later rule`). Opposite-direction relative adjustments are NOT shadowing.
   Overwritten,
+  /// The downstream rule discarded this step's direct write to the key, but re-derived the value
+  /// from OTHER keys this same step produced (e.g. `thermal_conductivity` sets both
+  /// `nozzle_temperature` and `nozzle_temperature_HS`; a later wet-filament rule recomputes `_HS`
+  /// from `nozzle_temperature`). The step's intent survives through the sibling key, so this is
+  /// informational (`♻ Recomputed by later rule`), not a rule-ordering problem.
+  Recomputed,
+  /// A downstream guard/clamp rule READ this key and passed the value through unchanged
+  /// (e.g. `x = min(x, 20)` with `x` already ≤ 20): the value survived because it satisfied the
+  /// later rule's constraint, not because it was recomputed. Detected by perturbing the key in the
+  /// downstream rule's input — if the output follows the perturbation, the rule reads the key, and
+  /// since it left the value untouched it ACCEPTED it. Informational (`✔ Accepted by later rule`).
+  Accepted,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -590,7 +615,7 @@ impl TransformationEngine {
       TransformationRule {
         id: "thermal_conductivity".to_string(),
         name: "Thermal Conductivity & Nozzle Material Rule".to_string(),
-        description: "Dynamically compensates nozzle temperature, flow ratio, and retraction based on nozzle material (Hardened Steel +5°C matching Anycubic PETG - hotbed 235°C; Diamondback PCD -5°C & 0.94 flow; Bi-Metal CHT +25% max flow).".to_string(),
+        description: "Dynamically compensates nozzle temperature, flow ratio, and retraction based on nozzle material (Hardened Steel +5°C matching Anycubic PETG - hotbed 235°C; Diamondback PCD piecewise-linear −5…−11°C curve by polymer band + quadratic die-swell flow trim ≤1.2%; Bi-Metal CHT +25% max flow).".to_string(),
         category: "Dynamic Combination Rule".to_string(),
         icon: "💎".to_string(),
         enabled: true,
@@ -662,7 +687,7 @@ impl TransformationEngine {
       TransformationRule {
         id: "symptom_stringing_diamondback".to_string(),
         name: "Stringing & Oozing Mitigation (MicroSwiss / High-Conductivity Nozzle)".to_string(),
-        description: "High thermal conductivity of MicroSwiss / PCD Diamond keeps the melt zone less viscous at the tip. Sets retraction 0.95mm @ 50mm/s, 0.20mm Spiral Z-Hop, 7000 mm/s² travel accel, and -4°C temp offset.".to_string(),
+        description: "High thermal conductivity of MicroSwiss / PCD Diamond keeps the melt zone less viscous at the tip. Composes relatively on the P10/P12 curves: elastomer-gated −2°C trim in the PLA/PETG band only, clamped retraction recovery (≤ +0.07mm), quadratic speed damping to 36–38 mm/s, orifice-scaled filament Z-Hop (Spiral), travel accel boosted toward 12000 mm/s², wipe_on_loops=1.".to_string(),
         category: "Default Hardware Rule".to_string(),
         icon: "⚡".to_string(),
         enabled: true,
@@ -1484,7 +1509,8 @@ end
     let mut rule_sources: HashMap<String, String> = HashMap::new();
     let mut rule_changes: Vec<RuleBeforeAfterChange> = Vec::new();
     let mut raw_step_records: Vec<RawStepRecord> = Vec::new();
-    let mut step_snapshots: HashMap<usize, (String, serde_json::Value)> = HashMap::new();
+    let mut step_snapshots: HashMap<usize, (String, serde_json::Value, String, String)> =
+      HashMap::new();
     let mut user_rule_scales: HashMap<String, f64> = HashMap::new();
     let mut skipped_rules: Vec<SkippedRuleInfo> = Vec::new();
 
@@ -1528,11 +1554,16 @@ end
         if let Ok((dry_val, _, dry_mod)) =
           execute_transformation_lua(&rule.lua_code, &current_values, context)
         {
-          if let (serde_json::Value::Object(ref before_map), serde_json::Value::Object(ref after_map)) =
-            (&current_values, &dry_val)
+          if let (
+            serde_json::Value::Object(ref before_map),
+            serde_json::Value::Object(ref after_map),
+          ) = (&current_values, &dry_val)
           {
             for (k, v) in after_map {
-              if k.starts_with('_') || k == "flush_volumes_matrix" || k == "computed_safe_speed_ceiling" {
+              if k.starts_with('_')
+                || k == "flush_volumes_matrix"
+                || k == "computed_safe_speed_ceiling"
+              {
                 continue;
               }
               if before_map.get(k) != Some(v) {
@@ -1566,7 +1597,15 @@ end
       ));
 
       let before_snapshot = current_values.clone();
-      step_snapshots.insert(step_num, (rule.lua_code.clone(), before_snapshot.clone()));
+      step_snapshots.insert(
+        step_num,
+        (
+          rule.lua_code.clone(),
+          before_snapshot.clone(),
+          rule.id.clone(),
+          rule.name.clone(),
+        ),
+      );
       match execute_transformation_lua(&rule.lua_code, &current_values, context) {
         Ok((new_val, stdout, modified)) => {
           let rule_log_summary = stdout.join(" • ");
@@ -1694,18 +1733,18 @@ end
       if unit == "flag" {
         return None;
       }
-      raw
-        .trim()
-        .trim_end_matches('%')
-        .trim()
-        .parse::<f64>()
-        .ok()
+      raw.trim().trim_end_matches('%').trim().parse::<f64>().ok()
     };
 
     let mut records_by_key: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut records_by_step: HashMap<usize, Vec<usize>> = HashMap::new();
     for (rec_idx, rec) in raw_step_records.iter().enumerate() {
       records_by_key
         .entry(rec.param_key.clone())
+        .or_default()
+        .push(rec_idx);
+      records_by_step
+        .entry(rec.step_num)
         .or_default()
         .push(rec_idx);
     }
@@ -1715,89 +1754,246 @@ end
       let Some(rec_indices) = records_by_key.get(&key) else {
         continue;
       };
-      if rec_indices.len() < 2 {
-        continue;
-      }
-      let final_change_idx = raw_step_records[*rec_indices.last().unwrap()].change_idx;
-      let final_after_fmt = rule_changes[final_change_idx].after_value.clone();
+      if rec_indices.len() >= 2 {
+        let final_change_idx = raw_step_records[*rec_indices.last().unwrap()].change_idx;
+        let final_after_fmt = rule_changes[final_change_idx].after_value.clone();
 
-      for pos in 0..(rec_indices.len() - 1) {
-        let curr = &raw_step_records[rec_indices[pos]];
-        let curr_num_delta = match (
-          parse_num_for_shadow(&curr.raw_before, &curr.unit),
-          parse_num_for_shadow(&curr.raw_after, &curr.unit),
-        ) {
-          (Some(b), Some(a)) => Some(a - b),
-          _ => None,
-        };
+        for pos in 0..(rec_indices.len() - 1) {
+          let curr = &raw_step_records[rec_indices[pos]];
+          let curr_num_delta = match (
+            parse_num_for_shadow(&curr.raw_before, &curr.unit),
+            parse_num_for_shadow(&curr.raw_after, &curr.unit),
+          ) {
+            (Some(b), Some(a)) => Some(a - b),
+            _ => None,
+          };
 
-        let mut detected: Option<(RuleShadowKind, usize)> = None;
+          let mut detected: Option<(RuleShadowKind, usize)> = None;
 
-        // Opposite-direction adjustments from different rules (e.g. +5°C for a hardened nozzle, -3°C for
-        // wet filament) are normal relative composition and are NOT flagged. We only flag absolute
-        // clobbering: a downstream rule whose output is identical even when `key` is restored to
-        // `curr.raw_before`, i.e. the downstream rule completely forgot `curr`'s contribution.
-        // A zero-delta numeric step contributes nothing and cannot be clobbered.
-        let curr_is_noop = matches!(curr_num_delta, Some(d) if d.abs() <= 1e-9);
-        if !curr_is_noop {
-          for &later_rec_idx in &rec_indices[(pos + 1)..] {
-            let later = &raw_step_records[later_rec_idx];
-            let Some((later_lua, later_before_snap)) = step_snapshots.get(&later.step_num) else {
-              continue;
+          // Opposite-direction adjustments from different rules (e.g. +5°C for a hardened nozzle, -3°C for
+          // wet filament) are normal relative composition and are NOT flagged. We only flag absolute
+          // clobbering: a downstream rule whose output is identical even when `key` is restored to
+          // `curr.raw_before`, i.e. the downstream rule completely forgot `curr`'s contribution.
+          // A zero-delta numeric step contributes nothing and cannot be clobbered.
+          let curr_is_noop = matches!(curr_num_delta, Some(d) if d.abs() <= 1e-9);
+          if !curr_is_noop {
+            // Restore a pre-step value while preserving the LIVE shape the later rule sees
+            // (preset values are usually single-element arrays like ["225"]; feeding a bare string
+            // would make Lua `config[key][1]` reads return nil and skew the counterfactual).
+            let restore_val = |snap_map: &serde_json::Map<String, serde_json::Value>,
+                               param_key: &str,
+                               before_json: &Option<serde_json::Value>,
+                               raw_before: &str|
+             -> Option<serde_json::Value> {
+              let orig = match before_json {
+                Some(v) => Some(v.clone()),
+                None if raw_before != "(unset)" => {
+                  Some(serde_json::Value::String(raw_before.to_string()))
+                }
+                None => None,
+              };
+              orig.map(|v| match snap_map.get(param_key) {
+                Some(serde_json::Value::Array(_)) => match &v {
+                  serde_json::Value::Array(_) => v,
+                  scalar => serde_json::json!([scalar]),
+                },
+                _ => v,
+              })
             };
-            let mut cf_snap = later_before_snap.clone();
-            if let serde_json::Value::Object(ref mut cf_map) = cf_snap {
-              if let Some(ref orig_v) = curr.before_json_val {
-                cf_map.insert(key.clone(), orig_v.clone());
-              } else if curr.raw_before != "(unset)" {
-                cf_map.insert(
-                  key.clone(),
-                  serde_json::Value::String(curr.raw_before.clone()),
-                );
-              } else {
-                cf_map.remove(&key);
+            for &later_rec_idx in &rec_indices[(pos + 1)..] {
+              let later = &raw_step_records[later_rec_idx];
+              let Some((later_lua, later_before_snap, _, _)) = step_snapshots.get(&later.step_num)
+              else {
+                continue;
+              };
+              let mut cf_snap = later_before_snap.clone();
+              if let serde_json::Value::Object(ref mut cf_map) = cf_snap {
+                match restore_val(cf_map, &key, &curr.before_json_val, &curr.raw_before) {
+                  Some(v) => {
+                    cf_map.insert(key.clone(), v);
+                  }
+                  None => {
+                    cf_map.remove(&key);
+                  }
+                }
               }
-            }
-            if let Ok((serde_json::Value::Object(cf_out_map), _, _)) =
-              execute_transformation_lua(later_lua, &cf_snap, context)
-            {
-              let cf_after_str = cf_out_map.get(&key).map(&extract_scalar).unwrap_or_default();
-              if values_are_equivalent(&cf_after_str, &later.raw_after) {
-                detected = Some((RuleShadowKind::Overwritten, later_rec_idx));
-                break;
+              if let Ok((serde_json::Value::Object(cf_out_map), _, _)) =
+                execute_transformation_lua(later_lua, &cf_snap, context)
+              {
+                let cf_after_str = cf_out_map
+                  .get(&key)
+                  .map(&extract_scalar)
+                  .unwrap_or_default();
+                if values_are_equivalent(&cf_after_str, &later.raw_after) {
+                  // The later rule's output for `key` ignores this step's write to `key`. Before
+                  // calling it a true clobber, check whether the step's intent reached the later
+                  // rule through SIBLING keys the same step wrote (e.g. it set both
+                  // `nozzle_temperature` and `nozzle_temperature_HS`, and the later rule recomputes
+                  // `_HS` from `nozzle_temperature`): undo the step's whole contribution and see if
+                  // the later output changes. Changed output => Recomputed (benign); identical
+                  // output => Overwritten (the contribution was truly forgotten).
+                  let mut kind = RuleShadowKind::Overwritten;
+                  if let Some(step_recs) = records_by_step.get(&curr.step_num) {
+                    let mut cf2_snap = later_before_snap.clone();
+                    if let serde_json::Value::Object(ref mut cf2_map) = cf2_snap {
+                      let mut restored_any = false;
+                      for &sib_idx in step_recs {
+                        let sib = &raw_step_records[sib_idx];
+                        let (sib_key, before_json, raw_before) = if sib.param_key == key {
+                          (&key, &curr.before_json_val, &curr.raw_before)
+                        } else {
+                          // Only restore siblings the later rule still sees unchanged since this
+                          // step wrote them (an intervening rule's edit must not be erased).
+                          let sib_current = cf2_map.get(&sib.param_key).map(&extract_scalar);
+                          let unchanged = sib_current
+                            .as_deref()
+                            .map(|v| values_are_equivalent(v, &sib.raw_after))
+                            .unwrap_or(false);
+                          if !unchanged {
+                            continue;
+                          }
+                          (&sib.param_key, &sib.before_json_val, &sib.raw_before)
+                        };
+                        match restore_val(cf2_map, sib_key, before_json, raw_before) {
+                          Some(v) => {
+                            cf2_map.insert(sib_key.clone(), v);
+                          }
+                          None => {
+                            cf2_map.remove(sib_key);
+                          }
+                        }
+                        restored_any = true;
+                      }
+                      if restored_any {
+                        if let Ok((serde_json::Value::Object(cf2_out_map), _, _)) =
+                          execute_transformation_lua(later_lua, &cf2_snap, context)
+                        {
+                          let cf2_after_str = cf2_out_map
+                            .get(&key)
+                            .map(&extract_scalar)
+                            .unwrap_or_default();
+                          if !values_are_equivalent(&cf2_after_str, &later.raw_after) {
+                            kind = RuleShadowKind::Recomputed;
+                          }
+                        }
+                      }
+                    }
+                  }
+                  detected = Some((kind, later_rec_idx));
+                  break;
+                }
               }
             }
           }
+
+          if let Some((kind, later_rec_idx)) = detected {
+            let later = &raw_step_records[later_rec_idx];
+            let later_rule_id = rule_changes[later.change_idx].rule_id.clone();
+            let later_rule_name = rule_changes[later.change_idx].rule_name.clone();
+            let later_step_num = later.step_num;
+            let curr_change = &mut rule_changes[curr.change_idx];
+            curr_change.shadow_kind = Some(kind);
+            curr_change.shadowed_by_step = Some(later_step_num);
+            curr_change.shadowed_by_rule_id = Some(later_rule_id);
+            curr_change.shadowed_by_rule_name = Some(later_rule_name.clone());
+            curr_change.shadowed_final_value = Some(final_after_fmt.clone());
+
+            let kind_tag = match kind {
+              RuleShadowKind::Overwritten => "⚡ Overwritten by Later Rule",
+              RuleShadowKind::Recomputed => "♻ Recomputed by Later Rule (intent preserved)",
+              RuleShadowKind::Accepted => unreachable!("Accepted is classified below"),
+            };
+            execution_logs.push(format!(
+              "⚠️ [{}] {} ({}): Step #{} ('{}': {} → {}) superseded by Step #{} ('{}' → {})",
+              kind_tag,
+              curr_change.param_label,
+              key,
+              curr_change.step_number,
+              curr_change.rule_name,
+              curr_change.before_value,
+              curr_change.after_value,
+              later_step_num,
+              later_rule_name,
+              final_after_fmt
+            ));
+          }
         }
+      }
 
-        if let Some((kind, later_rec_idx)) = detected {
-          let later = &raw_step_records[later_rec_idx];
-          let later_rule_id = rule_changes[later.change_idx].rule_id.clone();
-          let later_rule_name = rule_changes[later.change_idx].rule_name.clone();
-          let later_step_num = later.step_num;
-          let curr_change = &mut rule_changes[curr.change_idx];
-          curr_change.shadow_kind = Some(kind);
-          curr_change.shadowed_by_step = Some(later_step_num);
-          curr_change.shadowed_by_rule_id = Some(later_rule_id);
-          curr_change.shadowed_by_rule_name = Some(later_rule_name.clone());
-          curr_change.shadowed_final_value = Some(final_after_fmt.clone());
-
-          let kind_tag = match kind {
-            RuleShadowKind::Overwritten => "⚡ Overwritten by Later Rule",
+      // Acceptance classification: this key's LAST surviving write was not clobbered — find the
+      // first downstream rule that READ the key (its output follows a perturbation of the key) and
+      // still left the value untouched: the guard ACCEPTED the earlier value (e.g. `min(x, 20)`
+      // with x already ≤ 20). Informational only — never marks the parameter as shadowed.
+      let last_rec_idx = *rec_indices.last().unwrap();
+      {
+        let last = &raw_step_records[last_rec_idx];
+        if rule_changes[last.change_idx].shadow_kind.is_none() {
+          let perturbed_scalar = match last.raw_after.trim().parse::<f64>() {
+            Ok(n) => format!("{:.3}", n + 123.75),
+            Err(_) => format!("ZZ{}", last.raw_after),
           };
-          execution_logs.push(format!(
-            "⚠️ [{}] {} ({}): Step #{} ('{}': {} → {}) superseded by Step #{} ('{}' → {})",
-            kind_tag,
-            curr_change.param_label,
-            key,
-            curr_change.step_number,
-            curr_change.rule_name,
-            curr_change.before_value,
-            curr_change.after_value,
-            later_step_num,
-            later_rule_name,
-            final_after_fmt
-          ));
+          let mut later_step_nums: Vec<usize> = step_snapshots
+            .keys()
+            .copied()
+            .filter(|&sn| sn > last.step_num)
+            .collect();
+          later_step_nums.sort_unstable();
+          for later_step_num in later_step_nums {
+            let Some((later_lua, later_before_snap, later_rule_id, later_rule_name)) =
+              step_snapshots.get(&later_step_num)
+            else {
+              continue;
+            };
+            if !later_lua.contains(&key) {
+              continue;
+            }
+            let mut pert_snap = later_before_snap.clone();
+            if let serde_json::Value::Object(ref mut pmap) = pert_snap {
+              let pert_val = match pmap.get(&key) {
+                Some(serde_json::Value::Array(_)) => {
+                  serde_json::json!([perturbed_scalar])
+                }
+                _ => serde_json::Value::String(perturbed_scalar.clone()),
+              };
+              pmap.insert(key.clone(), pert_val);
+            }
+            let Ok((serde_json::Value::Object(pert_out_map), _, _)) =
+              execute_transformation_lua(later_lua, &pert_snap, context)
+            else {
+              continue;
+            };
+            let pert_out_str = pert_out_map
+              .get(&key)
+              .map(&extract_scalar)
+              .unwrap_or_default();
+            // The rule ACCEPTed the key only if it is a self-referential writer: under the
+            // perturbation it must TRANSFORM the input (output != perturbed input). A rule that
+            // merely reads the key for another purpose echoes the perturbed value back unchanged
+            // and must not be classified as a guard.
+            if !pert_out_str.is_empty() && !values_are_equivalent(&pert_out_str, &perturbed_scalar)
+            {
+              let later_rule_id = later_rule_id.clone();
+              let later_rule_name = later_rule_name.clone();
+              let last_change = &mut rule_changes[last.change_idx];
+              last_change.shadow_kind = Some(RuleShadowKind::Accepted);
+              last_change.shadowed_by_step = Some(later_step_num);
+              last_change.shadowed_by_rule_id = Some(later_rule_id);
+              last_change.shadowed_by_rule_name = Some(later_rule_name.clone());
+              last_change.shadowed_final_value = Some(last.raw_after.clone());
+              execution_logs.push(format!(
+                "✔️ [Accepted by Later Rule] {} ({}): Step #{} ('{}': {} → {}) satisfied Step #{} ('{}') constraint and passed through unchanged",
+                last_change.param_label,
+                key,
+                last_change.step_number,
+                last_change.rule_name,
+                last_change.before_value,
+                last_change.after_value,
+                later_step_num,
+                later_rule_name
+              ));
+              break;
+            }
+          }
         }
       }
     }
@@ -1884,7 +2080,10 @@ end
     let origin_source_name = if base_profile.name.is_empty() {
       "System Base Profile + Active Spool & Process Baseline".to_string()
     } else {
-      format!("{} (Base Profile + Spool/Process Baseline)", base_profile.name)
+      format!(
+        "{} (Base Profile + Spool/Process Baseline)",
+        base_profile.name
+      )
     };
     let mut provenance_items =
       Self::build_parameter_provenance(&diff_items, &rule_changes, &origin_source_name);
@@ -1975,7 +2174,11 @@ end
       } else {
         "Unmodified (Baseline retained)".to_string()
       };
-      let has_shadowed_steps = steps.iter().any(|s| s.shadow_kind.is_some());
+      // Only true clobbers (intent lost) mark the parameter as shadowed; `Recomputed` steps are
+      // informational (the value was re-derived from this step's other outputs).
+      let has_shadowed_steps = steps
+        .iter()
+        .any(|s| s.shadow_kind == Some(RuleShadowKind::Overwritten));
       result.push(ParameterProvenance {
         param_key: item.key.clone(),
         param_label: item.label.clone(),
@@ -2390,26 +2593,25 @@ end
       let canon = FilamentSpool::canonical_polymer_key(mat);
       let (base_min_noz, base_max_noz) = FilamentSpool::polymer_safe_nozzle_bounds(mat);
       let (_base_min_bed, base_max_bed) = FilamentSpool::polymer_safe_bed_bounds(mat);
-      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) = if spool
-        .finish_type
-        .eq_ignore_ascii_case("Foaming")
-        && (canon.starts_with("TPU") || canon == "PEBA" || mat_up.contains("AIR"))
-      {
-        (180, 285, 281, 105)
-      } else if spool.finish_type.eq_ignore_ascii_case("Conductive") || mat_up.contains("ESD") {
-        let mn = (base_min_noz - 5).max(180);
-        let mx = (base_max_noz + 25).max(290).min(300);
-        (mn, mx, mx - 4, base_max_bed + 10)
-      } else {
-        let mn = if canon == "PCL" {
-          base_min_noz - 5
+      let (min_nozzle, max_nozzle, warn_nozzle, max_bed) =
+        if spool.finish_type.eq_ignore_ascii_case("Foaming")
+          && (canon.starts_with("TPU") || canon == "PEBA" || mat_up.contains("AIR"))
+        {
+          (180, 285, 281, 105)
+        } else if spool.finish_type.eq_ignore_ascii_case("Conductive") || mat_up.contains("ESD") {
+          let mn = (base_min_noz - 5).max(180);
+          let mx = (base_max_noz + 25).max(290).min(300);
+          (mn, mx, mx - 4, base_max_bed + 10)
         } else {
-          (base_min_noz - 5).max(180)
+          let mn = if canon == "PCL" {
+            base_min_noz - 5
+          } else {
+            (base_min_noz - 5).max(180)
+          };
+          let mx = base_max_noz + 5;
+          let wn = base_max_noz + 1;
+          (mn, mx, wn, base_max_bed + 10)
         };
-        let mx = base_max_noz + 5;
-        let wn = base_max_noz + 1;
-        (mn, mx, wn, base_max_bed + 10)
-      };
 
       if spool.print_temp < min_nozzle || spool.print_temp > max_nozzle {
         push_warn(SafetyWarning {
@@ -2897,7 +3099,10 @@ impl ParameterizedCalibrationTemplate {
       || self.id.starts_with("mach_")
       || matches!(
         self.id.as_str(),
-        "support_tuning" | "ironing_tuning" | "dimensional_precision" | "bridge_overhang_tuning"
+        "support_tuning"
+          | "ironing_tuning"
+          | "dimensional_precision"
+          | "bridge_overhang_tuning"
           | "line_width_geometry"
           | "structural_strength"
       )
@@ -3755,7 +3960,10 @@ end
         .map(|(d, _)| *d)
         .collect()
     };
-    assert_eq!(diams_for("diamondback"), vec!["0.25", "0.4", "0.6", "0.8"]);
+    assert_eq!(
+      diams_for("diamondback"),
+      vec!["0.25", "0.4", "0.6", "0.8", "1.0"]
+    );
     assert_eq!(diams_for("cm2"), vec!["0.4", "0.6", "0.8"]);
     assert_eq!(diams_for("cht_cm2"), vec!["0.4", "0.6", "0.8"]);
     assert_eq!(diams_for("cht"), vec!["0.4", "0.6", "0.8", "1.0"]);
@@ -3763,6 +3971,97 @@ end
       diams_for("microswiss_brass"),
       vec!["0.2", "0.3", "0.4", "0.6", "0.8", "1.0"]
     );
+  }
+
+  /// Step-1 pipeline unification end-to-end check (doc/pwl-nozzle-compensation-math.md §7/§8):
+  /// the per-spool Lua evaluation inside `resolve_spool_orca_filament_map_with_rig_and_overrides`
+  /// must actually reach the exported filament preset with the exact PWL chain values, and the
+  /// P25 process keys (`travel_acceleration`, `wipe_on_loops`) must ship through
+  /// `build_process_preset_json`.
+  #[test]
+  fn test_diamondback_pwl_wiring_ships_rule_values_to_exports() {
+    let rig = MachineRig::get_template_catalog()
+      .into_iter()
+      .find(|r| r.nozzle_type == "diamondback")
+      .expect("diamondback template rig");
+    let catalog = crate::catalog::load_merged_catalog();
+    let petg_entry = catalog.filaments.iter().find(|f| f.code == "PETG").unwrap();
+    let mut spool = FilamentSpool::from_catalog_entry(1, petg_entry, &rig.nozzle_type);
+    // Pin the brand calibration the expectations below assume, so the test cannot drift when
+    // the generated catalog's per-code winner changes (pinned OrcaSlicer release bump).
+    spool.flow_ratio = 0.96;
+
+    let empty_overrides = serde_json::Map::new();
+    let json_str = crate::threemf::export_standalone_filament_json_with_overrides(
+      &spool,
+      &rig,
+      &empty_overrides,
+    );
+    let map: serde_json::Map<String, serde_json::Value> =
+      serde_json::from_str::<serde_json::Value>(&json_str)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    let first = |k: &str| map[k][0].as_str().unwrap().to_string();
+    // Catalog PETG brass base 230 °C / flow 0.96 / retract 0.80 @ 40 / z-hop 0.15 Spiral:
+    // P10 curve 230 -> 220 (-10.4), P25 gated trim -> 218, final clamped to the PETG floor−2
+    // (225−2 = 223). P12: 0.80 -> 0.70 @ 44; P25 recovery -> 0.75, quadratic damp -> 38.
+    // Flow 0.96 -> 0.954 (die-swell trim). Z-hop 0.15 -> 0.22 Spiral Lift.
+    assert_eq!(first("nozzle_temperature"), "223");
+    assert_eq!(first("nozzle_temperature_BRASS"), "223");
+    assert_eq!(first("nozzle_temperature_HS"), "223");
+    assert_eq!(first("filament_retraction_length"), "0.75");
+    assert_eq!(first("filament_retraction_speed"), "38");
+    assert_eq!(first("filament_flow_ratio"), "0.954");
+    assert_eq!(first("filament_z_hop"), "0.22");
+    assert_eq!(first("filament_z_hop_types"), "Spiral Lift");
+    // Polymer safety band still enforced around the rule output, allowing only the approved
+    // −2 °C anti-stringing excursion below the floor (threemf wiring clamps to floor−2).
+    let (lo, hi) = FilamentSpool::polymer_safe_nozzle_bounds("PETG");
+    let t: i32 = first("nozzle_temperature").parse().unwrap();
+    assert!(
+      (lo - 2..=hi).contains(&t),
+      "PETG temp {} outside [{}, {}]",
+      t,
+      lo - 2,
+      hi
+    );
+
+    // Process side: travel_acceleration boost (clears the <8000 -> 10000 clamp) + wipe ship.
+    let procs = crate::models::ProcessProfile::get_default_processes();
+    let proc = &procs[0];
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("layer_height", &format!("{:.2}", proc.layer_height));
+    let mut rules = TransformationEngine::get_default_rules();
+    TransformationEngine::sync_rules_for_rig(
+      &mut rules,
+      &rig.nozzle_type,
+      &rig.nozzle_material,
+      rig.ace_pro_units,
+    );
+    let ctx = json!({
+      "printer_model": rig.printer_model,
+      "nozzle_type": rig.nozzle_type,
+      "nozzle_material": rig.nozzle_material,
+      "nozzle_diameter": rig.nozzle_diameter,
+      "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "melt_zone_multiplier": rig.melt_zone_multiplier,
+      "layer_height": proc.layer_height,
+      "line_width": proc.line_width,
+      "addons": rig.addons,
+    });
+    let eval = TransformationEngine::evaluate_stack(&base, &rules, &ctx);
+    let proc_json =
+      crate::threemf::build_process_preset_json(proc, &rig, &eval.resulting_profile.values);
+    let pmap: serde_json::Map<String, serde_json::Value> =
+      serde_json::from_str::<serde_json::Value>(&proc_json)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(pmap["travel_acceleration"].as_str(), Some("10700"));
+    assert_eq!(pmap["wipe_on_loops"].as_str(), Some("1"));
   }
 
   #[test]
@@ -3778,7 +4077,11 @@ end
     let mut ans = fast_start.default_answers();
     let (title1, _desc1, badge1, lua1) = fast_start.generate_from_answers(&ans, "all");
     // Without a rig in context the title is rig-agnostic (never names another brand)
-    assert!(title1.contains("Startup G-Code — Rig-Specific"), "title: {}", title1);
+    assert!(
+      title1.contains("Startup G-Code — Rig-Specific"),
+      "title: {}",
+      title1
+    );
     assert!(!title1.contains("Bambu"), "title: {}", title1);
     let _ = badge1;
     let kobra_desc = describe_lua_rule(
@@ -3789,9 +4092,16 @@ end
     )
     .unwrap();
     let kobra_title = kobra_desc.title.unwrap_or_default();
-    assert!(kobra_title.contains("Startup G-Code: Kobra S1 Unpacked G9111"), "title: {}", kobra_title);
+    assert!(
+      kobra_title.contains("Startup G-Code: Kobra S1 Unpacked G9111"),
+      "title: {}",
+      kobra_title
+    );
     assert!(!kobra_title.contains("Bambu"), "title: {}", kobra_title);
-    assert!(kobra_desc.badge.unwrap_or_default().contains("LEVIQ2 Z-Offset ON"));
+    assert!(kobra_desc
+      .badge
+      .unwrap_or_default()
+      .contains("LEVIQ2 Z-Offset ON"));
     let (cfg1, _, _) = execute_transformation_lua(
       &lua1,
       &json!({
@@ -3853,7 +4163,8 @@ end
     let gcode_1to1 = cfg_1to1["machine_start_gcode"].as_str().unwrap();
     assert!(gcode_1to1.contains("M109 S170 ; Heat nozzle to 170C"));
     assert!(gcode_1to1.contains("WIPE_NOZZLE ; Execute 14x native brush wipe"));
-    assert!(gcode_1to1.contains("M109 S140 ; GOLDEN RULE: Cool nozzle to 140C on silicone pad before Z-homing!"));
+    assert!(gcode_1to1
+      .contains("M109 S140 ; GOLDEN RULE: Cool nozzle to 140C on silicone pad before Z-homing!"));
     assert!(gcode_1to1.contains("LEVIQ2_AUTO_ZOFFSET"));
 
     // 3. Bambu Lab Fast-Start + Keep AMS Loaded at End + E-18 Cut Poop-Saver
@@ -3871,8 +4182,16 @@ end
     )
     .unwrap();
     let badge_bambu = bambu_desc.badge.unwrap_or_default();
-    assert!(badge_bambu.contains("Bambu Fast-Start"), "badge: {}", badge_bambu);
-    assert!(badge_bambu.contains("Keep AMS Loaded"), "badge: {}", badge_bambu);
+    assert!(
+      badge_bambu.contains("Bambu Fast-Start"),
+      "badge: {}",
+      badge_bambu
+    );
+    assert!(
+      badge_bambu.contains("Keep AMS Loaded"),
+      "badge: {}",
+      badge_bambu
+    );
     let (cfg_bambu, _, _) = execute_transformation_lua(
       &lua_bambu,
       &json!({}),
@@ -3890,7 +4209,8 @@ end
     assert!(gcode_bambu_start.contains("first_layer_print_min[0] - 5"));
     assert!(gcode_bambu_end.contains("G1 E-6 F1800 ; Quickly retract 6mm"));
     assert!(gcode_bambu_end.contains("G1 Z150 F3000"));
-    assert!(gcode_bambu_end.contains("M620 S255 / T255 / M621 S255 AMS cut & unload intentionally skipped"));
+    assert!(gcode_bambu_end
+      .contains("M620 S255 / T255 / M621 S255 AMS cut & unload intentionally skipped"));
     assert!(gcode_bambu_cut.contains("G1 E-18 F1200 ; Pull 18mm"));
     assert_eq!(cfg_bambu["flush_multiplier"], "0.60");
     assert!(!gcode_bambu_start.contains("G9111"));
@@ -3904,7 +4224,9 @@ end
       &json!({ "printer_model": "Anycubic Kobra S1" }),
     )
     .unwrap();
-    let k_start = cfg_bambu_preset_on_kobra["machine_start_gcode"].as_str().unwrap();
+    let k_start = cfg_bambu_preset_on_kobra["machine_start_gcode"]
+      .as_str()
+      .unwrap();
     assert!(k_start.contains("G28 W") && !k_start.contains("G29.1"));
     assert!(cfg_bambu_preset_on_kobra["change_filament_gcode"]
       .as_str()
@@ -3923,8 +4245,17 @@ end
     assert!(s1max_start.contains("; first_layer_fan_speed = 2"));
     assert!(s1max_start.contains("X{print_bed_max[0]*0.5}"));
     assert!(s1max_start.contains("SET_GCODE_OFFSET Z_ADJUST=-0.03 MOVE=1"));
-    for s1_only in ["WIPE_NOZZLE", "TO_THROW_POSITION", "LEVIQ2_AUTO_ZOFFSET", "X125 Y125"] {
-      assert!(!s1max_start.contains(s1_only), "S1 Max start leaked '{}'", s1_only);
+    for s1_only in [
+      "WIPE_NOZZLE",
+      "TO_THROW_POSITION",
+      "LEVIQ2_AUTO_ZOFFSET",
+      "X125 Y125",
+    ] {
+      assert!(
+        !s1max_start.contains(s1_only),
+        "S1 Max start leaked '{}'",
+        s1_only
+      );
     }
     let s1max_end = cfg_s1max["machine_end_gcode"].as_str().unwrap();
     assert!(s1max_end.contains("M141 S0") && s1max_end.contains("G1 E-5 F1800"));
@@ -3942,7 +4273,11 @@ end
     .unwrap()
     .title
     .unwrap_or_default();
-    assert!(s1max_title.contains("Kobra S1 Max"), "title: {}", s1max_title);
+    assert!(
+      s1max_title.contains("Kobra S1 Max"),
+      "title: {}",
+      s1max_title
+    );
 
     // 3d. Unsupported rigs: stock G-code left completely untouched + clear "no optimized G-code" message
     for model in [
@@ -3953,15 +4288,29 @@ end
       "Prusa MK4",
       "",
     ] {
-      let base_cfg = json!({ "filament_retraction_length": "1.50", "machine_start_gcode": "STOCK" });
+      let base_cfg =
+        json!({ "filament_retraction_length": "1.50", "machine_start_gcode": "STOCK" });
       let (cfg_none, _, _) =
         execute_transformation_lua(&lua1, &base_cfg, &json!({ "printer_model": model })).unwrap();
-      assert_eq!(cfg_none, base_cfg, "{} must keep stock machine G-code", model);
+      assert_eq!(
+        cfg_none, base_cfg,
+        "{} must keep stock machine G-code",
+        model
+      );
       if !model.is_empty() {
-        let d = describe_lua_rule(&lua1, &HashMap::new(), "all", &json!({ "printer_model": model }))
-          .unwrap();
+        let d = describe_lua_rule(
+          &lua1,
+          &HashMap::new(),
+          "all",
+          &json!({ "printer_model": model }),
+        )
+        .unwrap();
         let t = d.title.unwrap_or_default();
-        assert!(t.contains("No Optimized G-Code") && t.contains(model), "title: {}", t);
+        assert!(
+          t.contains("No Optimized G-Code") && t.contains(model),
+          "title: {}",
+          t
+        );
       }
     }
 
@@ -4154,12 +4503,9 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     let (_, _, _, iron_lua) = ironing_tpl.generate_from_answers(&iron_ans, "all");
 
     // Polymer-aware auto_polymer: 12% PLA @ 35mm/s, 18% PETG @ 30mm/s, 22% ASA @ 40mm/s
-    let (iron_pla, _, _) = execute_transformation_lua(
-      &iron_lua,
-      &json!({}),
-      &json!({ "filament_type": "PLA" }),
-    )
-    .expect("ironing PLA executes");
+    let (iron_pla, _, _) =
+      execute_transformation_lua(&iron_lua, &json!({}), &json!({ "filament_type": "PLA" }))
+        .expect("ironing PLA executes");
     assert_eq!(iron_pla["ironing_type"], "topmost");
     assert_eq!(iron_pla["ironing_flow"], "12%");
     assert_eq!(iron_pla["ironing_speed"], "35");
@@ -4167,21 +4513,15 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     assert_eq!(iron_pla["top_surface_pattern"], "monotonicline");
     assert_eq!(iron_pla["only_one_wall_top"], "1");
 
-    let (iron_petg, _, _) = execute_transformation_lua(
-      &iron_lua,
-      &json!({}),
-      &json!({ "filament_type": "PETG" }),
-    )
-    .expect("ironing PETG executes");
+    let (iron_petg, _, _) =
+      execute_transformation_lua(&iron_lua, &json!({}), &json!({ "filament_type": "PETG" }))
+        .expect("ironing PETG executes");
     assert_eq!(iron_petg["ironing_flow"], "18%");
     assert_eq!(iron_petg["ironing_speed"], "30");
 
-    let (iron_asa, _, _) = execute_transformation_lua(
-      &iron_lua,
-      &json!({}),
-      &json!({ "filament_type": "ASA" }),
-    )
-    .expect("ironing ASA executes");
+    let (iron_asa, _, _) =
+      execute_transformation_lua(&iron_lua, &json!({}), &json!({ "filament_type": "ASA" }))
+        .expect("ironing ASA executes");
     assert_eq!(iron_asa["ironing_flow"], "22%");
     assert_eq!(iron_asa["ironing_speed"], "40");
     assert_eq!(iron_asa["ironing_spacing"], "0.12");
@@ -4203,8 +4543,8 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       Some("outer wall/inner wall")
     );
     let (_, _, _, dim_lua) = dim_tpl.generate_from_answers(&dim_ans, "all");
-    let (dim_cfg, _, _) =
-      execute_transformation_lua(&dim_lua, &json!({}), &json!({})).expect("dimensional_precision executes");
+    let (dim_cfg, _, _) = execute_transformation_lua(&dim_lua, &json!({}), &json!({}))
+      .expect("dimensional_precision executes");
     assert_eq!(dim_cfg["wall_sequence"], "outer wall/inner wall");
     assert_eq!(dim_cfg["precise_outer_wall"], "1");
     assert_eq!(dim_cfg["xy_hole_compensation"], "0.080");
@@ -4218,8 +4558,8 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       .expect("bridge_overhang_tuning template exists");
     let mut br_ans = br_tpl.default_answers();
     let (_, _, _, br_lua) = br_tpl.generate_from_answers(&br_ans, "all");
-    let (br_cfg, _, _) =
-      execute_transformation_lua(&br_lua, &json!({}), &json!({})).expect("bridge_overhang_tuning executes");
+    let (br_cfg, _, _) = execute_transformation_lua(&br_lua, &json!({}), &json!({}))
+      .expect("bridge_overhang_tuning executes");
     assert_eq!(br_cfg["bridge_flow"], "0.92");
     assert_eq!(br_cfg["bridge_speed"], "28");
     assert_eq!(br_cfg["enable_overhang_speed"], "1");
@@ -4313,13 +4653,22 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     let ctx_petg = json!({ "filament_type": "PETG", "nozzle_type": "hardened_steel", "nozzle_material": "Hardened Steel", "nozzle_diameter": "0.4" });
     let ctx_pla = json!({ "filament_type": "PLA Matte", "nozzle_type": "hardened_steel", "nozzle_material": "Hardened Steel", "nozzle_diameter": "0.4" });
     let r_petg = TransformationEngine::evaluate_stack(&base, &[petg_rule.clone()], &ctx_petg);
-    assert_eq!(r_petg.resulting_profile.get_str("bridge_flow").as_deref(), Some("0.90"));
+    assert_eq!(
+      r_petg.resulting_profile.get_str("bridge_flow").as_deref(),
+      Some("0.90")
+    );
     assert!(r_petg.skipped_rules.is_empty());
     let r_pla = TransformationEngine::evaluate_stack(&base, &[petg_rule], &ctx_pla);
-    assert_eq!(r_pla.resulting_profile.get_str("bridge_flow").as_deref(), Some("1.00"));
+    assert_eq!(
+      r_pla.resulting_profile.get_str("bridge_flow").as_deref(),
+      Some("1.00")
+    );
     assert_eq!(r_pla.skipped_rules.len(), 1);
     assert!(r_pla.skipped_rules[0].reason.contains("Polymer filter"));
-    assert_eq!(r_pla.skipped_rules[0].would_touch_keys, vec!["bridge_flow".to_string()]);
+    assert_eq!(
+      r_pla.skipped_rules[0].would_touch_keys,
+      vec!["bridge_flow".to_string()]
+    );
     let bf_prov = r_pla
       .provenance_items
       .iter()
@@ -4332,8 +4681,12 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       polymers: vec!["FIBER".to_string()],
       ..Default::default()
     };
-    assert!(fiber.mismatch_reason(&json!({ "filament_type": "PA6-CF" })).is_none());
-    assert!(fiber.mismatch_reason(&json!({ "filament_type": "PETG" })).is_some());
+    assert!(fiber
+      .mismatch_reason(&json!({ "filament_type": "PA6-CF" }))
+      .is_none());
+    assert!(fiber
+      .mismatch_reason(&json!({ "filament_type": "PETG" }))
+      .is_some());
 
     // 2. Nozzle diameter + material filters
     let noz = RuleScopeFilter {
@@ -4368,12 +4721,8 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
         ..Default::default()
       },
     );
-    let per_proc = TransformationEngine::evaluate_stack_per_process(
-      &base,
-      &[fine_only],
-      &ctx_petg,
-      &processes,
-    );
+    let per_proc =
+      TransformationEngine::evaluate_stack_per_process(&base, &[fine_only], &ctx_petg, &processes);
     let rig = MachineRig::kobra_s1_hardened_steel_png();
     for proc in &processes {
       let ov = per_proc.get(&proc.id).expect("per-process overrides");
@@ -4451,9 +4800,12 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     tpl.apply_answer_change(&mut ans, "geometry_preset", "strength".to_string());
     assert_eq!(ans.get("inner_pct").map(|s| s.as_str()), Some("135"));
     let (_, _, _, strength_lua) = tpl.generate_from_answers(&ans, "all");
-    let (cfg_str, _, _) =
-      execute_transformation_lua(&strength_lua, &json!({}), &json!({ "nozzle_diameter": "0.4" }))
-        .unwrap();
+    let (cfg_str, _, _) = execute_transformation_lua(
+      &strength_lua,
+      &json!({}),
+      &json!({ "nozzle_diameter": "0.4" }),
+    )
+    .unwrap();
     assert_eq!(cfg_str["inner_wall_line_width"], "0.54");
     ans.insert("inner_pct".to_string(), "100".to_string());
     ans.insert("outer_pct".to_string(), "110".to_string());
@@ -4480,7 +4832,8 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       "filament_type": "PETG",
     });
     let processes = crate::models::ProcessProfile::get_default_processes();
-    let per_proc = TransformationEngine::evaluate_stack_per_process(&base, &rules, &ctx, &processes);
+    let per_proc =
+      TransformationEngine::evaluate_stack_per_process(&base, &rules, &ctx, &processes);
     for proc in &processes {
       let ov = &per_proc[&proc.id];
       assert_eq!(
@@ -4491,9 +4844,24 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       );
       let proc_json = crate::threemf::build_process_preset_json(proc, &rig, ov);
       let val: serde_json::Value = serde_json::from_str(&proc_json).unwrap();
-      assert_eq!(val["inner_wall_line_width"].as_str(), Some("0.50"), "process {}", proc.name);
-      assert_eq!(val["sparse_infill_line_width"].as_str(), Some("0.50"), "process {}", proc.name);
-      assert_eq!(val["top_surface_line_width"].as_str(), Some("0.38"), "process {}", proc.name);
+      assert_eq!(
+        val["inner_wall_line_width"].as_str(),
+        Some("0.50"),
+        "process {}",
+        proc.name
+      );
+      assert_eq!(
+        val["sparse_infill_line_width"].as_str(),
+        Some("0.50"),
+        "process {}",
+        proc.name
+      );
+      assert_eq!(
+        val["top_surface_line_width"].as_str(),
+        Some("0.38"),
+        "process {}",
+        proc.name
+      );
     }
   }
 
@@ -4575,7 +4943,11 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       assert!(num(&boosted, "nozzle_temperature") <= max_safe, "{}", code);
       let expected_fan = ((num(&plain, "fan_max_speed") as f64) * 0.65).round() as i32;
       assert_eq!(num(&boosted, "fan_max_speed"), expected_fan, "{}", code);
-      assert!(num(&boosted, "fan_min_speed") <= num(&boosted, "fan_max_speed"), "{}", code);
+      assert!(
+        num(&boosted, "fan_min_speed") <= num(&boosted, "fan_max_speed"),
+        "{}",
+        code
+      );
     }
 
     // 4. Process presets export the structural keys
@@ -4697,6 +5069,238 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     assert!(prov("fan_max_speed").has_shadowed_steps);
   }
 
+  /// `RuleShadowKind::Accepted`: a downstream guard that READS the key and passes the value
+  /// through unchanged (`x = min(x, 20)` with `x` already below the cap) must be classified as
+  /// Accepted — the value survived because it satisfied the constraint, not because it was
+  /// recomputed. When the clamp actually engages (x above the cap), the downstream rule writes a
+  /// change record and nothing is flagged as Accepted.
+  #[test]
+  fn test_shadow_kind_accepted_when_guard_passes_value_through() {
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("filament_retraction_length", "5.0");
+    let mk = |id: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: id.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+    let calibrator = mk(
+      "calibrator",
+      10,
+      r#"
+        config["filament_retraction_length"] = { "0.60" }
+      "#,
+    );
+    let guard = mk(
+      "guard",
+      20,
+      r#"
+        local r = tonumber(config["filament_retraction_length"]) or 5.0
+        config["filament_retraction_length"] = { string.format("%.2f", math.min(r, 20)) }
+      "#,
+    );
+
+    // 0.60 < 20 cap: the guard accepts the calibrator's value untouched.
+    let eval =
+      TransformationEngine::evaluate_stack(&base, &[calibrator.clone(), guard.clone()], &json!({}));
+    let calib_change = eval
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "calibrator")
+      .unwrap()
+      .clone();
+    assert_eq!(
+      calib_change.shadow_kind,
+      Some(RuleShadowKind::Accepted),
+      "guard read 0.60mm and passed it through its min(., 20) cap unchanged"
+    );
+    assert_eq!(calib_change.shadowed_by_rule_id.as_deref(), Some("guard"));
+    assert!(
+      !eval
+        .provenance_items
+        .iter()
+        .find(|p| p.param_key == "filament_retraction_length")
+        .unwrap()
+        .has_shadowed_steps
+    );
+
+    // 25.0 > 20 cap: the clamp ENGAGES, the guard writes its own change record, and the earlier
+    // step's contribution genuinely mattered (restoring the pre-value changes the outcome) — so
+    // nothing is Accepted, and the parameter is not shadowed either.
+    let engager = mk(
+      "engager",
+      5,
+      r#"
+        config["filament_retraction_length"] = { "25.0" }
+      "#,
+    );
+    let eval2 = TransformationEngine::evaluate_stack(&base, &[engager, guard], &json!({}));
+    let engager_change = eval2
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "engager")
+      .unwrap()
+      .clone();
+    assert_eq!(
+      engager_change.shadow_kind, None,
+      "clamped-but-mattering contribution is a normal transformation, not Accepted"
+    );
+  }
+
+  /// Real-rules classification check: `sym_wet_filament` recomputes `nozzle_temperature_HS` from
+  /// `nozzle_temperature`. Directly after `thermal_conductivity` that is a benign `Recomputed`
+  /// (the +Δ intent survives through the sibling key); with a relative-temp rule (like
+  /// `symptom_stringing_diamondback`'s -4°C) running in between, thermal's value no longer reaches
+  /// the wet rule and the HS write is truly `Overwritten`.
+  #[test]
+  fn test_real_thermal_wet_shadow_classification() {
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("nozzle_temperature", "230");
+    base.set_str("nozzle_temperature_initial_layer", "235");
+    base.set_str("nozzle_temperature_HS", "230");
+    let mk = |id: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: id.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+    let thermal = mk(
+      "thermal_conductivity",
+      10,
+      include_str!("../transformations/thermal_conductivity.lua"),
+    );
+    let mut wet = mk(
+      "sym_wet_filament",
+      55,
+      include_str!("../transformations/parametric/sym_wet_filament.lua"),
+    );
+    let mut params = std::collections::HashMap::new();
+    params.insert("filament_humidity_pct".to_string(), "65".to_string());
+    wet.lua_code = crate::lua_engine::embed_param_defaults_in_lua(&wet.lua_code, &params);
+    let stringing = mk(
+      "stringing_like",
+      25,
+      r#"
+        local t = tonumber(config["nozzle_temperature"]) or 225
+        config["nozzle_temperature"] = tostring(t - 4)
+      "#,
+    );
+    let ctx = json!({ "nozzle_type": "hardened_steel", "nozzle_material": "Hardened Steel", "filament_type": "PETG", "filament_humidity_pct": 65 });
+
+    let hs_kind = |rules: &[TransformationRule]| {
+      TransformationEngine::evaluate_stack(&base, rules, &ctx)
+        .rule_changes
+        .iter()
+        .find(|c| c.rule_id == "thermal_conductivity" && c.param_key == "nozzle_temperature_HS")
+        .unwrap()
+        .shadow_kind
+    };
+    assert_eq!(
+      hs_kind(&[thermal.clone(), wet.clone()]),
+      Some(RuleShadowKind::Recomputed),
+      "direct chain: wet recomputes HS from thermal's nozzle_temperature -> intent preserved"
+    );
+    assert_eq!(
+      hs_kind(&[thermal, stringing, wet]),
+      Some(RuleShadowKind::Overwritten),
+      "with an intervening relative-temp rule, thermal's value never reaches wet -> intent lost"
+    );
+  }
+
+  /// `RuleShadowKind::Recomputed`: when a later rule discards an earlier step's direct write to a
+  /// key but re-derives the value from OTHER keys the same step wrote (exactly how
+  /// `sym_wet_filament` recomputes `nozzle_temperature_HS` from `nozzle_temperature` that
+  /// `thermal_conductivity` set), the earlier step must be classified as `Recomputed` (benign,
+  /// intent preserved) — NOT `Overwritten` — and must NOT mark the parameter as shadowed.
+  #[test]
+  fn test_shadow_kind_recomputed_when_intent_flows_through_sibling_key() {
+    let mut base = OrcaProfile::get_stock_kobra_s1();
+    base.set_str("nozzle_temperature", "220");
+    base.set_str("nozzle_temperature_HS", "220");
+
+    let mk_rule = |id: &str, name: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: name.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    // Mirrors thermal_conductivity: writes the effective temp AND the HS variant from it.
+    let thermal = mk_rule(
+      "thermal_like",
+      "Thermal Like",
+      10,
+      r#"
+        local t = tonumber(config["nozzle_temperature"][1]) or 220
+        config["nozzle_temperature"] = { tostring(t + 5) }
+        config["nozzle_temperature_HS"] = { tostring(t + 5) }
+      "#,
+    );
+    // Mirrors sym_wet_filament: overwrites the HS key with a value derived from the effective
+    // nozzle_temperature (a sibling key the early rule wrote), never reading the HS key itself.
+    let wet = mk_rule(
+      "wet_like",
+      "Wet Like",
+      20,
+      r#"
+        local t = tonumber(config["nozzle_temperature"][1]) or 225
+        config["nozzle_temperature_HS"] = { tostring(t - 10) }
+      "#,
+    );
+
+    let eval = TransformationEngine::evaluate_stack(&base, &[thermal, wet], &json!({}));
+
+    let hs_change = eval
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "thermal_like" && c.param_key == "nozzle_temperature_HS")
+      .expect("thermal HS change")
+      .clone();
+    assert_eq!(
+      hs_change.shadow_kind,
+      Some(RuleShadowKind::Recomputed),
+      "HS write must be classified Recomputed (wet derives it from thermal's nozzle_temperature)"
+    );
+    assert_eq!(hs_change.shadowed_by_rule_id.as_deref(), Some("wet_like"));
+    // Final HS = (220 + 5) - 10 = 215: the +5°C intent survived through the sibling key.
+    assert_eq!(hs_change.shadowed_final_value.as_deref(), Some("215"));
+
+    // The relative effective-temp step itself is untouched (no flag at all).
+    let temp_change = eval
+      .rule_changes
+      .iter()
+      .find(|c| c.rule_id == "thermal_like" && c.param_key == "nozzle_temperature")
+      .expect("thermal temp change")
+      .clone();
+    assert_eq!(temp_change.shadow_kind, None);
+
+    // A recomputed-only parameter is NOT marked as shadowed (no amber alarm / reorder nudge).
+    let hs_prov = eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "nozzle_temperature_HS")
+      .unwrap();
+    assert!(!hs_prov.has_shadowed_steps);
+  }
+
   #[test]
   fn test_outer_wall_consistency_vfa_guard_and_spire_safe_mode() {
     let cals = TransformationEngine::get_parameterized_calibration_templates();
@@ -4784,7 +5388,9 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     let mut ans_spire = tpl.default_answers();
     tpl.apply_answer_change(&mut ans_spire, "consistency_mode", "spire_safe".to_string());
     assert_eq!(
-      ans_spire.get("dont_slow_down_outer_wall").map(String::as_str),
+      ans_spire
+        .get("dont_slow_down_outer_wall")
+        .map(String::as_str),
       Some("0")
     );
     let (_, _, _, lua_spire) = tpl.generate_from_answers(&ans_spire, "all");
@@ -4813,16 +5419,18 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       proc_ov.insert(k.clone(), v.clone());
     }
     proc_ov.insert("seam_slope_type".to_string(), json!("none"));
-    let p_020_std: serde_json::Value =
-      serde_json::from_str(&crate::threemf::build_process_preset_json(&procs[0], &rig, &proc_ov))
-        .unwrap();
+    let p_020_std: serde_json::Value = serde_json::from_str(
+      &crate::threemf::build_process_preset_json(&procs[0], &rig, &proc_ov),
+    )
+    .unwrap();
     assert_eq!(p_020_std["dont_slow_down_outer_wall"].as_str(), Some("1"));
     assert_eq!(p_020_std["outer_wall_speed"].as_str(), Some("55"));
     assert_eq!(p_020_std["small_perimeter_speed"].as_str(), Some("50"));
 
-    let p_012_hq: serde_json::Value =
-      serde_json::from_str(&crate::threemf::build_process_preset_json(&procs[3], &rig, &proc_ov))
-        .unwrap();
+    let p_012_hq: serde_json::Value = serde_json::from_str(
+      &crate::threemf::build_process_preset_json(&procs[3], &rig, &proc_ov),
+    )
+    .unwrap();
     assert_eq!(p_012_hq["dont_slow_down_outer_wall"].as_str(), Some("1"));
     assert_eq!(p_012_hq["outer_wall_speed"].as_str(), Some("60"));
   }
@@ -4848,10 +5456,19 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
         &json!({ "printer_model": model, "filament_type": "PCTG", "all_filament_types": ["PCTG", "PLA"] }),
       )
       .expect("anycubic_pctg_as_petg executes");
-      cfg.get(PCTG_AS_PETG_SIDE_CHANNEL).and_then(|v| v.as_str()).map(String::from)
+      cfg
+        .get(PCTG_AS_PETG_SIDE_CHANNEL)
+        .and_then(|v| v.as_str())
+        .map(String::from)
     };
-    assert_eq!(run(&rule.lua_code, "Anycubic Kobra S1").as_deref(), Some("1"));
-    assert_eq!(run(&rule.lua_code, "Anycubic Kobra S1 Max").as_deref(), Some("1"));
+    assert_eq!(
+      run(&rule.lua_code, "Anycubic Kobra S1").as_deref(),
+      Some("1")
+    );
+    assert_eq!(
+      run(&rule.lua_code, "Anycubic Kobra S1 Max").as_deref(),
+      Some("1")
+    );
     assert_eq!(run(&rule.lua_code, "Bambu Lab P1S"), None);
     let mut force_all = HashMap::new();
     force_all.insert("target_printers".to_string(), "all".to_string());
@@ -4880,7 +5497,9 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       TransformationEngine::evaluate_stack(&OrcaProfile::get_stock_kobra_s1(), &rules, &ctx);
     let overrides = res.resulting_profile.values.clone();
     assert_eq!(
-      overrides.get(PCTG_AS_PETG_SIDE_CHANNEL).and_then(|v| v.as_str()),
+      overrides
+        .get(PCTG_AS_PETG_SIDE_CHANNEL)
+        .and_then(|v| v.as_str()),
       Some("1")
     );
     // The PCTG-scoped stringing rule must still see PCTG (filament type is only re-declared on export).
@@ -4924,7 +5543,12 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       if k == "filament_type" || k == "filament_notes" {
         continue;
       }
-      assert_eq!(with_rule.get(k), Some(v), "'{}' must be unchanged by PETG declaration", k);
+      assert_eq!(
+        with_rule.get(k),
+        Some(v),
+        "'{}' must be unchanged by PETG declaration",
+        k
+      );
     }
     assert_eq!(with_rule.len(), without_rule.len());
 
@@ -4936,8 +5560,19 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     let init = first_i32(&with_rule, "nozzle_temperature_initial_layer");
     let lo = first_i32(&with_rule, "nozzle_temperature_range_low");
     let hi = first_i32(&with_rule, "nozzle_temperature_range_high");
-    assert!((pctg_min..=pctg_max).contains(&noz), "PCTG nozzle {}°C", noz);
-    assert!(lo <= noz && init <= hi, "range [{}..{}] must cover {}/{}°C", lo, hi, noz, init);
+    assert!(
+      (pctg_min..=pctg_max).contains(&noz),
+      "PCTG nozzle {}°C",
+      noz
+    );
+    assert!(
+      lo <= noz && init <= hi,
+      "range [{}..{}] must cover {}/{}°C",
+      lo,
+      hi,
+      noz,
+      init
+    );
 
     // 4. A hot PCTG spool above PETG's 260°C ceiling is NOT clamped to PETG limits.
     let (_, petg_max) = FilamentSpool::polymer_safe_nozzle_bounds("PETG");
@@ -4948,7 +5583,11 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     ));
     assert_eq!(hot_map["filament_type"], json!(["PETG"]));
     let hot_noz = first_i32(&hot_map, "nozzle_temperature");
-    assert!(hot_noz > petg_max, "PCTG 268°C must not be clamped to PETG {}°C", petg_max);
+    assert!(
+      hot_noz > petg_max,
+      "PCTG 268°C must not be clamped to PETG {}°C",
+      petg_max
+    );
     assert!(first_i32(&hot_map, "nozzle_temperature_range_high") >= hot_noz);
     assert!(first_i32(&hot_map, "nozzle_temperature_range_low") <= hot_noz);
 
@@ -4969,7 +5608,10 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     // 6. Round-trip: a PETG-declared PCTG preset whose name lacks "PCTG" re-imports as PCTG.
     let mut renamed = with_rule.clone();
     renamed.insert("name".to_string(), json!("My Clear Spool"));
-    renamed.insert("filament_settings_id".to_string(), json!(["My Clear Spool"]));
+    renamed.insert(
+      "filament_settings_id".to_string(),
+      json!(["My Clear Spool"]),
+    );
     renamed.insert("nozzle_temperature".to_string(), json!(["268"]));
     let mut entries = crate::dir_import::build_reference_anycubic_entries();
     entries.push(crate::fs_access::ScannedFileEntry {

@@ -26,7 +26,11 @@ struct SimpleRng {
 impl SimpleRng {
   fn new(seed: u64) -> Self {
     Self {
-      state: if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed },
+      state: if seed == 0 {
+        0x9E37_79B9_7F4A_7C15
+      } else {
+        seed
+      },
     }
   }
 
@@ -177,6 +181,8 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
   );
 
   let mut config_dirs = Vec::new();
+  // (kind, param_key, clobbered_rule_id, clobbering_rule_id) across all configs
+  let mut shadow_census: Vec<(&'static str, String, String, String)> = Vec::new();
   for cfg_idx in 1..=num_configs {
     let cfg_dir = out_root.join(format!("config_{:03}", cfg_idx));
     fs::create_dir_all(&cfg_dir).expect("Failed to create config subdir");
@@ -217,6 +223,16 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     } else if cfg_idx % 3 == 1 {
       rig.addons = vec!["hollow_front_back_covers".to_string()];
     }
+    // Mirror the app's hardware invariant (MachineRig::on_change_nozzle): MicroSwiss nozzles
+    // fit ONLY the FlowTech hotend and are auto-installed with it; the stock hotend takes no
+    // MicroSwiss nozzle. Synthetic rigs must not combine them any other way.
+    if MachineRig::is_microswiss_nozzle_type(&rig.nozzle_type) {
+      if !rig.addons.iter().any(|a| a == "flowtech_hotend") {
+        rig.addons.push("flowtech_hotend".to_string());
+      }
+    } else {
+      rig.addons.retain(|a| a != "flowtech_hotend");
+    }
     let mut spools = Vec::new();
 
     for slot_i in 0..slot_count {
@@ -244,12 +260,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         *rng.choose(&non_abrasive_materials)
       };
       // Soft TPU (TPU 95A / TPU 90A / TPU 85A / PEBA) belongs in Reserve slots outside active AMS; active AMS slots use TPU for AMS
-      if in_active_ams
-        && matches!(
-          target_mat,
-          "TPU 95A" | "TPU 90A" | "TPU 85A" | "PEBA"
-        )
-      {
+      if in_active_ams && matches!(target_mat, "TPU 95A" | "TPU 90A" | "TPU 85A" | "PEBA") {
         target_mat = "TPU for AMS";
       }
       // Guarantee that config_001..config_010 explicitly test PHA, TPU for AMS, and PETG combinations
@@ -293,7 +304,8 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let after_up = sp.material_type.to_uppercase();
       if after_up.contains("-CF") || after_up.contains("-RCF") || after_up.contains("CARBON") {
         sp.apply_finish_change("Carbon Fiber", &rig.nozzle_type);
-      } else if after_up.contains("-GF") || after_up.contains("-RGF") || after_up.contains("GLASS") {
+      } else if after_up.contains("-GF") || after_up.contains("-RGF") || after_up.contains("GLASS")
+      {
         sp.apply_finish_change("Glass Fiber", &rig.nozzle_type);
       } else if !orcaslicer_webconfig::constants::constants()
         .is_finish_compatible_with_polymer(&sp.finish_type, &sp.material_type)
@@ -489,6 +501,8 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       "line_width": active_proc.line_width,
       "filament_type": spools[0].material_type,
       "filament_finish": spools[0].finish_type,
+      "filament_is_elastomer": orcaslicer_webconfig::constants::constants()
+        .is_elastomer_family_material(&spools[0].material_type),
       "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&spools[0].material_type).1,
       "all_filament_types": all_filament_types,
       "addons": rig.addons,
@@ -500,6 +514,27 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     let (seeded_base, seeded_ctx) =
       TransformationEngine::seed_process_inputs(&base_profile, &eval_ctx, active_proc);
     let stack_eval = TransformationEngine::evaluate_stack(&seeded_base, &rules, &seeded_ctx);
+    // Census of "⚡ Overwritten by later rule" (intent lost) vs "♻ Recomputed" (later rule
+    // re-derived the value from this step's other outputs — intent preserved) steps.
+    for prov in &stack_eval.provenance_items {
+      for step in &prov.steps {
+        if let Some(kind) = step.shadow_kind {
+          shadow_census.push((
+            match kind {
+              orcaslicer_webconfig::transformations::RuleShadowKind::Overwritten => "OVERWRITTEN",
+              orcaslicer_webconfig::transformations::RuleShadowKind::Recomputed => "recomputed",
+              orcaslicer_webconfig::transformations::RuleShadowKind::Accepted => "accepted",
+            },
+            step.param_key.clone(),
+            step.rule_id.clone(),
+            step
+              .shadowed_by_rule_id
+              .clone()
+              .unwrap_or_else(|| "?".to_string()),
+          ));
+        }
+      }
+    }
     let flush_matrix = stack_eval.flush_matrix;
     let per_proc_overrides = TransformationEngine::evaluate_stack_per_process(
       &base_profile,
@@ -652,7 +687,10 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     let mut snap: WebConfigStateSnapshot =
       serde_json::from_str(&snap_txt).expect("Invalid orcaslicer_webconfig.json");
     snap.sanitize();
-    let rig = snap.machines.first().expect("Missing machine rig in snapshot");
+    let rig = snap
+      .machines
+      .first()
+      .expect("Missing machine rig in snapshot");
 
     // 2. Audit every filament JSON file in user/default/filament/
     let fil_dir = cfg_dir.join("user/default/filament");
@@ -732,6 +770,10 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
 
       let (min_noz, max_noz, min_bed, max_bed) =
         safe_temp_bounds_for_polymer(mat_for_bounds, fin_for_bounds);
+      // Flexible-family speed cap, retraction-speed band, and the nozzle-temp floor
+      // relaxation all come from constants.json `hardware_limits` (the same single source
+      // the resolver clamp and the Lua `ctx.filament_is_elastomer` flag use).
+      let hw_limits = &orcaslicer_webconfig::constants::constants().hardware_limits;
 
       let init_bed: i32 = first_str_val(&val, "hot_plate_temp_initial_layer")
         .and_then(|s| s.parse().ok())
@@ -742,7 +784,15 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let fan_max: i32 = first_str_val(&val, "fan_max_speed")
         .and_then(|s| s.parse().ok())
         .unwrap_or(-1);
-      if !(min_noz..=max_noz).contains(&noz_t) || noz_t > 295 || init_t > 295 {
+      // Nozzle temp may undershoot the polymer floor by at most the approved
+      // anti-stringing band trim (`hardware_limits.nozzle_temp_floor_relax_c`,
+      // doc/pwl-nozzle-compensation-math.md §5.1 — mirrored in
+      // resolve_spool_orca_filament_map_with_rig_and_overrides); the initial-layer temp
+      // keeps the hard floor.
+      if !((min_noz - hw_limits.nozzle_temp_floor_relax_c)..=max_noz).contains(&noz_t)
+        || noz_t > 295
+        || init_t > 295
+      {
         cfg_failures.push(format!(
           "[{}] Filament '{}' ({} / {}) has unsafe nozzle_temperature={}°C / init={}°C (expected {}..={}°C and <=295°C Kobra S1 ceiling; notes={})",
           cfg_name, name, mat_for_bounds, fin_for_bounds, noz_t, init_t, min_noz, max_noz, notes
@@ -754,11 +804,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           cfg_name, name, init_t, noz_t
         ));
       }
-      if range_low < 175
-        || range_high > 300
-        || noz_t < range_low
-        || init_t > range_high
-      {
+      if range_low < 175 || range_high > 300 || noz_t < range_low || init_t > range_high {
         cfg_failures.push(format!(
           "[{}] Filament '{}' nozzle temp ({}°C / init {}°C) or range [{}..={}°C] violates Kobra S1 [175..=300°C] limits",
           cfg_name, name, noz_t, init_t, range_low, range_high
@@ -839,12 +885,20 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           cfg_name, name, mvs
         ));
       }
-      let is_tpu_family = ftype == "TPU" || ftype == "PEBA" || mat_for_bounds.contains("TPU") || mat_for_bounds.contains("PEBA");
-      let max_ret_spd = if is_tpu_family { 35.0 } else { 55.0 };
-      if !(15.0..=max_ret_spd).contains(&ret_spd) {
+      // Flexible-family speed cap and the nozzle-temp floor relaxation both come from
+      // constants.json `hardware_limits` (same single source the resolver and the Lua
+      // `ctx.filament_is_elastomer` flag use).
+      let is_tpu_family =
+        orcaslicer_webconfig::constants::constants().is_elastomer_family_material(mat_for_bounds);
+      let max_ret_spd = if is_tpu_family {
+        hw_limits.elastomer_max_retraction_speed_mms as f32
+      } else {
+        hw_limits.max_retraction_speed_mms
+      };
+      if !((hw_limits.min_retraction_speed_mms)..=max_ret_spd).contains(&ret_spd) {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' ({}) has invalid retraction_speed={} (expected 15.0..={} mm/s)",
-          cfg_name, name, ftype, ret_spd, max_ret_spd
+          "[{}] Filament '{}' ({}) has invalid retraction_speed={} (expected {}..={} mm/s)",
+          cfg_name, name, ftype, ret_spd, hw_limits.min_retraction_speed_mms, max_ret_spd
         ));
       }
       if name.to_uppercase().contains("-CF-CF")
@@ -862,17 +916,29 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
 
       let canon = FilamentSpool::canonical_polymer_key(mat_for_bounds);
       if name.contains("PETG-CF") || name.contains("PETG-GF") || name.contains("PETG-rCF") {
-        if noz_t < 235 || ftype != "PETG-CF" {
+        // 235°C fiber-flow floor minus the approved anti-stringing band trim (same
+        // `nozzle_temp_floor_relax_c` policy as the nozzle-temp floor above).
+        let petg_cf_floor = 235 - hw_limits.nozzle_temp_floor_relax_c;
+        if noz_t < petg_cf_floor || ftype != "PETG-CF" {
           cfg_failures.push(format!(
-            "[{}] Filament '{}' must have nozzle_temperature >= 235°C and filament_type='PETG-CF' (got {}°C, type='{}')",
-            cfg_name, name, noz_t, ftype
+            "[{}] Filament '{}' must have nozzle_temperature >= {}°C and filament_type='PETG-CF' (got {}°C, type='{}')",
+            cfg_name, name, petg_cf_floor, noz_t, ftype
           ));
         }
       }
       if matches!(
         canon,
-        "PLA" | "PLA+" | "PLA-CF" | "PHA" | "PVA" | "TPU" | "TPU for AMS" | "TPU 95A" | "PETG"
-          | "PETG-CF" | "PCTG"
+        "PLA"
+          | "PLA+"
+          | "PLA-CF"
+          | "PHA"
+          | "PVA"
+          | "TPU"
+          | "TPU for AMS"
+          | "TPU 95A"
+          | "PETG"
+          | "PETG-CF"
+          | "PCTG"
       ) && noz_t <= 265
       {
         standard_ams_temps_and_ranges.push((name.clone(), noz_t, range_low, range_high));
@@ -898,11 +964,51 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
 
     // 3. Audit all 5 process JSON files in user/default/process/
     let expected_procs = [
-      ("OC - 0.12mm Quality @Kobra S1.json", "0.12", "60", "150", "200", "50", "5000"),
-      ("OC - 0.20mm Quality @Kobra S1.json", "0.20", "60", "150", "250", "50", "5000"),
-      ("OC - 0.20mm Speed @Kobra S1.json", "0.20", "300", "350", "350", "60", "15000"),
-      ("OC - 0.20mm Standard @Kobra S1.json", "0.20", "200", "300", "270", "50", "10000"),
-      ("OC - 0.28mm Speed @Kobra S1.json", "0.28", "250", "320", "320", "60", "12000"),
+      (
+        "OC - 0.12mm Quality @Kobra S1.json",
+        "0.12",
+        "60",
+        "150",
+        "200",
+        "50",
+        "5000",
+      ),
+      (
+        "OC - 0.20mm Quality @Kobra S1.json",
+        "0.20",
+        "60",
+        "150",
+        "250",
+        "50",
+        "5000",
+      ),
+      (
+        "OC - 0.20mm Speed @Kobra S1.json",
+        "0.20",
+        "300",
+        "350",
+        "350",
+        "60",
+        "15000",
+      ),
+      (
+        "OC - 0.20mm Standard @Kobra S1.json",
+        "0.20",
+        "200",
+        "300",
+        "270",
+        "50",
+        "10000",
+      ),
+      (
+        "OC - 0.28mm Speed @Kobra S1.json",
+        "0.28",
+        "250",
+        "320",
+        "320",
+        "60",
+        "12000",
+      ),
     ];
     for (pfile, exp_lh, exp_ow, exp_iw, exp_si, exp_il, exp_acc) in expected_procs {
       total_processes_audited += 1;
@@ -910,11 +1016,11 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let ptxt = fs::read_to_string(&ppath).expect("Missing process JSON file");
       let pval: Value = serde_json::from_str(&ptxt).expect("Invalid process JSON");
       let il_val = first_str_val(&pval, "initial_layer_speed");
-      let il_ok = il_val.as_deref() == Some(exp_il)
-        || matches!(il_val.as_deref(), Some("35") | Some("30"));
+      let il_ok =
+        il_val.as_deref() == Some(exp_il) || matches!(il_val.as_deref(), Some("35") | Some("30"));
       let ow_val = first_str_val(&pval, "outer_wall_speed");
-      let ow_ok = ow_val.as_deref() == Some(exp_ow)
-        || matches!(ow_val.as_deref(), Some("55") | Some("60"));
+      let ow_ok =
+        ow_val.as_deref() == Some(exp_ow) || matches!(ow_val.as_deref(), Some("55") | Some("60"));
       if first_str_val(&pval, "layer_height").as_deref() != Some(exp_lh)
         || !ow_ok
         || first_str_val(&pval, "inner_wall_speed").as_deref() != Some(exp_iw)
@@ -983,7 +1089,10 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         if !lw_v.map(|x| (0.15..=1.35).contains(&x)).unwrap_or(false) {
           cfg_failures.push(format!(
             "[{}] Process '{}' has missing or out-of-range {}={:?}",
-            cfg_name, pfile, lw_key, first_str_val(&pval, lw_key)
+            cfg_name,
+            pfile,
+            lw_key,
+            first_str_val(&pval, lw_key)
           ));
         }
       }
@@ -994,11 +1103,17 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           cfg_name, pfile, dsd_ow
         ));
       }
-      let sm_perim = first_str_val(&pval, "small_perimeter_speed").and_then(|s| s.parse::<f64>().ok());
-      if !sm_perim.map(|x| (20.0..=65.0).contains(&x)).unwrap_or(false) {
+      let sm_perim =
+        first_str_val(&pval, "small_perimeter_speed").and_then(|s| s.parse::<f64>().ok());
+      if !sm_perim
+        .map(|x| (20.0..=65.0).contains(&x))
+        .unwrap_or(false)
+      {
         cfg_failures.push(format!(
           "[{}] Process '{}' has invalid small_perimeter_speed={:?} (expected 20..=65 mm/s)",
-          cfg_name, pfile, first_str_val(&pval, "small_perimeter_speed")
+          cfg_name,
+          pfile,
+          first_str_val(&pval, "small_perimeter_speed")
         ));
       }
       if let Some(ws) = first_str_val(&pval, "wall_sequence") {
@@ -1012,7 +1127,10 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           ));
         }
       }
-      let ironing_rule = snap.rules.iter().find(|r| r.id == "ironing_tuning" && r.enabled);
+      let ironing_rule = snap
+        .rules
+        .iter()
+        .find(|r| r.id == "ironing_tuning" && r.enabled);
       if ironing_rule.is_none() && pval.get("ironing_type").is_some() {
         cfg_failures.push(format!(
           "[{}] Process '{}' leaked untouched ironing_type when ironing_tuning is disabled",
@@ -1022,7 +1140,11 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       if let Some(ir) = ironing_rule {
         if !ir.scope.process_tiers.is_empty()
           && pfile.contains("0.28mm")
-          && !ir.scope.process_tiers.iter().any(|t| t.contains("draft") || t.contains("0.28"))
+          && !ir
+            .scope
+            .process_tiers
+            .iter()
+            .any(|t| t.contains("draft") || t.contains("0.28"))
           && pval.get("ironing_type").is_some()
         {
           cfg_failures.push(format!(
@@ -1031,14 +1153,20 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           ));
         }
       }
-      let support_enabled = snap.rules.iter().any(|r| r.id == "support_tuning" && r.enabled);
+      let support_enabled = snap
+        .rules
+        .iter()
+        .any(|r| r.id == "support_tuning" && r.enabled);
       if !support_enabled && pval.get("support_style").is_some() {
         cfg_failures.push(format!(
           "[{}] Process '{}' leaked untouched support_style when support_tuning is disabled",
           cfg_name, pfile
         ));
       }
-      let dim_enabled = snap.rules.iter().any(|r| r.id == "dimensional_precision" && r.enabled);
+      let dim_enabled = snap
+        .rules
+        .iter()
+        .any(|r| r.id == "dimensional_precision" && r.enabled);
       if !dim_enabled && pval.get("xy_hole_compensation").is_some() {
         cfg_failures.push(format!(
           "[{}] Process '{}' leaked untouched xy_hole_compensation when dimensional_precision is disabled",
@@ -1243,6 +1371,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
                 | "printer_settings_id"
                 | "printer_model"
                 | "printer_variant"
+                | "printer_timestamp"
                 | "compatible_printers"
                 | "version"
             ) {
@@ -1386,8 +1515,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
             snap.filaments.len()
           ));
         } else {
-          for (s_idx, (orig_sp, tmf_sp)) in
-            snap.filaments.iter().zip(tmf.spools.iter()).enumerate()
+          for (s_idx, (orig_sp, tmf_sp)) in snap.filaments.iter().zip(tmf.spools.iter()).enumerate()
           {
             if tmf_sp.brand == "OC"
               || tmf_sp.name != orig_sp.name
@@ -1490,6 +1618,54 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
   let report_path = out_root.join("AUDIT_REPORT.md");
   fs::write(&report_path, report_lines.join("\n")).expect("Failed to write AUDIT_REPORT.md");
 
+  // Overwrite census summary: how often later rules clobbered earlier rules' values, split by
+  // intent-lost (OVERWRITTEN) vs re-derived (recomputed).
+  let mut census_counts: std::collections::BTreeMap<(String, String, String, String), usize> =
+    std::collections::BTreeMap::new();
+  for (kind, param, clobbered, clobberer) in &shadow_census {
+    *census_counts
+      .entry((
+        kind.to_string(),
+        param.clone(),
+        clobbered.clone(),
+        clobberer.clone(),
+      ))
+      .or_insert(0) += 1;
+  }
+  let overwritten_total = shadow_census
+    .iter()
+    .filter(|(k, ..)| *k == "OVERWRITTEN")
+    .count();
+  let recomputed_total = shadow_census
+    .iter()
+    .filter(|(k, ..)| *k == "recomputed")
+    .count();
+  let accepted_total = shadow_census
+    .iter()
+    .filter(|(k, ..)| *k == "accepted")
+    .count();
+  println!("------------------------------------------------------------------");
+  println!(
+    "Overwrite census: {} intent-lost OVERWRITTEN + {} recomputed + {} accepted (guard pass-through) step(s) across {} configs",
+    overwritten_total,
+    recomputed_total,
+    accepted_total,
+    config_dirs.len()
+  );
+  let mut census_rows: Vec<(&(String, String, String, String), &usize)> =
+    census_counts.iter().collect();
+  census_rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(&b.0)));
+  for ((kind, param, clobbered, clobberer), count) in census_rows.iter().take(40) {
+    let verb = match kind.as_str() {
+      "accepted" => "accepted by",
+      _ => "clobbered by",
+    };
+    println!(
+      "  {:>3}x  [{}] {} : {} {} {}",
+      count, kind, param, clobbered, verb, clobberer
+    );
+  }
+
   println!("==================================================================");
   println!(
     "Audit Complete: {} configs, {} filaments, {} processes audited.",
@@ -1506,7 +1682,10 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     }
     std::process::exit(1);
   }
-  println!("ALL {} RANDOM CONFIGURATIONS PASSED 100% OF HARDWARE, TEMPERATURE & SPEED CHECKS!", config_dirs.len());
+  println!(
+    "ALL {} RANDOM CONFIGURATIONS PASSED 100% OF HARDWARE, TEMPERATURE & SPEED CHECKS!",
+    config_dirs.len()
+  );
 }
 
 fn main() {
@@ -1561,12 +1740,7 @@ fn main() {
   run_audit_suite(&out_root, num_configs, seed);
 }
 
-fn repair_live_slicer_dir(
-  snap_path: &Path,
-  slicer_dir: &Path,
-  out_3mf: &Path,
-  out_zip: &Path,
-) {
+fn repair_live_slicer_dir(snap_path: &Path, slicer_dir: &Path, out_3mf: &Path, out_zip: &Path) {
   let snap_txt = fs::read_to_string(snap_path).expect("Failed to read snapshot json");
   let mut snap: WebConfigStateSnapshot =
     serde_json::from_str(&snap_txt).expect("Failed to parse snapshot json");

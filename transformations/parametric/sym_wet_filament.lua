@@ -196,10 +196,16 @@ function apply(config, ctx, p)
   config["reduce_crossing_wall"] = "1"
 
   if fl_mode ~= "off" then
-    local cur_bed = tonumber(config["textured_plate_temp"]) or tonumber(config["hot_plate_temp"]) or 85
-    local init_bed = tostring(math.min(120, cur_bed + c.init_bed_boost))
-    config["textured_plate_temp_initial_layer"] = init_bed
-    config["hot_plate_temp_initial_layer"] = init_bed
+    -- Compose with earlier first-layer rules instead of discarding them: boost EACH initial-layer
+    -- plate key from its own current value (e.g. `symptom_bed_adhesion_petg` added +5°C to
+    -- `hot_plate_temp_initial_layer`; that boost now survives and stacks with ours), falling back
+    -- to the plate's continuous temp when no first-layer value is set.
+    local boost_init_bed = function(init_key, cont_key)
+      local cur = tonumber(config[init_key]) or tonumber(config[cont_key]) or 85
+      config[init_key] = tostring(math.min(120, cur + c.init_bed_boost))
+    end
+    boost_init_bed("textured_plate_temp_initial_layer", "textured_plate_temp")
+    boost_init_bed("hot_plate_temp_initial_layer", "hot_plate_temp")
     config["bottom_solid_infill_flow_ratio"] = string.format("%.2f", c.bottom_flow)
     config["initial_layer_line_width"] = string.format("%.2f", c.init_width)
     config["initial_layer_speed"] = tostring(c.init_speed)

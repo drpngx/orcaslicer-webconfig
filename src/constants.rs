@@ -38,6 +38,19 @@ pub struct HardwareLimits {
   pub max_non_foaming_flow_ratio: f32,
   pub min_retraction_speed_mms: f32,
   pub max_retraction_speed_mms: f32,
+  /// Material-name tokens (uppercase substring match) identifying elastomer/flexible
+  /// families that must never be retracted faster than `elastomer_max_retraction_speed_mms`
+  /// (gear slip / melt cavitation) — single source for the resolver clamp, the Lua
+  /// `rig_addons_cooling` speed-PWL skip (via `ctx.filament_is_elastomer`), and the audit.
+  pub elastomer_family_tokens: Vec<String>,
+  pub elastomer_max_retraction_speed_mms: f32,
+  /// Approved excursion below a polymer's `safe_nozzle_min_c` allowed for the anti-stringing
+  /// temperature band trim (`doc/pwl-nozzle-compensation-math.md` §5.1) — mirrored by the
+  /// random-config audit's nozzle-temp and PETG-CF floor checks.
+  pub nozzle_temp_floor_relax_c: i32,
+  /// Hardened-steel base profiles sit this many °C above the brass baseline
+  /// (`uses_hs_base_temp` nozzles).
+  pub hs_base_temp_delta_c: i32,
   pub min_flush_volume_mm3: f64,
   pub max_flush_volume_mm3: f64,
   pub abrasive_required_hrc: u32,
@@ -442,8 +455,7 @@ impl WebConfigConstants {
       .finishes
       .iter()
       .find(|fc| {
-        fc.code.eq_ignore_ascii_case(f)
-          || fc.aliases.iter().any(|a| a.eq_ignore_ascii_case(f))
+        fc.code.eq_ignore_ascii_case(f) || fc.aliases.iter().any(|a| a.eq_ignore_ascii_case(f))
       })
       .unwrap_or_else(|| &self.finishes[0])
   }
@@ -507,13 +519,12 @@ impl WebConfigConstants {
     if fc.code == "Glass Fiber" && poly.gf_upgrade_code.is_some() {
       return mat_trimmed.eq_ignore_ascii_case(&poly.canonical_key);
     }
-    let allowed = if !poly.gf_tokens.is_empty()
-      && poly.gf_tokens.iter().any(|tok| mat_up.contains(tok))
-    {
-      &poly.compatible_finishes_gf
-    } else {
-      &poly.compatible_finishes
-    };
+    let allowed =
+      if !poly.gf_tokens.is_empty() && poly.gf_tokens.iter().any(|tok| mat_up.contains(tok)) {
+        &poly.compatible_finishes_gf
+      } else {
+        &poly.compatible_finishes
+      };
     allowed.iter().any(|f| f.eq_ignore_ascii_case(&fc.code))
   }
 
@@ -541,9 +552,21 @@ impl WebConfigConstants {
   /// Returns true if a filament code or finish is an ESD / Conductive or Foaming specialty variant.
   pub fn is_esd_or_foaming(&self, material_type: &str, finish_type: &str) -> bool {
     let fc = self.lookup_finish(finish_type);
-    fc.code == "Foaming"
-      || fc.code == "Conductive"
-      || material_type.to_uppercase().contains("ESD")
+    fc.code == "Foaming" || fc.code == "Conductive" || material_type.to_uppercase().contains("ESD")
+  }
+
+  /// Returns true when `material_type` belongs to an elastomer/flexible family
+  /// (`hardware_limits.elastomer_family_tokens`, uppercase substring match — e.g.
+  /// "TPU for AMS", "PEBA", "Siraya Flex"). Single source for the export-side
+  /// retraction-speed clamp, the `ctx.filament_is_elastomer` Lua flag, and the audit's
+  /// flexible-filament speed bound.
+  pub fn is_elastomer_family_material(&self, material_type: &str) -> bool {
+    let up = material_type.trim().to_uppercase();
+    self
+      .hardware_limits
+      .elastomer_family_tokens
+      .iter()
+      .any(|tok| !tok.is_empty() && up.contains(&tok.to_uppercase()))
   }
 
   pub fn lookup_polymer<'a>(&'a self, material_type: &str) -> &'a PolymerConstants {
@@ -567,8 +590,7 @@ impl WebConfigConstants {
             return p;
           }
         } else if tok == "PHA" {
-          if up == "PHA" || up.starts_with("PHA ") || up.ends_with(" PHA") || up.contains("PHA-")
-          {
+          if up == "PHA" || up.starts_with("PHA ") || up.ends_with(" PHA") || up.contains("PHA-") {
             return p;
           }
         } else if tok == "PCL" {
