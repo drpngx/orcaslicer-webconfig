@@ -92,6 +92,29 @@ fn apply_nozzle_metadata(rig: &mut MachineRig, nozzle_type: &str) {
   rig.refresh_title_and_notes(true);
 }
 
+/// Base rig for a printer, built the way the scratch wizard builds rigs: identity and
+/// kinematics from the generated Orca catalog machine entry (so Bed-Slinger labeling flows
+/// through), hardware limits from constants.json `machines[]`. Rotating the random audit
+/// across these keeps the multi-printer paths (motion-class travel-accel policy, compat
+/// printers, inherits templates) under randomized coverage.
+fn base_rig_for_printer(printer_model: &str) -> MachineRig {
+  let cat = load_merged_catalog();
+  let machine = cat
+    .machines
+    .iter()
+    .find(|m| m.name == printer_model)
+    .unwrap_or_else(|| panic!("catalog machine {:?} present", printer_model));
+  let mc = orcaslicer_webconfig::catalog::machine_constants(printer_model);
+  let mut rig = MachineRig::kobra_s1_hardened_steel_png();
+  rig.printer_model = machine.name.clone();
+  rig.kinematics = machine.kinematics.clone();
+  rig.bed_size = machine.build_volume.clone();
+  rig.firmware = "OrcaSlicer 2.4.2 Profile".to_string();
+  rig.max_volumetric_flow_limit = mc.max_volumetric_speed_mm3s as f64;
+  rig.max_volumetric_flow = format!("{:.1} mm³/s", mc.max_volumetric_speed_mm3s);
+  rig
+}
+
 fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
   let out_root = out_root.to_path_buf();
   if out_root.exists() {
@@ -187,7 +210,14 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     let cfg_dir = out_root.join(format!("config_{:03}", cfg_idx));
     fs::create_dir_all(&cfg_dir).expect("Failed to create config subdir");
 
-    let mut rig = MachineRig::kobra_s1_hardened_steel_png();
+    // Rotate across printer vendors and motion classes: Kobra S1 (Anycubic, CoreXY),
+    // Bambu Lab X1 Carbon (CoreXY), Creality Ender-3 (bed-slinger — gentler travel-accel
+    // policy via `printer_classes`).
+    let mut rig = match cfg_idx % 3 {
+      1 => base_rig_for_printer("Bambu Lab X1 Carbon"),
+      2 => base_rig_for_printer("Creality Ender-3"),
+      _ => MachineRig::kobra_s1_hardened_steel_png(),
+    };
     // Start on a random nozzle, then switch nozzles during setup to test recompute_for_nozzle
     let initial_nozzle = *rng.choose(&nozzle_choices);
     let final_nozzle = *rng.choose(&nozzle_choices);
@@ -348,7 +378,16 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       sp.rebuild_synthetic_disk_json(&rig.nozzle_type);
     }
 
-    let processes = ProcessProfile::get_default_processes();
+    // Default process profiles are titled "@Kobra S1"; retitle them for this config's rig
+    // the same way the app's state sync does (format_concise_title(&short_model_tag)), so
+    // process filenames carry @X1C / @Ender-3 on the rotated rigs.
+    let mut processes = ProcessProfile::get_default_processes();
+    {
+      let short_tag = rig.short_model_tag();
+      for proc in &mut processes {
+        proc.name = proc.format_concise_title(&short_tag);
+      }
+    }
     let active_proc_idx = rng.next_usize(processes.len());
     let active_proc = &processes[active_proc_idx];
 
@@ -494,6 +533,10 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       "nozzle_material": rig.nozzle_material,
       "nozzle_diameter": rig.nozzle_diameter,
       "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "hotend_max_temp_c": orcaslicer_webconfig::catalog::machine_constants(&rig.printer_model).max_hotend_temp_c,
+      "printer_kinematics_class": rig.kinematics_class(),
+      "travel_accel_target_mm2": rig.travel_accel_policy().travel_accel_target_mm2,
+      "travel_accel_floor_mm2": rig.travel_accel_policy().travel_accel_floor_mm2,
       "filament_max_flow": spools[0].max_volumetric_speed as f64,
       "melt_zone_multiplier": rig.melt_zone_multiplier,
       "flush_multiplier": 1.0,
@@ -735,13 +778,17 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let ret_spd: f32 = first_str_val(&val, "filament_retraction_speed")
         .and_then(|s| s.parse().ok())
         .unwrap_or(-1.0);
-      if val.get("compatible_printers")
-        != Some(&serde_json::json!(["Anycubic Kobra S1 0.4 nozzle"]))
-      {
+      let expected_compat_printer = format!(
+        "{} {} nozzle",
+        rig.printer_model,
+        rig.formatted_nozzle_diameter()
+      );
+      if val.get("compatible_printers") != Some(&serde_json::json!([expected_compat_printer])) {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' must have compatible_printers = ['Anycubic Kobra S1 0.4 nozzle'], got {:?}",
+          "[{}] Filament '{}' must have compatible_printers = ['{}'], got {:?}",
           cfg_name,
           name,
+          expected_compat_printer,
           val.get("compatible_printers")
         ));
       }
@@ -788,13 +835,18 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       // anti-stringing band trim (`hardware_limits.nozzle_temp_floor_relax_c`,
       // doc/pwl-nozzle-compensation-math.md §5.1 — mirrored in
       // resolve_spool_orca_filament_map_with_rig_and_overrides); the initial-layer temp
-      // keeps the hard floor.
+      // keeps the hard floor. It must also respect the machine's own hotend rating
+      // (`machines[].max_hotend_temp_c` — e.g. 260 °C on an Ender-3 vs 300 on the Kobra S1).
+      let machine_max_c =
+        orcaslicer_webconfig::catalog::machine_constants(&rig.printer_model).max_hotend_temp_c;
       if !((min_noz - hw_limits.nozzle_temp_floor_relax_c)..=max_noz).contains(&noz_t)
         || noz_t > 295
         || init_t > 295
+        || noz_t > machine_max_c
+        || init_t > machine_max_c
       {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' ({} / {}) has unsafe nozzle_temperature={}°C / init={}°C (expected {}..={}°C and <=295°C Kobra S1 ceiling; notes={})",
+          "[{}] Filament '{}' ({} / {}) has unsafe nozzle_temperature={}°C / init={}°C (expected {}..={}°C and <=295°C printer ceiling; notes={})",
           cfg_name, name, mat_for_bounds, fin_for_bounds, noz_t, init_t, min_noz, max_noz, notes
         ));
       }
@@ -806,7 +858,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
       if range_low < 175 || range_high > 300 || noz_t < range_low || init_t > range_high {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' nozzle temp ({}°C / init {}°C) or range [{}..={}°C] violates Kobra S1 [175..=300°C] limits",
+          "[{}] Filament '{}' nozzle temp ({}°C / init {}°C) or range [{}..={}°C] violates the [175..=300°C] printer limits",
           cfg_name, name, noz_t, init_t, range_low, range_high
         ));
       }
@@ -828,7 +880,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
       if !(min_bed..=max_bed).contains(&bed_t) || bed_t > 110 || init_bed > 110 {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' ({}) has out-of-bounds bed_temp={}°C / init_bed={}°C (expected {}..={}°C and <=110°C Kobra S1 bed ceiling)",
+          "[{}] Filament '{}' ({}) has out-of-bounds bed_temp={}°C / init_bed={}°C (expected {}..={}°C and <=110°C printer bed ceiling)",
           cfg_name, name, mat_for_bounds, bed_t, init_bed, min_bed, max_bed
         ));
       }
@@ -962,10 +1014,12 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
     }
 
-    // 3. Audit all 5 process JSON files in user/default/process/
+    // 3. Audit all 5 process JSON files in user/default/process/ (filenames carry the rig's
+    // short model tag: @Kobra S1 / @X1C / @Ender-3).
+    let short_tag = rig.short_model_tag();
     let expected_procs = [
       (
-        "OC - 0.12mm Quality @Kobra S1.json",
+        format!("OC - 0.12mm Quality @{short_tag}.json"),
         "0.12",
         "60",
         "150",
@@ -974,7 +1028,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         "5000",
       ),
       (
-        "OC - 0.20mm Quality @Kobra S1.json",
+        format!("OC - 0.20mm Quality @{short_tag}.json"),
         "0.20",
         "60",
         "150",
@@ -983,7 +1037,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         "5000",
       ),
       (
-        "OC - 0.20mm Speed @Kobra S1.json",
+        format!("OC - 0.20mm Speed @{short_tag}.json"),
         "0.20",
         "300",
         "350",
@@ -992,7 +1046,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         "15000",
       ),
       (
-        "OC - 0.20mm Standard @Kobra S1.json",
+        format!("OC - 0.20mm Standard @{short_tag}.json"),
         "0.20",
         "200",
         "300",
@@ -1001,7 +1055,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         "10000",
       ),
       (
-        "OC - 0.28mm Speed @Kobra S1.json",
+        format!("OC - 0.28mm Speed @{short_tag}.json"),
         "0.28",
         "250",
         "320",
@@ -1012,7 +1066,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     ];
     for (pfile, exp_lh, exp_ow, exp_iw, exp_si, exp_il, exp_acc) in expected_procs {
       total_processes_audited += 1;
-      let ppath = cfg_dir.join("user/default/process").join(pfile);
+      let ppath = cfg_dir.join("user/default/process").join(&pfile);
       let ptxt = fs::read_to_string(&ppath).expect("Missing process JSON file");
       let pval: Value = serde_json::from_str(&ptxt).expect("Invalid process JSON");
       let il_val = first_str_val(&pval, "initial_layer_speed");
@@ -1523,7 +1577,11 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
               || FilamentSpool::canonical_polymer_key(&tmf_sp.material_type)
                 != FilamentSpool::canonical_polymer_key(&orig_sp.material_type)
               || tmf_sp.required_nozzle_hrc != orig_sp.required_nozzle_hrc
-              || !tmf_sp.inherits.contains("@Anycubic Kobra S1 0.4 nozzle")
+              || !tmf_sp.inherits.contains(&format!(
+                "@{} {} nozzle",
+                rig.printer_model,
+                rig.formatted_nozzle_diameter()
+              ))
             {
               cfg_failures.push(format!(
                 "[{}] 3MF round-trip slot #{} mismatch: expected (name='{}', brand='{}', mat='{}', hrc={}), got (name='{}', brand='{}', mat='{}', hrc={}, inherits='{}')",
@@ -1780,6 +1838,10 @@ fn repair_live_slicer_dir(snap_path: &Path, slicer_dir: &Path, out_3mf: &Path, o
     "nozzle_material": active_rig.nozzle_material,
     "nozzle_diameter": active_rig.nozzle_diameter,
     "hotend_max_flow": active_rig.max_volumetric_flow_limit,
+    "hotend_max_temp_c": orcaslicer_webconfig::catalog::machine_constants(&active_rig.printer_model).max_hotend_temp_c,
+    "printer_kinematics_class": active_rig.kinematics_class(),
+    "travel_accel_target_mm2": active_rig.travel_accel_policy().travel_accel_target_mm2,
+    "travel_accel_floor_mm2": active_rig.travel_accel_policy().travel_accel_floor_mm2,
     "melt_zone_multiplier": active_rig.melt_zone_multiplier,
     "flush_multiplier": snap.flush_multiplier,
     "layer_height": active_proc.layer_height,

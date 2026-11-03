@@ -3978,6 +3978,217 @@ end
   /// must actually reach the exported filament preset with the exact PWL chain values, and the
   /// P25 process keys (`travel_acceleration`, `wipe_on_loops`) must ship through
   /// `build_process_preset_json`.
+  /// Printer-class coverage (doc/pwl-nozzle-compensation-math.md §5.5/§7): the nozzle/hotend
+  /// math is printer-agnostic, but the travel-acceleration breakaway policy and the export
+  /// clamp follow the rig's motion class from constants.json `printer_classes` — a CoreXY
+  /// (Kobra S1) and a bed-slinger (Kobra 3) must get different numbers from the same rule,
+  /// and a machine whose hotend is rated below the FlowTech ceiling must clamp to its own
+  /// rating.
+  #[test]
+  fn test_pwl_policies_follow_printer_kinematics_class() {
+    let kobra_s1 = MachineRig::kobra_s1_hardened_steel_png();
+    let kobra_3 = MachineRig::get_template_catalog()
+      .into_iter()
+      .find(|r| r.printer_model == "Anycubic Kobra 3")
+      .expect("Kobra 3 bed-slinger template rig");
+
+    // Classification: kinematics strings from the app's machine switcher + disk import.
+    assert_eq!(kobra_s1.kinematics_class(), "corexy");
+    assert_eq!(kobra_3.kinematics_class(), "bedslinger");
+
+    // Classification across the full generated catalog (66 vendors, 380 machines): the
+    // generator labels bed-slinger families by model name (constants
+    // `bedslinger_name_tokens`), and the runtime classifier picks the class up from the
+    // machine's kinematics string — this is what wizard-built rigs carry.
+    {
+      let catalog = crate::catalog::load_merged_catalog();
+      let class_of = |name: &str| -> String {
+        let m = catalog
+          .machines
+          .iter()
+          .find(|m| m.name == name)
+          .unwrap_or_else(|| panic!("catalog machine {:?} present", name));
+        crate::constants::constants().kinematics_class(&m.kinematics)
+      };
+      let bedslingers = [
+        "Creality Ender-3",
+        "Anycubic Kobra 3",
+        "Bambu Lab A1",
+        "Prusa MK4S",
+        "Prusa MINI",
+        "Sovol SV06",
+        "Artillery Sidewinder X2",
+        "BIQU B1",
+        "Creality CR-10 V2",
+      ];
+      for name in bedslingers {
+        assert_eq!(
+          class_of(name),
+          "bedslinger",
+          "{} must classify as bed-slinger",
+          name
+        );
+      }
+      let corexys = [
+        "Anycubic Kobra S1",
+        "Bambu Lab X1 Carbon",
+        "Bambu Lab P1S",
+        "Voron 2.4 350",
+        "Voron Trident 300",
+        "Prusa XL",
+        "Prusa CORE One",
+        "BIQU BX",
+        "Anycubic Kobra S1 Max",
+      ];
+      for name in corexys {
+        assert_eq!(class_of(name), "corexy", "{} must classify as CoreXY", name);
+      }
+
+      // Machine constants: curated `machines[]` entries are deliberate overrides; printers
+      // without one DERIVE from the catalog (own vendor prefix, global limits) instead of
+      // inheriting the Kobra S1's.
+      let curated = crate::catalog::machine_constants("Creality Ender-3");
+      assert_eq!(
+        (curated.vendor_prefix.as_str(), curated.max_hotend_temp_c),
+        ("Creality", 260)
+      );
+      let derived_sovol = crate::catalog::machine_constants("Sovol SV06");
+      assert_eq!(derived_sovol.vendor_prefix, "Sovol");
+      assert_eq!(derived_sovol.max_hotend_temp_c, 300);
+      let derived_prusa = crate::catalog::machine_constants("Prusa MK4S");
+      assert_eq!(derived_prusa.vendor_prefix, "Prusa");
+      // Rig-aware inherits use the derived vendor too — no "Anycubic @Sovol SV06".
+      let petg_entry = catalog.filaments.iter().find(|f| f.code == "PETG").unwrap();
+      let spool = FilamentSpool::from_catalog_entry(1, petg_entry, "orca_brass");
+      let inherits = crate::threemf::resolve_filament_inherits_for_rig(
+        &spool,
+        Some(&MachineRig {
+          printer_model: "Sovol SV06".to_string(),
+          nozzle_diameter: "0.4".to_string(),
+          ..kobra_s1.clone()
+        }),
+      );
+      assert_eq!(inherits, "Sovol PETG @Sovol SV06 0.4 nozzle");
+    }
+    let corexy = kobra_s1.travel_accel_policy();
+    let slinger = kobra_3.travel_accel_policy();
+    assert_eq!(
+      (
+        corexy.travel_accel_stock_mm2,
+        corexy.travel_accel_target_mm2,
+        corexy.travel_accel_floor_mm2
+      ),
+      (10000, 12000, 9000)
+    );
+    assert!(slinger.travel_accel_target_mm2 < corexy.travel_accel_target_mm2);
+    assert!(slinger.travel_accel_floor_mm2 < corexy.travel_accel_floor_mm2);
+
+    // P25 travel accel follows the class through the real rule file.
+    let stringing_lua = include_str!("../transformations/symptom_stringing_diamondback.lua");
+    let run_p25 = |ctx: serde_json::Value, a0: &str| {
+      let cfg = json!({ "travel_acceleration": a0 });
+      let (out, _, _) = crate::lua_engine::execute_transformation_lua(stringing_lua, &cfg, &ctx)
+        .expect("stringing rule executes");
+      out["travel_acceleration"].as_str().unwrap().to_string()
+    };
+    let corexy_ctx = json!({
+      "nozzle_type": "diamondback", "nozzle_diameter": "0.4",
+      "travel_accel_target_mm2": corexy.travel_accel_target_mm2,
+      "travel_accel_floor_mm2": corexy.travel_accel_floor_mm2,
+    });
+    let slinger_ctx = json!({
+      "nozzle_type": "diamondback", "nozzle_diameter": "0.4",
+      "travel_accel_target_mm2": slinger.travel_accel_target_mm2,
+      "travel_accel_floor_mm2": slinger.travel_accel_floor_mm2,
+    });
+    // CoreXY: 10000 -> 10700 (boost), 7000 -> boost 8750 then floor 9000. Bed-slinger:
+    // 6000 -> 6700 (boost toward 8000), 4000 -> 5400 (boost clears the floor), 3000 ->
+    // boost 4050 then floor 5000. Above-target inputs pass through unchanged.
+    assert_eq!(run_p25(corexy_ctx.clone(), "10000"), "10700");
+    assert_eq!(run_p25(corexy_ctx.clone(), "7000"), "9000");
+    assert_eq!(run_p25(slinger_ctx.clone(), "6000"), "6700");
+    assert_eq!(run_p25(slinger_ctx.clone(), "4000"), "5400");
+    assert_eq!(run_p25(slinger_ctx.clone(), "3000"), "5000");
+    assert_eq!(run_p25(slinger_ctx.clone(), "15000"), "15000");
+
+    // Export clamp restores the CLASS stock value (not a hard-coded Kobra 10000).
+    let procs = crate::models::ProcessProfile::get_default_processes();
+    let proc = &procs[0];
+    let mut overrides = serde_json::Map::new();
+    overrides.insert("seam_slope_type".to_string(), json!("scarf")); // skip stack re-eval
+    overrides.insert("travel_acceleration".to_string(), json!("4000"));
+    let k3_json = crate::threemf::build_process_preset_json(proc, &kobra_3, &overrides);
+    let k3_map: serde_json::Map<String, serde_json::Value> =
+      serde_json::from_str::<serde_json::Value>(&k3_json)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(
+      k3_map["travel_acceleration"].as_str(),
+      Some(slinger.travel_accel_stock_mm2.to_string().as_str()),
+      "bed-slinger clamp must restore the class stock value"
+    );
+
+    // P10 ceiling: a machine rated below the FlowTech 300 C ceiling clamps to its own rating.
+    let thermal_lua = include_str!("../transformations/thermal_conductivity.lua");
+    let hot_cfg = json!({ "nozzle_temperature": ["290"] });
+    let hot_ctx = json!({
+      "nozzle_type": "diamondback", "nozzle_diameter": "0.4",
+      "hotend_max_temp_c": 270,
+    });
+    let (out, _, _) =
+      crate::lua_engine::execute_transformation_lua(thermal_lua, &hot_cfg, &hot_ctx)
+        .expect("thermal rule executes");
+    // 290 -> 284.3 raw, clamped to the 270 C machine rating.
+    assert_eq!(out["nozzle_temperature"][0].as_str(), Some("270"));
+
+    // The nozzle/hotend compensation itself is printer-agnostic: the same Diamondback PETG
+    // spool exports identical filament values on the bed-slinger as on the CoreXY.
+    let rig_db = MachineRig::get_template_catalog()
+      .into_iter()
+      .find(|r| r.nozzle_type == "diamondback")
+      .unwrap();
+    let mut k3_db = kobra_3.clone();
+    k3_db.nozzle_type = "diamondback".to_string();
+    k3_db.nozzle_material = "Diamondback PCD".to_string();
+    k3_db.nozzle_diameter = "0.4".to_string();
+    k3_db.addons.push("flowtech_hotend".to_string());
+    let catalog = crate::catalog::load_merged_catalog();
+    let petg_entry = catalog.filaments.iter().find(|f| f.code == "PETG").unwrap();
+    let mut spool_db = FilamentSpool::from_catalog_entry(1, petg_entry, &rig_db.nozzle_type);
+    spool_db.flow_ratio = 0.96;
+    let mk_map = |rig: &MachineRig| {
+      let s = crate::threemf::export_standalone_filament_json_with_overrides(
+        &spool_db,
+        rig,
+        &serde_json::Map::new(),
+      );
+      serde_json::from_str::<serde_json::Value>(&s)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone()
+    };
+    let corexy_map = mk_map(&rig_db);
+    let slinger_map = mk_map(&k3_db);
+    for key in [
+      "nozzle_temperature",
+      "filament_retraction_length",
+      "filament_retraction_speed",
+      "filament_flow_ratio",
+      "filament_z_hop",
+    ] {
+      assert_eq!(
+        corexy_map.get(key),
+        slinger_map.get(key),
+        "nozzle compensation must not depend on printer model: {}",
+        key
+      );
+    }
+    assert_eq!(corexy_map["nozzle_temperature"][0], json!("223"));
+  }
+
   #[test]
   fn test_diamondback_pwl_wiring_ships_rule_values_to_exports() {
     let rig = MachineRig::get_template_catalog()

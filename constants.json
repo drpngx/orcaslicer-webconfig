@@ -95,6 +95,17 @@
       "inherits_template": "{vendor_prefix} {base_preset_code} @{printer_model} {nozzle_diameter} nozzle"
     },
     {
+      "printer_model": "Creality Ender-3",
+      "vendor_prefix": "Creality",
+      "default_nozzle_diameter": "0.4",
+      "max_hotend_temp_c": 260,
+      "max_continuous_nozzle_temp_c": 255,
+      "min_bed_temp_c": 35,
+      "max_bed_temp_c": 100,
+      "max_volumetric_speed_mm3s": 12.0,
+      "inherits_template": "{vendor_prefix} {base_preset_code} @{printer_model} {nozzle_diameter} nozzle"
+    },
+    {
       "printer_model": "Bambu Lab X1 Carbon",
       "vendor_prefix": "Bambu",
       "default_nozzle_diameter": "0.4",
@@ -514,6 +525,40 @@
       ]
     }
   ],
+  "printer_classes": {
+    "kinematics_default_class": "corexy",
+    "bedslinger_tokens": ["SLINGER", "CARTESIAN", "I3"],
+    "bedslinger_name_tokens": [
+      "ender",
+      "kobra 3",
+      " a1",
+      "mk3",
+      "mk4",
+      "mini",
+      "sv06",
+      "sv07",
+      "cr-10",
+      "sidewinder",
+      "genius",
+      "hornet",
+      "biqu b1",
+      "hurakan",
+      "sermoon",
+      "artillery"
+    ],
+    "policies": {
+      "corexy": {
+        "travel_accel_stock_mm2": 10000,
+        "travel_accel_target_mm2": 12000,
+        "travel_accel_floor_mm2": 9000
+      },
+      "bedslinger": {
+        "travel_accel_stock_mm2": 6000,
+        "travel_accel_target_mm2": 8000,
+        "travel_accel_floor_mm2": 5000
+      }
+    }
+  },
   "climates": [
     {
       "id": "temperate",

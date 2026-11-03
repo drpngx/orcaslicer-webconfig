@@ -385,11 +385,57 @@ fn categorize_filament(ft: &str) -> (&'static str, &'static str, &'static str) {
 fn main() {
   let args: Vec<String> = env::args().collect();
   if args.len() < 3 {
-    eprintln!("Usage: generate_orca_catalog <output.json> <profiles_root_dir>");
+    eprintln!("Usage: generate_orca_catalog <output.json> <profiles_root_dir> [constants.json]");
     std::process::exit(1);
   }
   let out_path = PathBuf::from(&args[1]);
   let profiles_dir = PathBuf::from(&args[2]);
+  // Optional constants.json supplies `printer_classes.bedslinger_name_tokens` for machine
+  // classification (Orca profiles don't declare kinematics type). Falls back to a built-in
+  // conservative token list so the generator also runs standalone.
+  let bedslinger_name_tokens: Vec<String> = if args.len() > 3 {
+    let constants_txt = fs::read_to_string(&args[3])
+      .unwrap_or_else(|e| panic!("cannot read constants file {}: {}", args[3], e));
+    serde_json::from_str::<serde_json::Value>(&constants_txt)
+      .expect("constants.json parses")
+      .pointer("/printer_classes/bedslinger_name_tokens")
+      .and_then(|v| v.as_array())
+      .map(|arr| {
+        arr
+          .iter()
+          .filter_map(|t| t.as_str().map(|s| s.to_lowercase()))
+          .collect()
+      })
+      .unwrap_or_default()
+  } else {
+    Vec::new()
+  };
+  let fallback_bedslinger_tokens = [
+    "ender",
+    "kobra 3",
+    " a1",
+    "mk3",
+    "mk4",
+    "mini",
+    "sv06",
+    "sv07",
+    "cr-10",
+    "sidewinder",
+    "genius",
+    "hornet",
+    "biqu b1",
+    "hurakan",
+    "sermoon",
+    "artillery",
+  ];
+  let bedslinger_name_tokens: Vec<String> = if bedslinger_name_tokens.is_empty() {
+    fallback_bedslinger_tokens
+      .iter()
+      .map(|s| s.to_string())
+      .collect()
+  } else {
+    bedslinger_name_tokens
+  };
 
   // 1. Scan vendor directories for machines
   let mut machines: Vec<CatalogMachine> = Vec::new();
@@ -496,12 +542,28 @@ fn main() {
         let gcode_flavor =
           first_str(resolved.get("gcode_flavor")).unwrap_or_else(|| "klipper".to_string());
         let aux_fan = first_str(resolved.get("auxiliary_fan")).unwrap_or_default() == "1";
+        // Motion-class label: Orca profiles don't declare kinematics type, so popular
+        // bed-slinger families are matched by model NAME (tokens from constants.json
+        // `printer_classes.bedslinger_name_tokens`, safe direction = gentler policy).
+        // Everything else defaults to the CoreXY class; bambu-flavor profiles are CoreXY
+        // hardware by construction.
+        let model_lower = model_name.to_lowercase();
+        let is_bedslinger = bedslinger_name_tokens
+          .iter()
+          .any(|tok| !tok.is_empty() && model_lower.contains(tok.as_str()));
         let kinematics = format!(
-          "{}{}",
+          "{}{}{}",
+          if is_bedslinger {
+            "Bed-Slinger "
+          } else if gcode_flavor.eq_ignore_ascii_case("bambu") {
+            "CoreXY "
+          } else {
+            ""
+          },
           if gcode_flavor.eq_ignore_ascii_case("marlin") {
             "Marlin FFF"
           } else if gcode_flavor.eq_ignore_ascii_case("bambu") {
-            "CoreXY High-Speed"
+            "High-Speed"
           } else {
             "Klipper High-Speed"
           },

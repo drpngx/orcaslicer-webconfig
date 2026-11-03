@@ -328,6 +328,20 @@ impl MachineRig {
       || nt.contains("mk8_brass")
   }
 
+  /// Motion-system class of this rig ("corexy" | "bedslinger"), derived from its kinematics
+  /// description via constants.json `printer_classes` (tokens + default). Exposed to the Lua
+  /// rules as `ctx.printer_kinematics_class`.
+  pub fn kinematics_class(&self) -> String {
+    crate::constants::constants().kinematics_class(&self.kinematics)
+  }
+
+  /// Travel-acceleration breakaway policy for this rig's motion-system class
+  /// (`printer_classes.policies`): stock/target/floor in mm/s². Printer-class physics —
+  /// a CoreXY gantry and a bed-slinger need different numbers for the same rule.
+  pub fn travel_accel_policy(&self) -> crate::constants::PrinterClassPolicy {
+    crate::constants::constants().printer_class_policy(&self.kinematics_class())
+  }
+
   /// Canonical nozzle tag from `nozzle_type` alone (`"diamondback"` -> `"Diamondback"`), so machine
   /// titles and filament preset names (`OC - PETG • 0.4 Diamondback`) always agree on the same tag.
   pub fn short_nozzle_tag_for_type(nozzle_type: &str) -> &'static str {

@@ -38,8 +38,11 @@ function apply(config, ctx)
 
     -- 1. Piecewise-linear PCD temperature curve dT(T0), applied per temperature key over its
     --    own brass base value (full -10/-11 C in the high-fan PLA/PETG band, tapering to -5 C
-    --    at 300 C where inter-layer chain diffusion needs the enthalpy). Clamped to the
-    --    FlowTech assembly ceiling (300 C) and an absolute floor of 175 C.
+    --    at 300 C where inter-layer chain diffusion needs the enthalpy). Ceiling is the
+    --    FlowTech assembly rating (300 C — PCD nozzles only fit FlowTech) intersected with
+    --    this printer's hotend rating (ctx.hotend_max_temp_c from constants.json machines[]);
+    --    floor is the generic 175 C extrusion minimum.
+    local hotend_ceiling = math.min(300, scalar_num(ctx.hotend_max_temp_c, 300))
     local pcd_temp_pwl = {
       { 190, -8.0 },
       { 215, -11.0 },
@@ -51,7 +54,7 @@ function apply(config, ctx)
     for _, key in ipairs(temp_keys) do
       if config[key] then
         config[key] = map_num(config[key], function(t0)
-          return clamp(t0 + pwl(t0, pcd_temp_pwl), 175, 300)
+          return clamp(t0 + pwl(t0, pcd_temp_pwl), 175, hotend_ceiling)
         end, "%.0f")
       end
     end

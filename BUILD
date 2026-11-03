@@ -126,9 +126,10 @@ genrule(
     srcs = [
         "@orcaslicer_repo//:profiles",
         "@orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json",
+        "constants.json",
     ],
     outs = ["orcaslicer_generated_catalog.json"],
-    cmd = "$(location :generate_orca_catalog) $@ $$(dirname $(location @orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json))",
+    cmd = "$(location :generate_orca_catalog) $@ $$(dirname $(location @orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json)) $(location constants.json)",
     tools = [":generate_orca_catalog"],
 )
 

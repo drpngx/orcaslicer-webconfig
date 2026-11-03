@@ -19,7 +19,47 @@ pub struct WebConfigConstants {
   pub nozzles: Vec<NozzleConstants>,
   pub finishes: Vec<FinishConstants>,
   pub climates: Vec<ClimateConstants>,
+  #[serde(default)]
+  pub printer_classes: PrinterClassConstants,
   pub polymers: Vec<PolymerConstants>,
+}
+
+/// Printer motion-system classes (constants.json `printer_classes`): the nozzle/hotend
+/// compensation math is printer-agnostic, but the travel-acceleration breakaway policy is
+/// class-dependent — a CoreXY gantry snaps a strand cleanly at 12 000 mm/s², while a
+/// bed-slinger's moving bed needs a far gentler touch. `kinematics_default_class` applies
+/// when the rig's kinematics string matches no token (CoreXY is the safe default).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct PrinterClassConstants {
+  #[serde(default = "default_kinematics_class")]
+  pub kinematics_default_class: String,
+  #[serde(default)]
+  pub bedslinger_tokens: Vec<String>,
+  /// Machine-NAME tokens (lowercase substring match) the catalog generator uses to label
+  /// generated machine entries "Bed-Slinger" — Orca profiles don't declare kinematics type,
+  /// so popular bed-slinger families (Ender, Kobra 3, Bambu A1, Prusa MK*/MINI, Sovol
+  /// SV06/07, CR-10, Artillery, BIQU B1/… ) are matched by model name. Unmatched machines
+  /// default to the CoreXY class, whose travel-acceleration policy is the more aggressive
+  /// one — matching conservatively here keeps misclassification in the gentle direction.
+  #[serde(default)]
+  pub bedslinger_name_tokens: Vec<String>,
+  #[serde(default)]
+  pub policies: BTreeMap<String, PrinterClassPolicy>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct PrinterClassPolicy {
+  /// Stock `travel_acceleration` for the class — what the export clamp restores when a rule
+  /// produces something below `travel_accel_floor_mm2`.
+  pub travel_accel_stock_mm2: i64,
+  /// P25 asymptotic breakaway-boost target.
+  pub travel_accel_target_mm2: i64,
+  /// Minimum shippable rule value (the clamp replaces anything below with the stock value).
+  pub travel_accel_floor_mm2: i64,
+}
+
+fn default_kinematics_class() -> String {
+  "corexy".to_string()
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -334,6 +374,25 @@ pub fn constants() -> &'static WebConfigConstants {
 }
 
 impl WebConfigConstants {
+  /// Curated `machines[]` entry for `printer_model` (exact match, then substring),
+  /// WITHOUT the machines[0] fallback — callers that should support any catalog printer
+  /// use `crate::catalog::machine_constants` instead, which falls through to a
+  /// catalog-derived entry rather than silently applying the Kobra S1's limits.
+  pub fn find_curated_machine<'a>(&'a self, printer_model: &str) -> Option<&'a MachineConstants> {
+    let model = printer_model.trim();
+    self
+      .machines
+      .iter()
+      .find(|m| m.printer_model.eq_ignore_ascii_case(model))
+      .or_else(|| {
+        let low = model.to_lowercase();
+        self
+          .machines
+          .iter()
+          .find(|m| low.contains(&m.printer_model.to_lowercase()))
+      })
+  }
+
   pub fn lookup_machine<'a>(&'a self, printer_model: &str) -> &'a MachineConstants {
     self
       .machines
@@ -553,6 +612,43 @@ impl WebConfigConstants {
   pub fn is_esd_or_foaming(&self, material_type: &str, finish_type: &str) -> bool {
     let fc = self.lookup_finish(finish_type);
     fc.code == "Foaming" || fc.code == "Conductive" || material_type.to_uppercase().contains("ESD")
+  }
+
+  /// Classifies a rig's kinematics description (e.g. "CoreXY Enclosed S-Series",
+  /// "Cartesian High-Speed Bedslinger", "Bed-Slinger High-Speed") into a motion-system
+  /// class key ("corexy" | "bedslinger") via `printer_classes.bedslinger_tokens`
+  /// (uppercase substring match); unmatched strings fall back to
+  /// `kinematics_default_class`. Exposed to the Lua rules as
+  /// `ctx.printer_kinematics_class` so printer-class physics travels with the context.
+  pub fn kinematics_class(&self, kinematics: &str) -> String {
+    let up = kinematics.trim().to_uppercase();
+    if self
+      .printer_classes
+      .bedslinger_tokens
+      .iter()
+      .any(|tok| !tok.is_empty() && up.contains(&tok.to_uppercase()))
+    {
+      "bedslinger".to_string()
+    } else {
+      self.printer_classes.kinematics_default_class.clone()
+    }
+  }
+
+  /// Travel-acceleration policy for a class key ("corexy", "bedslinger"). Falls back to
+  /// the corexy policy (and, if the table is somehow empty, the hard-coded Kobra-tuned
+  /// values) so a typo in constants.json can never produce an unshippable policy.
+  pub fn printer_class_policy(&self, class: &str) -> PrinterClassPolicy {
+    if let Some(p) = self.printer_classes.policies.get(class) {
+      return p.clone();
+    }
+    if let Some(p) = self.printer_classes.policies.get("corexy") {
+      return p.clone();
+    }
+    PrinterClassPolicy {
+      travel_accel_stock_mm2: 10000,
+      travel_accel_target_mm2: 12000,
+      travel_accel_floor_mm2: 9000,
+    }
   }
 
   /// Returns true when `material_type` belongs to an elastomer/flexible family

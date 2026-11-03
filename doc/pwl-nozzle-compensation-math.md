@@ -67,6 +67,24 @@ The curve machinery lives in the engine, not in each rule file:
 - Community calibration guidance: print ~−10 °C below brass-baseline temperatures;
   direct-drive retraction 0.8–1.2 mm @ 25–40 mm/s; Diamondback stringing is a **temperature**
   problem, not a retraction problem.
+- **Printer coverage:** the nozzle/hotend curves above are printer-agnostic (they depend only
+  on the nozzle material, the hotend geometry, and the filament — verified identical on a
+  CoreXY and a bed-slinger). The one printer-dependent part is the travel-acceleration
+  breakaway policy (§5.5), which follows the rig's **motion class** — `corexy` or
+  `bedslinger` — derived from its kinematics description via `constants.json`
+  `printer_classes` (token match on the kinematics string, CoreXY as the default class) and
+  exposed to the rules as `ctx.printer_kinematics_class` /
+  `ctx.travel_accel_target_mm2` / `ctx.travel_accel_floor_mm2`. The P10 temperature ceiling
+  likewise intersects the FlowTech 300 °C rating with the machine's own
+  `machines[].max_hotend_temp_c` (`ctx.hotend_max_temp_c`). The class policy is grounded in
+  community data: CoreXY-class stock travel accel ≈ 10 000 mm/s² (Kobra S1 base) with
+  20 000 machine limits; bed-slinger stock ≈ 6 000 mm/s² (Bambu A1) with a 5 000–10 000
+  quality sweet spot and 3 000–5 000 typical for Ender-class Klipper machines (sources §9).
+  Orca profiles don't declare kinematics type, so the **catalog generator** labels bed-slinger
+  families by model name (`printer_classes.bedslinger_name_tokens` — Ender, Kobra 3,
+  Bambu A1, Prusa MK*/MINI, Sovol SV06/07, CR-10, Artillery, BIQU B1/…); 60 of the
+  catalog's 380 machines across 66 vendors are labeled, everything else defaults to the
+  CoreXY class, which preserves the historical behavior for unlabeled machines.
 
 ## 3. Rule P10 — `thermal_conductivity.lua` (PCD branch), priority 10
 
@@ -93,8 +111,10 @@ $$T_1 = \mathrm{round}_{\%.0f}\big(\mathrm{clamp}(T_0 + \Delta T_{PCD}(T_0),\ 17
 
 Applied independently to `nozzle_temperature`, `nozzle_temperature_initial_layer`,
 `nozzle_temperature_HS`, and `nozzle_temperature_initial_layer_HS` — each over its **own**
-base value. The 300 °C clamp doubles as the FlowTech assembly ceiling: a 300 °C PA/PC base
-lands at 294–295 °C, never above.
+base value. The ceiling is `min(300, ctx.hotend_max_temp_c)` — the FlowTech assembly rating
+(PCD nozzles only fit FlowTech) intersected with the machine's own hotend rating from
+`constants.json` `machines[]`: a 300 °C PA/PC base lands at 294–295 °C, never above, and a
+270 °C-rated machine clamps at 270.
 
 ### 3.2 Die-swell flow trim f1(f0, d)
 
@@ -198,13 +218,19 @@ binds), 0.4 mm z0 = 0.20 → **0.26** (ceiling binds), 1.0 mm z0 = 0.20 → **0.
 
 ### 5.5 Breakaway travel acceleration a1(a0)
 
-Snap the strand at the perimeter exit instead of dragging it: asymptotic boost toward
-12 000 mm/s² with a 9 000 floor — which always clears the export-side `< 8000 → 10000`
-clamp, so the rule's number ships verbatim:
+Snap the strand at the perimeter exit instead of dragging it: an asymptotic boost toward the
+**printer-class target** with a class floor (`ctx.travel_accel_target_mm2` /
+`ctx.travel_accel_floor_mm2`, from `constants.json` `printer_classes.policies`). Inputs above
+the target pass through unchanged. On the CoreXY class (Kobra S1): target 12 000, floor
+9 000 — the floor always clears the export-side travel-accel guard (§7), so the rule's
+number ships verbatim; on the bed-slinger class: target 8 000, floor 5 000, because a
+moving bed needs a gentler breakaway than a gantry:
 
-$$a_1 = \big\lfloor \max(9000,\ a_0 + 0.35\max(0, 12000 - a_0)) \big\rfloor$$
+$$a_1 = \big\lfloor \max(\mathrm{floor},\ a_0 + 0.35\max(0, \mathrm{target} - a_0)) \big\rfloor$$
 
-10 000 → **10 700**. Plus `wipe_on_loops = 1` (mechanical shear before travel).
+CoreXY: 10 000 → **10 700**, 7 000 → boost 8 750 then floor **9 000**.
+Bed-slinger: 6 000 → **6 700**, 3 000 → boost 4 050 then floor **5 000**, 15 000 →
+**15 000** (unchanged). Plus `wipe_on_loops = 1` (mechanical shear before travel).
 
 ## 6. Verified computation matrix (8 polymer/nozzle cases)
 
@@ -245,19 +271,35 @@ resolver, which runs the rule stack once **per spool**:
 - **Guards:** Siraya foaming-air and foaming-TPU spools skip the stack entirely (their
   zero/foam-specific retraction is material physics the curves must not touch); z-hop is
   only overridden when the base polymer z-hop is non-zero; temperatures re-clamp to the
-  polymer safe band.
-- **Policy constants** all live in `constants.json` `hardware_limits` — no inline numbers in
-  the resolver, the audit, or the Lua: `elastomer_family_tokens` +
+  polymer safe band **intersected with the machine's hotend rating**
+  (`machines[].max_hotend_temp_c`, mirrored by an audit check — a 290 °C PA spool exports at
+  most 260 °C on an Ender-3, 300 °C on a Kobra S1 / Bambu X1C).
+- **Policy constants** all live in `constants.json` — no inline numbers in the resolver, the
+  audit, or the Lua. In `hardware_limits`: `elastomer_family_tokens` +
   `elastomer_max_retraction_speed_mms` for the flexible-family speed clamp (exported to the
   rules as `ctx.filament_is_elastomer`), `nozzle_temp_floor_relax_c` for the approved
   excursion below a polymer's `safe_nozzle_min_c` (the final temp clamps to floor−relax,
   letting Anycubic PETG ship 223 while its conservative floor is 225; the initial-layer temp
   keeps the hard floor), `hs_base_temp_delta_c` for the hardened-steel base inversion, and
-  `min_extrusion_temp_c` as the absolute floor.
+  `min_extrusion_temp_c` as the absolute floor. In `printer_classes`: the motion-class
+  tokens and the per-class travel-acceleration stock/target/floor policy.
+- **Per-machine constants** (`catalog::machine_constants`): a curated `machines[]` entry is
+  a *deliberate override*; every other printer **derives** from the generated Orca catalog
+  (its vendor, name, default nozzle) plus the global `hardware_limits` — never a silent
+  Kobra fallback. Curation exists only where the Orca repo publishes nothing (machine
+  profiles carry no max hotend/bed temps or volumetric limits) or overstates hardware: the
+  Ender-3's filament profiles reach 280 °C, but its PTFE-lined hotend is 260 °C sustained,
+  so the curated entry says 260.
 - **Process keys** (`travel_acceleration`, `wipe_on_loops`) ship through the process preset
-  builder; the a1 floor of 9000 always clears the `< 8000 → 10000` export clamp.
+  builder. The export-side travel-accel guard is class-aware: a rule value below the class
+  floor is replaced with the class stock value (CoreXY 9 000 → 10 000; bed-slinger
+  5 000 → 6 000) instead of a hard-coded Kobra number; P25's floor always clears it.
 - Because both paths share the resolver, standalone `.json` and 3MF per-slot parity holds by
-  construction (and each slot carries its own polymer's curve — sibling slots differ).
+  construction (and each slot carries its own polymer's curve — sibling slots differ). The
+  3MF **import** is machine-aware too: `parse_ace_loadout_from_bytes_or_json` extracts the
+  printer model from `printer_settings_id` (matching full names and short tags — "X1C",
+  "Kobra S1 Max" beats "Kobra S1") so imported spools' `inherits` point at the right
+  vendor's preset instead of a Kobra default.
 
 ## 8. Open follow-ups
 
@@ -269,13 +311,31 @@ resolver, which runs the rule stack once **per spool**:
    whether the UI should display the rule-stack value instead of the flat approximation.
 3. Machine notes / toasts quote curve ranges; once (2) is decided they can quote real
    effective per-spool values.
-4. `filament_pctg_antistringing.lua` (priority 48, default-enabled) writes absolute
+4. The **bed-slinger travel-acceleration policy** (stock 6 000 / target 8 000 / floor 5 000)
+   is grounded in community data for modern bed-slingers (Bambu A1 stock ≈ 6 000, quality
+   sweet spot 5 000–10 000; Ender-class Klipper 3 000–5 000) — older Ender-class machines
+   may want the lower end; adjust `printer_classes.policies.bedslinger` per calibration.
+5. The random-config audit now rotates rigs across **three printers and both motion
+   classes** — Anycubic Kobra S1 (CoreXY), Bambu Lab X1 Carbon (CoreXY), and Creality
+   Ender-3 (bed-slinger, 260 °C hotend rating) — with per-rig compat-printer strings,
+   process filenames (`@Kobra S1` / `@X1C` / `@Ender-3`), inherits templates, and the
+   machine hotend ceiling all checked. Adding more vendors is a one-line `base_rig_for_printer`
+   call once they exist in `machines[]`; the default process profiles' names still bake in
+   "@Kobra S1" until the app's state sync retitles them per rig.
+6. `filament_pctg_antistringing.lua` (priority 48, default-enabled) writes absolute
    retraction 1.00 @ 45 / z-hop 0.10 / travel-accel 10000 for **PCTG** slots, which ships
    and overrides the Diamondback chain for PCTG spools. Decide: rewrite it relative so the
    PCD curves compose through it, or scope it off MicroSwiss/Diamondback rigs.
 
 ## 9. Sources
 
+- Bambu Lab A1 acceleration (bed-slinger stock ≈ 6 000 mm/s², sweet spot 5 000–10 000):
+  https://industrialmonitordirect.com/blogs/knowledgebase/bambu-lab-a1-speed-and-acceleration-settings-for-thin-vertical-prints
+  and https://www.reddit.com/r/BambuLab/comments/1ao33wf/fastest_a1_mini_settings_share_your_settings
+- Ender 3 / bed-slinger Klipper acceleration (3 000–5 000 with input shaping; lower than
+  CoreXY to avoid ringing):
+  https://www.sovol3d.com/blogs/news/calibrate-3d-printer-acceleration-and-jerk-settings-guide
+  and https://www.obico.io/blog/klipper-input-shaping-ender-3
 - MicroSwiss FlowTech DiamondBack product page (specs, fits list):
   https://store.micro-swiss.com/products/flowtech-diamondback-nozzles
 - Prusa forum, Diamondback temperature (~−10 °C consensus):

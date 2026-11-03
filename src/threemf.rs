@@ -150,7 +150,31 @@ pub fn resolve_filament_inherits_for_rig(
     let mc = &crate::constants::constants().machines[0];
     (mc.printer_model.clone(), mc.default_nozzle_diameter.clone())
   };
-  crate::constants::constants().resolve_filament_inherits(&model, &noz, &spool.material_type)
+  // `machine_constants` prefers curated `machines[]` overrides and otherwise derives from
+  // the Orca catalog, so a Prusa/Sovol/… rig inherits its own vendor's preset family
+  // instead of the Kobra fallback.
+  let mc = crate::catalog::machine_constants(&model);
+  let noz = if noz.trim().is_empty() {
+    mc.default_nozzle_diameter.clone()
+  } else {
+    noz.trim().to_string()
+  };
+  let c = crate::constants::constants();
+  let trimmed_mat = spool.material_type.trim();
+  let base_code = if c
+    .direct_inherits_preset_codes
+    .iter()
+    .any(|code| code.eq_ignore_ascii_case(trimmed_mat))
+  {
+    trimmed_mat
+  } else {
+    &c.lookup_polymer(&spool.material_type).base_preset_code
+  };
+  mc.inherits_template
+    .replace("{vendor_prefix}", &mc.vendor_prefix)
+    .replace("{base_preset_code}", base_code)
+    .replace("{printer_model}", &mc.printer_model)
+    .replace("{nozzle_diameter}", &noz)
 }
 
 pub fn resolve_kobra_s1_filament_inherits(spool: &FilamentSpool) -> String {
@@ -306,7 +330,11 @@ fn evaluate_spool_lua_filament_overrides(
     "nozzle_material": rig.nozzle_material,
     "nozzle_diameter": rig.nozzle_diameter,
     "hotend_max_flow": rig.max_volumetric_flow_limit,
+    "hotend_max_temp_c": crate::catalog::machine_constants(&rig.printer_model).max_hotend_temp_c,
     "melt_zone_multiplier": rig.melt_zone_multiplier,
+    "printer_kinematics_class": rig.kinematics_class(),
+    "travel_accel_target_mm2": rig.travel_accel_policy().travel_accel_target_mm2,
+    "travel_accel_floor_mm2": rig.travel_accel_policy().travel_accel_floor_mm2,
     "filament_type": spool.material_type,
     "filament_finish": spool.finish_type,
     "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type).1,
@@ -482,6 +510,19 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
     FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type);
   if is_foaming_tpu {
     max_safe_noz = max_safe_noz.max(280);
+  }
+  // The active machine's hotend rating caps the polymer band from above (curated
+  // `machines[].max_hotend_temp_c` override, else the global limit via
+  // `catalog::machine_constants`): a PA spool (290 °C base) must never export above a
+  // 260 °C-rated Ender-3 hotend just because the polymer allows 295.
+  if let Some(rig) = rig_opt {
+    let machine_max = crate::catalog::machine_constants(&rig.printer_model)
+      .max_hotend_temp_c
+      .min(c.hardware_limits.max_hotend_temp_c);
+    max_safe_noz = max_safe_noz.min(machine_max);
+    if max_safe_noz < min_safe_noz {
+      max_safe_noz = min_safe_noz;
+    }
   }
   let (min_safe_bed, max_safe_bed) = FilamentSpool::polymer_safe_bed_bounds(&spool.material_type);
   let climate_min_bed = if let Some(rig) = rig_opt {
@@ -1037,7 +1078,11 @@ pub fn resolve_effective_orca_profile_values(
       "nozzle_material": rig.nozzle_material,
       "nozzle_diameter": rig.nozzle_diameter,
       "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "hotend_max_temp_c": crate::catalog::machine_constants(&rig.printer_model).max_hotend_temp_c,
       "melt_zone_multiplier": rig.melt_zone_multiplier,
+      "printer_kinematics_class": rig.kinematics_class(),
+      "travel_accel_target_mm2": rig.travel_accel_policy().travel_accel_target_mm2,
+      "travel_accel_floor_mm2": rig.travel_accel_policy().travel_accel_floor_mm2,
       "layer_height": process.layer_height,
       "line_width": process.line_width,
       "process_tier": crate::transformations::classify_process_scope_tier(process),
@@ -1112,9 +1157,16 @@ pub fn resolve_effective_orca_profile_values(
       continue;
     }
     if k == "travel_acceleration" {
+      // Travel-accel guard, per printer motion class (constants.json `printer_classes`):
+      // a rule value below the class floor is replaced with the class stock value — the
+      // Kobra S1 CoreXY floor/stock is 9000/10000; a bed-slinger gets its gentler policy.
+      let accel_policy = rig.travel_accel_policy();
       if let Some(ta) = v.as_str().and_then(|s| s.parse::<f64>().ok()) {
-        if ta < 8000.0 {
-          effective.insert(k.clone(), serde_json::json!("10000"));
+        if ta < accel_policy.travel_accel_floor_mm2 as f64 {
+          effective.insert(
+            k.clone(),
+            serde_json::json!(accel_policy.travel_accel_stock_mm2.to_string()),
+          );
           continue;
         }
       }
@@ -2284,6 +2336,64 @@ pub fn parse_ace_loadout_from_bytes_or_json(data: &[u8]) -> Result<ImportedAceLo
     .and_then(|m| m.get("filament_material_type"))
     .and_then(|v| v.as_array())
     .or_else(|| val.get("filament_type").and_then(|v| v.as_array()));
+  // Machine identity for per-slot `inherits`: `printer_settings_id` carries the machine
+  // preset title ("OC - Bambu Lab X1 Carbon • 0.4 Ruby-Brass" or a stock Orca name); match
+  // a known printer model inside it (longest match wins so "Kobra S1 Max" beats "Kobra S1")
+  // so imported spools stop claiming Anycubic/Kobra inherits on other vendors' files.
+  let printer_settings_id = val
+    .get("printer_settings_id")
+    .and_then(|v| v.as_str())
+    .map(|s| s.to_string())
+    .or_else(|| {
+      val
+        .get("presets")
+        .and_then(|p| p.get("machine"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+    })
+    .unwrap_or_default();
+  let imported_printer_model = {
+    let id_lower = printer_settings_id.to_lowercase();
+    // Machine titles use the rig's SHORT model tag ("OC - X1C • 0.4 Ruby-Brass"), stock Orca
+    // names use the full model — match either, longest needle wins (so "Kobra S1 Max"
+    // beats "Kobra S1").
+    let short_tag_of = |model: &str| -> String {
+      let trimmed = model
+        .trim_start_matches("Anycubic ")
+        .trim_start_matches("Bambu Lab ")
+        .trim_start_matches("Creality ")
+        .trim_start_matches("Prusa ")
+        .trim();
+      if trimmed == "X1 Carbon" {
+        "X1C".to_string()
+      } else {
+        trimmed.to_string()
+      }
+    };
+    let mut needles: Vec<(String, String)> = Vec::new();
+    for m in &crate::constants::constants().machines {
+      needles.push((m.printer_model.clone(), m.printer_model.clone()));
+      needles.push((short_tag_of(&m.printer_model), m.printer_model.clone()));
+    }
+    for m in &crate::catalog::load_merged_catalog().machines {
+      needles.push((m.name.clone(), m.name.clone()));
+      needles.push((short_tag_of(&m.name), m.name.clone()));
+    }
+    needles
+      .into_iter()
+      .filter(|(needle, _)| !needle.is_empty() && id_lower.contains(&needle.to_lowercase()))
+      .max_by_key(|(needle, _)| needle.len())
+      .map(|(_, model)| model)
+  };
+  let imported_nozzle_diam = printer_settings_id
+    .rfind("• ")
+    .and_then(|idx| {
+      printer_settings_id[idx + "• ".len()..]
+        .split_whitespace()
+        .next()
+        .map(|s| s.to_string())
+    })
+    .unwrap_or_else(|| "0.4".to_string());
   let colors = val.get("filament_colour").and_then(|v| v.as_array());
   let temps = val.get("nozzle_temperature").and_then(|v| v.as_array());
   let bed_temps = val.get("hot_plate_temp").and_then(|v| v.as_array());
@@ -2442,7 +2552,14 @@ pub fn parse_ace_loadout_from_bytes_or_json(data: &[u8]) -> Result<ImportedAceLo
       deltas_from_base: Vec::new(),
       raw_disk_json: None,
     };
-    sp.inherits = resolve_kobra_s1_filament_inherits(&sp);
+    sp.inherits = match &imported_printer_model {
+      Some(model) => crate::constants::constants().resolve_filament_inherits(
+        model,
+        &imported_nozzle_diam,
+        &sp.material_type,
+      ),
+      None => resolve_kobra_s1_filament_inherits(&sp),
+    };
     spools.push(sp);
   }
 

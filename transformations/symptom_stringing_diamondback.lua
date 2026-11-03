@@ -89,10 +89,15 @@ function apply(config, ctx)
   end
   config["filament_z_hop_types"] = { "Spiral Lift" }
 
-  -- 5. Asymptotic breakaway travel acceleration toward 12000 mm/s^2 (floor 9000).
+  -- 5. Asymptotic breakaway travel acceleration toward the printer-class target
+  --    (ctx.travel_accel_target_mm2 / _floor_mm2 from constants.json `printer_classes`:
+  --    12000/9000 on a CoreXY, gentler on a bed-slinger). Values above the target pass
+  --    through unchanged; the floor always clears the export-side clamp.
   local a0 = scalar_num(config["travel_acceleration"], 10000)
-  local a_new = a0 + 0.35 * math.max(0, 12000 - a0)
-  config["travel_acceleration"] = tostring(math.floor(math.max(a_new, 9000)))
+  local ta_target = scalar_num(ctx.travel_accel_target_mm2, 12000)
+  local ta_floor = scalar_num(ctx.travel_accel_floor_mm2, 9000)
+  local a_new = a0 + 0.35 * math.max(0, ta_target - a0)
+  config["travel_acceleration"] = tostring(math.floor(math.max(a_new, ta_floor)))
 
   -- 6. Mechanical inward wipe before the travel move shears the strand off the tip.
   config["wipe_on_loops"] = "1"

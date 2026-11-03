@@ -219,6 +219,68 @@ pub fn load_merged_catalog() -> CombinedCatalog {
   MERGED_CATALOG.get_or_init(build_merged_catalog).clone()
 }
 
+/// Machine hardware constants for `printer_model`. A curated `constants.json machines[]`
+/// entry wins when present — those are DELIBERATE overrides for facts the OrcaSlicer repo
+/// does not publish or overstates (machine profiles carry no max hotend/bed temps or
+/// volumetric limits; e.g. Creality's Ender-3 filament profiles reach 280 °C but its
+/// PTFE-lined hotend is rated 260 °C sustained, so the curated entry says 260). Otherwise
+/// the entry is DERIVED from the generated Orca catalog machine (vendor, name, default
+/// nozzle) plus the app-global `hardware_limits` — any of the catalog's 380 printers gets
+/// sane machine constants without a hand-maintained table, instead of silently inheriting
+/// the Kobra S1's vendor prefix and limits.
+pub fn machine_constants(printer_model: &str) -> crate::constants::MachineConstants {
+  let c = crate::constants::constants();
+  if let Some(curated) = c.find_curated_machine(printer_model) {
+    return curated.clone();
+  }
+  let cat = load_merged_catalog();
+  let model = printer_model.trim();
+  let entry = cat
+    .machines
+    .iter()
+    .find(|m| m.name.eq_ignore_ascii_case(model))
+    .or_else(|| {
+      let low = model.to_lowercase();
+      cat
+        .machines
+        .iter()
+        .find(|m| !m.name.is_empty() && low.contains(&m.name.to_lowercase()))
+    });
+  let (name, vendor, noz) = match entry {
+    Some(m) => (
+      m.name.clone(),
+      m.vendor.clone(),
+      format!("{:.1}", m.default_nozzle_diameter),
+    ),
+    None => {
+      // Unknown even to the catalog: keep the caller's model string, take the leading word
+      // as the vendor prefix (covers "Sovol SV06" when a catalog entry is absent).
+      let fallback_name = if model.is_empty() {
+        c.machines[0].printer_model.clone()
+      } else {
+        model.to_string()
+      };
+      let fallback_vendor = fallback_name
+        .split_whitespace()
+        .next()
+        .unwrap_or("Generic")
+        .to_string();
+      (fallback_name, fallback_vendor, "0.4".to_string())
+    }
+  };
+  crate::constants::MachineConstants {
+    printer_model: name,
+    vendor_prefix: vendor,
+    default_nozzle_diameter: noz,
+    max_hotend_temp_c: c.hardware_limits.max_hotend_temp_c,
+    max_continuous_nozzle_temp_c: c.hardware_limits.max_continuous_nozzle_temp_c,
+    min_bed_temp_c: c.hardware_limits.min_bed_temp_c,
+    max_bed_temp_c: c.hardware_limits.max_bed_temp_c,
+    max_volumetric_speed_mm3s: c.hardware_limits.max_volumetric_speed_mm3s,
+    inherits_template: c.machines[0].inherits_template.clone(),
+  }
+}
+
 fn build_merged_catalog() -> CombinedCatalog {
   let generated: CombinedCatalog =
     serde_json::from_str(ORCA_GENERATED_JSON).expect("Invalid generated OrcaSlicer catalog JSON");
