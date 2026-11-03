@@ -69,7 +69,8 @@ function apply(config, ctx, p)
   if ctx.filament_type == "PCTG" then
     if config["nozzle_temperature"] and config["nozzle_temperature"][1] then
       local t = tonumber(config["nozzle_temperature"][1]) or 260
-      if t >= 258 then
+      local t0 = scalar_num(base["nozzle_temperature"], t)
+      if t0 >= 258 or t >= 258 then
         local trimmed = tostring(t - 3)
         config["nozzle_temperature"] = { trimmed }
         config["nozzle_temperature_HS"] = { trimmed }
@@ -87,9 +88,15 @@ function apply(config, ctx, p)
   config["filament_retract_before_wipe"] = { "40%" }
   config["filament_wipe"] = { "1" }
   config["filament_wipe_distance"] = { "2.0" }
-  config["filament_z_hop"] = { "0.1" }
+  local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
+  if cur_zhop < 0.10 then
+    config["filament_z_hop"] = { "0.1" }
+  end
   config["filament_z_hop_types"] = { z_type }
-  config["travel_acceleration"] = "10000"
+  local cur_ta = scalar_num(config["travel_acceleration"], 10000)
+  if cur_ta < 10000 then
+    config["travel_acceleration"] = "10000"
+  end
   config["wipe_on_loops"] = "1"
   sync_coupled_physics(config, ctx)
 

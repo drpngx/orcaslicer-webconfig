@@ -191,7 +191,10 @@ function apply(config, ctx, p)
   config["filament_retract_before_wipe"] = string.format("%d%%", c.retract_before_wipe)
   config["filament_wipe"] = "1"
   config["filament_wipe_distance"] = "2"
-  config["filament_z_hop"] = "0.1"
+  local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
+  if cur_zhop < 0.10 then
+    config["filament_z_hop"] = "0.1"
+  end
   config["filament_z_hop_types"] = "Spiral Lift"
   config["reduce_crossing_wall"] = "1"
 

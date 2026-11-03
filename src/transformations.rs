@@ -1568,7 +1568,18 @@ end
     rules: &[TransformationRule],
     context: &serde_json::Value,
   ) -> StackEvaluationResult {
-    let mut current_values = serde_json::Value::Object(base_profile.values.clone());
+    let mut initial_map = base_profile.values.clone();
+    let mut base_snapshot_map = serde_json::Map::new();
+    for (k, v) in &base_profile.values {
+      if k != "_bounds" && k != "_coupled_state" && k != "_base" {
+        base_snapshot_map.insert(k.clone(), v.clone());
+      }
+    }
+    initial_map.insert(
+      "_base".to_string(),
+      serde_json::Value::Object(base_snapshot_map),
+    );
+    let mut current_values = serde_json::Value::Object(initial_map);
     let mut execution_logs = Vec::new();
     let mut ordered_rules = rules.to_vec();
     ordered_rules.sort_by_key(|r| r.priority);
@@ -2661,6 +2672,7 @@ end
 
     let mut res_profile = base_profile.clone();
     if let serde_json::Value::Object(mut map) = current_values {
+      map.remove("_base");
       if let Some(eval_lh) = base_profile.get_str("layer_height") {
         map.insert(
           "_evaluated_for_layer_height".to_string(),
@@ -7425,5 +7437,162 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     fil_map.insert(spool.format_concise_title(), fil_str);
     verify_project_settings_matches_standalone_presets(&ps_str, &mach_str, &proc_str, &fil_map)
       .expect("project_settings.config must match standalone Machine, Process, and Filament presets 100%");
+  }
+
+  #[test]
+  fn test_immutable_base_x0_snapshot_and_order_independent_regime_evaluation() {
+    let mk_rule = |id: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: id.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    // 1. Read-only immutability enforcement on `base`:
+    for bad_script in [
+      r#"base["nozzle_temperature"] = "250""#,
+      r#"base.nozzle_temperature = "250""#,
+      r#"base["nozzle_temperature"][1] = "250""#,
+      r#"function apply(config, ctx) base = {} end"#,
+    ] {
+      let err = execute_transformation_lua(
+        bad_script,
+        &json!({ "nozzle_temperature": ["230"] }),
+        &json!({}),
+      )
+      .expect_err("mutating read-only `base` must fail");
+      assert!(
+        err.contains("[Lua Immutability Violation]"),
+        "expected Lua Immutability Violation, got: {}",
+        err
+      );
+    }
+
+    // 2. Long-travel flexible filament (r0 = 1.30 mm, T0 = 230 C) where P12 + an intervening P15
+    //    rule compress `config["filament_retraction_length"]` from 1.30 -> 0.90 mm (below the old
+    //    r1 = 1.10 mm threshold!). Because P25 (`symptom_stringing_diamondback`) reads `r0_ref`
+    //    from the immutable `base["filament_retraction_length"]` (1.30 >= 1.22), `rigid_gate` stays
+    //    0.0 and P25 applies ZERO extra temperature trim!
+    let mut base_flex = OrcaProfile::new("Long-Travel Flex", "filament");
+    base_flex
+      .values
+      .insert("nozzle_temperature".to_string(), json!(["230"]));
+    base_flex.values.insert(
+      "nozzle_temperature_initial_layer".to_string(),
+      json!(["235"]),
+    );
+    base_flex
+      .values
+      .insert("filament_retraction_length".to_string(), json!(["1.30"]));
+    base_flex
+      .values
+      .insert("filament_retraction_speed".to_string(), json!(["30"]));
+    base_flex
+      .values
+      .insert("filament_flow_ratio".to_string(), json!(["0.980"]));
+    base_flex
+      .values
+      .insert("filament_z_hop".to_string(), json!(["0.15"]));
+
+    let r_p10 = mk_rule(
+      "thermal_conductivity",
+      10,
+      include_str!("../transformations/thermal_conductivity.lua"),
+    );
+    let r_p12 = mk_rule(
+      "rig_addons_cooling",
+      12,
+      include_str!("../transformations/rig_addons_cooling.lua"),
+    );
+    let r_p15_compress = mk_rule(
+      "extra_retract_compress",
+      15,
+      r#"config["filament_retraction_length"] = { "0.90" }"#,
+    );
+    let r_p25 = mk_rule(
+      "symptom_stringing_diamondback",
+      25,
+      include_str!("../transformations/symptom_stringing_diamondback.lua"),
+    );
+
+    let ctx_db = json!({
+      "nozzle_type": "diamondback",
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_diameter": "0.4",
+      "addons": ["flowtech_hotend"],
+    });
+    let eval_flex = TransformationEngine::evaluate_stack(
+      &base_flex,
+      &[r_p10.clone(), r_p12.clone(), r_p15_compress, r_p25.clone()],
+      &ctx_db,
+    );
+    // P10 drops 230 -> 220 C; P25 sees base["filament_retraction_length"] == 1.30 -> rigid_gate == 0.0 -> stays 220 C!
+    assert_eq!(
+      eval_flex
+        .resulting_profile
+        .get_str("nozzle_temperature")
+        .as_deref(),
+      Some("220"),
+      "P25 must read r0=1.30 from immutable `base`, keeping rigid_gate=0 even after P15 compressed config retraction to 0.90mm"
+    );
+
+    // 3. Order-independence of regime evaluation between P10 (`thermal_conductivity`) and P25
+    //    (`symptom_stringing_diamondback`): whether P10 runs at priority 10 and P25 at 25, OR P25
+    //    runs at priority 5 and P10 at 10, both rules evaluate their PWL knots against `base` (T0 = 235 C)
+    //    and accumulate the exact same final temperature (235 - 10 - 2 = 223 C)!
+    let mut base_petg = OrcaProfile::new("PETG Order Test", "filament");
+    base_petg
+      .values
+      .insert("nozzle_temperature".to_string(), json!(["235"]));
+    base_petg.values.insert(
+      "nozzle_temperature_initial_layer".to_string(),
+      json!(["235"]),
+    );
+    base_petg
+      .values
+      .insert("filament_retraction_length".to_string(), json!(["0.80"]));
+    base_petg
+      .values
+      .insert("filament_retraction_speed".to_string(), json!(["40"]));
+    base_petg
+      .values
+      .insert("filament_flow_ratio".to_string(), json!(["0.960"]));
+    base_petg
+      .values
+      .insert("filament_z_hop".to_string(), json!(["0.15"]));
+
+    let eval_p10_then_p25 = TransformationEngine::evaluate_stack(
+      &base_petg,
+      &[r_p10.clone(), r_p12.clone(), r_p25.clone()],
+      &ctx_db,
+    );
+    let mut r_p25_first = r_p25;
+    r_p25_first.priority = 5;
+    let eval_p25_then_p10 = TransformationEngine::evaluate_stack(
+      &base_petg,
+      &[r_p25_first, r_p10, r_p12],
+      &ctx_db,
+    );
+    assert_eq!(
+      eval_p10_then_p25
+        .resulting_profile
+        .get_str("nozzle_temperature")
+        .as_deref(),
+      Some("223")
+    );
+    assert_eq!(
+      eval_p25_then_p10
+        .resulting_profile
+        .get_str("nozzle_temperature")
+        .as_deref(),
+      Some("223"),
+      "Evaluating PWL regime knots against immutable `base` (x0) makes P10 + P25 temperature composition order-independent"
+    );
   }
 }

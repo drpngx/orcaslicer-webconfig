@@ -21,7 +21,10 @@
 
 function apply(config, ctx)
   local d = scalar_num(ctx.nozzle_diameter, 0.4)
-  local r1_ref = scalar_num(config["filament_retraction_length"], 0.70)
+  -- Read `r0_ref` from the immutable `base` (x0) snapshot so the elastomer/long-travel gate is
+  -- anchored to the polymer's true brass baseline rather than drifting when P12 or another
+  -- earlier rule compresses `config["filament_retraction_length"]`.
+  local r0_ref = scalar_num(base["filament_retraction_length"], scalar_num(config["filament_retraction_length"], 0.80))
   -- PCD-specific physics (temp trim, friction-based speed damping) applies ONLY to actual
   -- PCD/diamondback nozzles — the rule is enabled for every MicroSwiss rig for its generic
   -- anti-stringing writes (recovery bump, z-hop, travel accel, wipe), but a CM2/CHT copper
@@ -30,29 +33,30 @@ function apply(config, ctx)
   local nt = string.lower(tostring(ctx.nozzle_type or ""))
   local is_pcd = string.find(nt, "diamondback", 1, true) ~= nil
 
-  -- 1. Viscosity- & elastomer-gated extra temperature trim (stacks after P10's PWL curve).
-  --    The elastomer gate keys off `ctx.filament_is_elastomer` (constants.json
-  --    `hardware_limits.elastomer_family_tokens`): every app TPU default ships 0.6 mm
-  --    retraction, so the retraction-length heuristic alone can never identify an elastomer
-  --    here — the flag is authoritative, the length term stays as a secondary guard for
-  --    long-travel unflagged profiles (r1 >= 1.10 mm).
-  local stringing_temp_pwl = {
-    { 180, -1.0 },
-    { 202, -2.0 }, -- PLA band after P10 (~204 C)
-    { 226, -2.0 }, -- PETG band after P10 (~225 C)
-    { 248,  0.0 }, -- engineering polymers: zero extra drop
-    { 300,  0.0 }
+  -- 1. Viscosity- & elastomer-gated extra temperature trim evaluated on the immutable brass
+  --    baseline `base[key]` (T0) and applied relatively to `config[key]` (Tk):
+  --    - Full -2 C inside the sticky PLA/PETG brass baseline band (213 - 236 C)
+  --    - Tapering to 0 C at >= 258 C (preserving inter-layer welds on ABS/ASA/PC/PA)
+  --    - Gated to 0 C for elastomers (`ctx.filament_is_elastomer` or long-travel r0 >= 1.22 mm)
+  local stringing_temp_pwl_t0 = {
+    { 190, -1.0 },
+    { 213, -2.0 }, -- PLA brass baseline band (~210-215 C)
+    { 236, -2.0 }, -- PETG brass baseline band (~230-236 C)
+    { 258,  0.0 }, -- engineering polymers (ASA/ABS/PC/PA >= 258 C): zero extra drop
+    { 305,  0.0 }
   }
   local is_elastomer = ctx.filament_is_elastomer == true
   local rigid_gate = 0.0
   if not is_elastomer then
-    rigid_gate = clamp((1.10 - r1_ref) / 0.25, 0.0, 1.0)
+    rigid_gate = clamp((1.22 - r0_ref) / 0.25, 0.0, 1.0)
   end
   if is_pcd then
     for _, key in ipairs({ "nozzle_temperature", "nozzle_temperature_HS" }) do
       if config[key] then
-        config[key] = map_num(config[key], function(t1)
-          return math.max(t1 + pwl(t1, stringing_temp_pwl) * rigid_gate, 175)
+        local t0_ref = scalar_num(base[key], scalar_num(config[key], 220))
+        local dt_trim = pwl(t0_ref, stringing_temp_pwl_t0) * rigid_gate
+        config[key] = map_num(config[key], function(t_cur)
+          return math.max(t_cur + dt_trim, 175)
         end, "%.0f")
       end
     end
@@ -78,16 +82,17 @@ function apply(config, ctx)
   end
 
   -- 4. Orifice-scaled power-law Z-hop on the per-filament key (slicer-precedence winner).
-  --    Ceiling max(z0 + 0.04, 0.65*d) guarantees a small-orifice spool's existing z0 is never
-  --    REDUCED by an anti-stringing rule.
+  --    Ceiling max(z0 + 0.04, 0.65*d) is anchored to `base["filament_z_hop"]` (z0) so it never
+  --    ratchets upward if multiple Z-hop rules run, while guaranteeing a small-orifice spool's
+  --    existing z0 is never reduced.
   if config["filament_z_hop"] then
-    local z0_ref = scalar_num(config["filament_z_hop"], 0.15)
+    local z0_ref = scalar_num(base["filament_z_hop"], scalar_num(config["filament_z_hop"], 0.15))
+    local max_hop = math.max(z0_ref + 0.04, d * 0.65)
     local hop_bump = 0.02 + 0.05 * ((d / 0.4) ^ 1.15)
-    config["filament_z_hop"] = map_num(config["filament_z_hop"], function(z0)
-      local max_hop = math.max(z0 + 0.04, d * 0.65)
-      return clamp(z0 + hop_bump, 0.12, max_hop)
+    config["filament_z_hop"] = map_num(config["filament_z_hop"], function(z_cur)
+      return clamp(z_cur + hop_bump, 0.12, max_hop)
     end, "%.2f")
-    constrain("filament_z_hop", z0_ref > 0 and 0.10 or 0.0, math.max(z0_ref + 0.04, d * 0.65), "Orifice-scaled Z-hop envelope")
+    constrain("filament_z_hop", z0_ref > 0 and 0.10 or 0.0, max_hop, "Orifice-scaled Z-hop envelope")
   end
   config["filament_z_hop_types"] = { "Spiral Lift" }
 
@@ -95,12 +100,13 @@ function apply(config, ctx)
   --    (ctx.travel_accel_target_mm2 / _floor_mm2 from constants.json `printer_classes`:
   --    12000/9000 on a CoreXY, gentler on a bed-slinger). Values above the target pass
   --    through unchanged; the floor always clears the export-side clamp.
-  local a0 = scalar_num(config["travel_acceleration"], 10000)
+  local a0_base = scalar_num(base["travel_acceleration"], scalar_num(config["travel_acceleration"], 10000))
+  local a_cur = scalar_num(config["travel_acceleration"], a0_base)
   local ta_target = scalar_num(ctx.travel_accel_target_mm2, 12000)
   local ta_floor = scalar_num(ctx.travel_accel_floor_mm2, 9000)
-  local a_new = a0 + 0.35 * math.max(0, ta_target - a0)
+  local a_new = a_cur + 0.35 * math.max(0, ta_target - a_cur)
   config["travel_acceleration"] = tostring(math.floor(math.max(a_new, ta_floor)))
-  constrain("travel_acceleration", ta_floor, math.max(15000, a0), "Printer kinematics travel acceleration envelope")
+  constrain("travel_acceleration", ta_floor, math.max(15000, a0_base), "Printer kinematics travel acceleration envelope")
 
   -- 6. Mechanical inward wipe before the travel move shears the strand off the tip.
   config["wipe_on_loops"] = "1"

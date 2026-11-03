@@ -1249,6 +1249,7 @@ pub struct Interpreter {
   pub expr_depth: usize,
   pub modified_keys: Vec<(String, String, String)>, // (param, old_val, new_val)
   pub config_table: Option<Rc<RefCell<HashMap<String, LuaVal>>>>,
+  pub base_table: Option<Rc<RefCell<HashMap<String, LuaVal>>>>,
 }
 
 impl Interpreter {
@@ -1260,7 +1261,34 @@ impl Interpreter {
       expr_depth: 0,
       modified_keys: Vec::new(),
       config_table: None,
+      base_table: None,
     }
+  }
+
+  fn is_expr_rooted_in_base(expr: &Expr) -> bool {
+    match expr {
+      Expr::Variable(v) => v == "base",
+      Expr::TableField(inner, _) | Expr::TableIndex(inner, _) => Self::is_expr_rooted_in_base(inner),
+      _ => false,
+    }
+  }
+
+  fn is_base_table_or_child(&self, target_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>) -> bool {
+    let Some(base_rc) = &self.base_table else {
+      return false;
+    };
+    if Rc::ptr_eq(target_tbl, base_rc) {
+      return true;
+    }
+    let bb = base_rc.borrow();
+    for v in bb.values() {
+      if let LuaVal::Table(sub_rc) = v {
+        if Rc::ptr_eq(target_tbl, sub_rc) {
+          return true;
+        }
+      }
+    }
+    false
   }
 
   fn resolve_config_modification_key(
@@ -1268,7 +1296,7 @@ impl Interpreter {
     target_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
     key: &str,
   ) -> Option<String> {
-    if key == "_bounds" {
+    if key == "_bounds" || key == "_base" {
       return None;
     }
     match &self.config_table {
@@ -1278,7 +1306,7 @@ impl Interpreter {
         } else {
           let cb = cfg_rc.borrow();
           for (parent_k, parent_v) in cb.iter() {
-            if parent_k == "_bounds" || parent_k == "_coupled_state" {
+            if parent_k == "_bounds" || parent_k == "_coupled_state" || parent_k == "_base" {
               continue;
             }
             if let LuaVal::Table(sub_rc) = parent_v {
@@ -1499,14 +1527,32 @@ impl Interpreter {
   ) -> Result<(), String> {
     match target {
       Expr::Variable(name) => {
+        if name == "base" {
+          return Err(
+            "[Lua Immutability Violation] Cannot reassign read-only 'base' (x0) snapshot table — mutate 'config' instead."
+              .to_string(),
+          );
+        }
         env.borrow_mut().set(name, val);
         Ok(())
       }
       Expr::TableField(tbl_expr, field) => {
+        if Self::is_expr_rooted_in_base(tbl_expr) {
+          return Err(format!(
+            "[Lua Immutability Violation] Cannot modify read-only 'base' (x0) snapshot table (key '{}') — mutate 'config' instead.",
+            field
+          ));
+        }
         let is_bounds_target =
           matches!(tbl_expr.as_ref(), Expr::Variable(v) if v == "bounds") || field == "_bounds";
         let tbl_val = self.eval_expr(tbl_expr, env)?;
         if let LuaVal::Table(t) = tbl_val {
+          if self.is_base_table_or_child(&t) {
+            return Err(format!(
+              "[Lua Immutability Violation] Cannot modify read-only 'base' (x0) snapshot table (key '{}') — mutate 'config' instead.",
+              field
+            ));
+          }
           let is_new_key = !t.borrow().contains_key(field);
           if is_new_key && t.borrow().len() >= MAX_LUA_TABLE_ENTRIES {
             return Err(format!(
@@ -1533,6 +1579,12 @@ impl Interpreter {
         }
       }
       Expr::TableIndex(tbl_expr, idx_expr) => {
+        if Self::is_expr_rooted_in_base(tbl_expr) {
+          return Err(
+            "[Lua Immutability Violation] Cannot modify read-only 'base' (x0) snapshot table — mutate 'config' instead."
+              .to_string(),
+          );
+        }
         let is_bounds_target = matches!(tbl_expr.as_ref(), Expr::Variable(v) if v == "bounds");
         let tbl_val = self.eval_expr(tbl_expr, env.clone())?;
         let idx_val = self.eval_expr(idx_expr, env)?;
@@ -1548,6 +1600,12 @@ impl Interpreter {
           _ => return Err(format!("Invalid table key: {:?}", idx_val)),
         };
         if let LuaVal::Table(t) = tbl_val {
+          if self.is_base_table_or_child(&t) {
+            return Err(format!(
+              "[Lua Immutability Violation] Cannot modify read-only 'base' (x0) snapshot table (key '{}') — mutate 'config' instead.",
+              key_str
+            ));
+          }
           let is_new_key = !t.borrow().contains_key(&key_str);
           if is_new_key && t.borrow().len() >= MAX_LUA_TABLE_ENTRIES {
             return Err(format!(
@@ -2437,6 +2495,13 @@ impl Interpreter {
           _ => return Ok(LuaVal::Nil),
         };
         let state_tbl = ensure_coupled_state_table(&cfg_tbl);
+        if !state_tbl.borrow().contains_key("base") {
+          if let Some(ref base_rc) = self.base_table {
+            state_tbl
+              .borrow_mut()
+              .insert("base".to_string(), LuaVal::Table(base_rc.clone()));
+          }
+        }
         let cur_t_opt = lua_refcell_get_scalar_f64(&cfg_tbl, "nozzle_temperature");
         if let Some(cur_t) = cur_t_opt {
           state_tbl
@@ -3188,8 +3253,13 @@ pub fn extract_lua_rule_spec(script: &str) -> Result<LuaRuleSpec, String> {
   eval_rule_prelude(&mut interpreter, &env)?;
 
   let dummy_cfg = LuaVal::from_json(&serde_json::json!({}));
+  let dummy_base = LuaVal::from_json(&serde_json::json!({}));
   let dummy_ctx = LuaVal::from_json(&serde_json::json!({}));
+  if let LuaVal::Table(ref t) = dummy_base {
+    interpreter.base_table = Some(t.clone());
+  }
   env.borrow_mut().set_local("config", dummy_cfg);
+  env.borrow_mut().set_local("base", dummy_base);
   env.borrow_mut().set_local("ctx", dummy_ctx.clone());
   env.borrow_mut().set_local("context", dummy_ctx);
 
@@ -3683,9 +3753,37 @@ pub fn execute_transformation_lua_with_params(
   // Rust-owned helper prelude (scalar_num / map_num) so rules share one implementation.
   eval_rule_prelude(&mut interpreter, &env)?;
 
+  let had_explicit_cfg_base = config.get("_base").map(|v| v.is_object()).unwrap_or(false);
+  let base_json = if let Some(ctx_base) = context.get("_base_config").filter(|v| v.is_object()) {
+    ctx_base.clone()
+  } else if let Some(cfg_base) = config.get("_base").filter(|v| v.is_object()) {
+    cfg_base.clone()
+  } else if let Some(cs_base) = config
+    .get("_coupled_state")
+    .and_then(|cs| cs.get("base"))
+    .filter(|v| v.is_object())
+  {
+    cs_base.clone()
+  } else if let Some(obj) = config.as_object() {
+    let mut b_map = serde_json::Map::new();
+    for (k, v) in obj {
+      if k != "_bounds" && k != "_coupled_state" && k != "_base" {
+        b_map.insert(k.clone(), v.clone());
+      }
+    }
+    serde_json::Value::Object(b_map)
+  } else {
+    serde_json::json!({})
+  };
+  let lua_base = LuaVal::from_json(&base_json);
+  if let LuaVal::Table(ref base_tbl) = lua_base {
+    interpreter.base_table = Some(base_tbl.clone());
+  }
+
   let lua_config = LuaVal::from_json(config);
   let lua_context = LuaVal::from_json(context);
   if let LuaVal::Table(ref cfg_tbl) = lua_config {
+    cfg_tbl.borrow_mut().remove("_base");
     interpreter.config_table = Some(cfg_tbl.clone());
   }
 
@@ -3716,12 +3814,14 @@ pub fn execute_transformation_lua_with_params(
   }
   let lua_params = LuaVal::Table(Rc::new(RefCell::new(params_map)));
   if let LuaVal::Table(ctx_tbl) = &lua_context {
+    ctx_tbl.borrow_mut().remove("_base_config");
     ctx_tbl
       .borrow_mut()
       .insert("params".to_string(), lua_params.clone());
   }
 
   env.borrow_mut().set_local("config", lua_config.clone());
+  env.borrow_mut().set_local("base", lua_base.clone());
   env.borrow_mut().set_local("ctx", lua_context.clone());
   env.borrow_mut().set_local("context", lua_context.clone());
   env.borrow_mut().set_local("params", lua_params.clone());
@@ -3729,15 +3829,16 @@ pub fn execute_transformation_lua_with_params(
   // Execute the script
   interpreter.eval_chunk(&stmts, env.clone())?;
 
-  // Re-bind `params` in case top-level `params = { ... }` schema declaration overwrote `params`
+  // Re-bind `params` and `base` in case top-level declarations overwrote them
   env.borrow_mut().set_local("params", lua_params.clone());
+  env.borrow_mut().set_local("base", lua_base.clone());
 
-  // If an `apply` function was defined, invoke it: apply(config, ctx, params)
+  // If an `apply` function was defined, invoke it: apply(config, ctx, params, base)
   let apply_fn = env.borrow().get("apply");
   if let LuaVal::Function(_, _, _) = apply_fn {
     let _ = interpreter.call_function(
       &apply_fn,
-      vec![lua_config.clone(), lua_context, lua_params],
+      vec![lua_config.clone(), lua_context, lua_params, lua_base],
       env.clone(),
     )?;
   }
@@ -3753,6 +3854,9 @@ pub fn execute_transformation_lua_with_params(
 
   let mut resulting_config = lua_config.to_json();
   if let Some(obj) = resulting_config.as_object_mut() {
+    if had_explicit_cfg_base {
+      obj.insert("_base".to_string(), base_json);
+    }
     for key in ["z_hop_types", "filament_z_hop_types"] {
       if let Some(val) = obj.get_mut(key) {
         let normalize = |s: &str| -> String {

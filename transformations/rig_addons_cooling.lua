@@ -69,9 +69,12 @@ function apply(config, ctx)
       { 1.00, 0.86 }, -- upper rigid ceiling
       { 1.50, 1.35 }  -- elastomeric TPU decompression travel preserved
     }
+    local r0_base = scalar_num(base["filament_retraction_length"], scalar_num(config["filament_retraction_length"], 0.80))
     if config["filament_retraction_length"] then
-      config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r0)
-        return clamp(pwl(r0, flowtech_retract_pwl) * d_scale, 0.35, 1.40)
+      local r1_target = pwl(r0_base, flowtech_retract_pwl) * d_scale
+      local r_scale = r1_target / math.max(r0_base, 0.01)
+      config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r_cur)
+        return clamp(r_cur * r_scale, 0.35, 1.40)
       end, "%.2f")
     end
 
@@ -82,7 +85,7 @@ function apply(config, ctx)
     -- constants.json `hardware_limits.elastomer_family_tokens`) so the token list has a
     -- single source; nil (standalone rule testing without a rig ctx) means rigid.
     local is_elastomer = ctx.filament_is_elastomer == true
-    local is_elastomer_retract = is_elastomer or scalar_num(config["filament_retraction_length"], 0.8) >= 1.05
+    local is_elastomer_retract = is_elastomer or r0_base >= 1.15
     local max_retract = is_elastomer_retract and 1.45 or (1.15 * math.sqrt(d / 0.4))
     constrain("filament_retraction_length", 0.35, max_retract, "FlowTech all-metal heat-creep ceiling")
     constrain("filament_retraction_speed", is_elastomer and 15 or 20, 46, "Direct-drive + all-metal meniscus speed limit")
@@ -94,8 +97,10 @@ function apply(config, ctx)
       { 50, 46 }
     }
     if config["filament_retraction_speed"] and not is_elastomer then
-      config["filament_retraction_speed"] = map_num(config["filament_retraction_speed"], function(s0)
-        return pwl(s0, flowtech_speed_pwl)
+      local s0_base = scalar_num(base["filament_retraction_speed"], scalar_num(config["filament_retraction_speed"], 40))
+      local ds = pwl(s0_base, flowtech_speed_pwl) - s0_base
+      config["filament_retraction_speed"] = map_num(config["filament_retraction_speed"], function(s_cur)
+        return clamp(s_cur + ds, 20, 46)
       end, "%.0f")
     end
 
