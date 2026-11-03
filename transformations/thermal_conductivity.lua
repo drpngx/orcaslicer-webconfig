@@ -19,6 +19,7 @@
 -- `scalar_num` / `map_num` come from the Rust-owned prelude (src/lua_engine.rs LUA_RULE_PRELUDE).
 
 function apply(config, ctx)
+  capture_coupled_baseline(config, ctx)
   local mat = ctx.nozzle_material or "Brass"
   local ntype = ctx.nozzle_type or "orca_brass"
   local cur_temp = 220
@@ -113,15 +114,18 @@ function apply(config, ctx)
     config["nozzle_type"] = "brass"
     config["nozzle_hrc"] = "55"
     if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] then
-      local mvs = tonumber(config["filament_max_volumetric_speed"][1]) or 15.0
-      local boosted = mvs * 1.25
-      config["filament_max_volumetric_speed"] = { string.format("%.1f", boosted) }
       config["filament_retraction_length"] = { "0.60" }
-      print("[ThermalConductivity] High-Flow CHT/Splitter (" .. mat .. "): Boosted max volumetric speed +25% -> " .. string.format("%.1f", boosted) .. " mm3/s, Retract -> 0.60mm")
     end
   else
     config["nozzle_type"] = "brass"
     config["nozzle_hrc"] = "0"
     print("[ThermalConductivity] Standard Brass Nozzle: nozzle_type=brass + nozzle_hrc=0 (0C baseline factory thermal reference)")
+  end
+
+  sync_coupled_physics(config, ctx)
+  if mat == "Bi-Metal CHT" or mat == "MicroSwiss FlowTech CHT" or mat == "E3D ObXidian High-Flow" or ntype == "cht" or ntype == "microswiss_cht" or ntype == "bondtech_cht_bimetal" or ntype == "e3d_obxidian" then
+    if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] then
+      print("[ThermalConductivity] High-Flow CHT/Splitter (" .. mat .. "): Boosted max volumetric speed -> " .. tostring(config["filament_max_volumetric_speed"][1]) .. " mm3/s, Retract -> 0.60mm")
+    end
   end
 end

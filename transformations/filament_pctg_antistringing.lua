@@ -93,6 +93,7 @@ function apply(config, ctx, p)
   config["filament_z_hop_types"] = { z_type }
   config["travel_acceleration"] = "10000"
   config["wipe_on_loops"] = "1"
+  sync_coupled_physics(config, ctx)
 
   print(string.format("[Filament:PCTG-AntiStringing] Retract -> %smm @ %smm/s (40%% retract-before-wipe, 2.0mm wipe), 0.10mm %s, 10000 mm/s2 travel accel", r_len, r_spd, z_type))
 end

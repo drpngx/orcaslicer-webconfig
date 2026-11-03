@@ -275,6 +275,13 @@ function apply(config, ctx, p)
   local is_zero = eff.is_zero
 
   local lh = tonumber(config["layer_height"]) or tonumber(ctx and ctx.layer_height) or 0.20
+  local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
+  local preset = (p and p.support_preset) or "auto_polymer"
+  local eff_spacing = spacing
+  if (not is_zero) and preset == "auto_polymer" and math.abs(nd - 0.40) > 0.01 then
+    eff_spacing = math.max(0.10, math.min(0.40, math.floor(spacing * math.sqrt(nd / 0.40) * 100.0 + 0.5) / 100.0))
+  end
+
   config["enable_support"] = "1"
   config["support_type"] = stype
   config["support_style"] = sstyle
@@ -288,9 +295,13 @@ function apply(config, ctx, p)
     config["support_bottom_z_distance"] = new_zd
   end
 
+  if nd > 0.42 then
+    config["support_object_xy_distance"] = string.format("%.2f", math.max(0.35, nd * 0.85))
+  end
+
   config["support_interface_top_layers"] = tostring(top_layers)
   config["support_interface_bottom_layers"] = "2"
-  config["support_interface_spacing"] = string.format("%.2f", spacing)
+  config["support_interface_spacing"] = string.format("%.2f", eff_spacing)
   config["support_interface_speed"] = tostring(spd)
 
   local d = describe(p or {}, ctx)

@@ -2062,6 +2062,26 @@ impl FilamentSpool {
     effective_mvs: f32,
     effective_fan_pct: i32,
   ) -> String {
+    self.generate_descriptive_notes_with_effective_values_and_pa(
+      effective_nozzle_c,
+      effective_bed_c,
+      effective_flow_ratio,
+      self.pressure_advance,
+      effective_mvs,
+      effective_fan_pct,
+    )
+  }
+
+  /// Generate `filament_notes` reflecting all effective exported values including coupled `effective_pa`.
+  pub fn generate_descriptive_notes_with_effective_values_and_pa(
+    &self,
+    effective_nozzle_c: i32,
+    effective_bed_c: i32,
+    effective_flow_ratio: f32,
+    effective_pa: f32,
+    effective_mvs: f32,
+    effective_fan_pct: i32,
+  ) -> String {
     format!(
       "[OrcaSlicer WebConfig v{} — Filament] {} {} ({}). Nozzle: {}°C (Brass Base: {}°C, HS Base: {}°C), Bed: {}°C, Flow: {:.2}, PA: {:.3}, Max Vol: {:.1} mm³/s, Fan: {}%, Required HRC: {}, Dry: {}°C / {}h.",
       WEBCONFIG_APP_VERSION,
@@ -2073,7 +2093,7 @@ impl FilamentSpool {
       self.hs_base_temp,
       effective_bed_c,
       effective_flow_ratio,
-      self.pressure_advance,
+      effective_pa,
       effective_mvs,
       effective_fan_pct,
       self.required_nozzle_hrc,

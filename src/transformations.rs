@@ -6667,4 +6667,439 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       warnings
     );
   }
+
+  #[test]
+  fn test_coupled_parameter_physics_groups_and_additional_coupled_transforms() {
+    let mk_rule = |id: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: id.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    // 1. Group 1 (Pressure Advance), Group 2 (MVS), and Group 3 (Cooling Fan Curves)
+    //    across nozzle materials, orifice diameters (0.25, 0.40, 0.60, 0.80 mm), and
+    //    telescoping temperature excursions (P10 -> P25 -> P55 Wet -> P57 Structural).
+    let mut base = OrcaProfile::new("PETG Coupled Test", "filament");
+    base
+      .values
+      .insert("nozzle_temperature".to_string(), json!(["230"]));
+    base.values.insert(
+      "nozzle_temperature_initial_layer".to_string(),
+      json!(["235"]),
+    );
+    base
+      .values
+      .insert("pressure_advance".to_string(), json!(["0.040"]));
+    base.values.insert(
+      "filament_max_volumetric_speed".to_string(),
+      json!(["15.0"]),
+    );
+    base
+      .values
+      .insert("fan_min_speed".to_string(), json!(["40"]));
+    base
+      .values
+      .insert("fan_max_speed".to_string(), json!(["70"]));
+    base
+      .values
+      .insert("overhang_fan_speed".to_string(), json!(["85"]));
+
+    let r_p10 = mk_rule(
+      "thermal_conductivity",
+      10,
+      include_str!("../transformations/thermal_conductivity.lua"),
+    );
+    let r_p25 = mk_rule(
+      "symptom_stringing_diamondback",
+      25,
+      include_str!("../transformations/symptom_stringing_diamondback.lua"),
+    );
+
+    // 1a. DiamondBack 0.40mm at P10 equilibrium:
+    //     PA = 0.040 * 0.85 = 0.034; MVS = 15.0; Fan_min = 40 + round(0.75*6) = 45; Fan_max = 70 + 3 = 73; Ovh = 85 + 6 = 91
+    let ctx_db_04 = json!({
+      "nozzle_type": "diamondback",
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_diameter": "0.4",
+      "filament_type": "PETG",
+      "hotend_max_flow": 28.0,
+    });
+    let eval_db_04_p10 =
+      TransformationEngine::evaluate_stack(&base, &[r_p10.clone()], &ctx_db_04);
+    assert_eq!(
+      eval_db_04_p10
+        .resulting_profile
+        .get_str("pressure_advance")
+        .as_deref(),
+      Some("0.034")
+    );
+    assert_eq!(
+      eval_db_04_p10
+        .resulting_profile
+        .get_str("filament_max_volumetric_speed")
+        .as_deref(),
+      Some("15.0")
+    );
+    assert_eq!(
+      eval_db_04_p10
+        .resulting_profile
+        .get_str("fan_min_speed")
+        .as_deref(),
+      Some("45")
+    );
+    assert_eq!(
+      eval_db_04_p10
+        .resulting_profile
+        .get_str("fan_max_speed")
+        .as_deref(),
+      Some("73")
+    );
+    assert_eq!(
+      eval_db_04_p10
+        .resulting_profile
+        .get_str("overhang_fan_speed")
+        .as_deref(),
+      Some("91")
+    );
+
+    // 1b. DiamondBack 0.80mm vs 0.25mm: PA scales with (0.40/d)^1.35 and MVS scales with (d/0.40)^beta_Q
+    let ctx_db_08 = json!({
+      "nozzle_type": "diamondback",
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_diameter": "0.8",
+      "filament_type": "PETG",
+      "hotend_max_flow": 28.0,
+    });
+    let eval_db_08 =
+      TransformationEngine::evaluate_stack(&base, &[r_p10.clone()], &ctx_db_08);
+    let pa_08: f64 = eval_db_08
+      .resulting_profile
+      .get_str("pressure_advance")
+      .unwrap()
+      .parse()
+      .unwrap();
+    let mvs_08: f64 = eval_db_08
+      .resulting_profile
+      .get_str("filament_max_volumetric_speed")
+      .unwrap()
+      .parse()
+      .unwrap();
+    assert!(
+      (pa_08 - 0.013).abs() <= 0.002,
+      "0.8mm DiamondBack PA should scale down to ~0.013, got {}",
+      pa_08
+    );
+    assert!(
+      mvs_08 > 19.0,
+      "0.8mm DiamondBack MVS should scale up >19.0 mm3/s, got {}",
+      mvs_08
+    );
+
+    let ctx_db_025 = json!({
+      "nozzle_type": "diamondback",
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_diameter": "0.25",
+      "filament_type": "PETG",
+      "hotend_max_flow": 28.0,
+    });
+    let eval_db_025 =
+      TransformationEngine::evaluate_stack(&base, &[r_p10.clone()], &ctx_db_025);
+    let pa_025: f64 = eval_db_025
+      .resulting_profile
+      .get_str("pressure_advance")
+      .unwrap()
+      .parse()
+      .unwrap();
+    let mvs_025: f64 = eval_db_025
+      .resulting_profile
+      .get_str("filament_max_volumetric_speed")
+      .unwrap()
+      .parse()
+      .unwrap();
+    assert!(
+      pa_025 > 0.060,
+      "0.25mm DiamondBack PA should scale up >0.060, got {}",
+      pa_025
+    );
+    assert!(
+      mvs_025 < 11.0,
+      "0.25mm DiamondBack MVS should scale down <11.0 mm3/s, got {}",
+      mvs_025
+    );
+
+    // 1c. Telescoping temperature excursion: P10 -> P25 (-2°C) -> P55 Wet (55% RH -> -6°C)
+    //     Colder melt increases viscosity (PA increases) and reduces thermal power (MVS decreases)
+    //     without triggering any Overwritten shadowing warnings.
+    let mut r_wet = mk_rule(
+      "sym_wet_filament",
+      55,
+      include_str!("../transformations/parametric/sym_wet_filament.lua"),
+    );
+    let mut wet_params = HashMap::new();
+    wet_params.insert("humidity_pct".to_string(), "55".to_string());
+    r_wet.lua_code = embed_param_defaults_in_lua(&r_wet.lua_code, &wet_params);
+    let eval_chain = TransformationEngine::evaluate_stack(
+      &base,
+      &[r_p10.clone(), r_p25.clone(), r_wet.clone()],
+      &ctx_db_04,
+    );
+    let pa_chain: f64 = eval_chain
+      .resulting_profile
+      .get_str("pressure_advance")
+      .unwrap()
+      .parse()
+      .unwrap();
+    let mvs_chain: f64 = eval_chain
+      .resulting_profile
+      .get_str("filament_max_volumetric_speed")
+      .unwrap()
+      .parse()
+      .unwrap();
+    assert!(
+      pa_chain > 0.034,
+      "colder melt (-8C net) must increase PA above 0.034, got {}",
+      pa_chain
+    );
+    assert!(
+      mvs_chain < 15.0,
+      "colder melt (-8C net) must reduce MVS below 15.0, got {}",
+      mvs_chain
+    );
+    let pa_prov = eval_chain
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "pressure_advance")
+      .unwrap();
+    assert!(
+      !pa_prov.has_shadowed_steps,
+      "telescoping relative PA updates must not be flagged as shadowed"
+    );
+
+    // 1d. Warp-prone polymers (ASA/ABS/PC/PA) must NOT receive PCD radiant cooling fan boosts
+    let ctx_asa = json!({
+      "nozzle_type": "diamondback",
+      "nozzle_material": "Diamondback PCD",
+      "nozzle_diameter": "0.4",
+      "filament_type": "ASA",
+    });
+    let mut base_asa = base.clone();
+    base_asa
+      .values
+      .insert("fan_min_speed".to_string(), json!(["10"]));
+    base_asa
+      .values
+      .insert("fan_max_speed".to_string(), json!(["25"]));
+    let eval_asa =
+      TransformationEngine::evaluate_stack(&base_asa, &[r_p10.clone()], &ctx_asa);
+    assert_eq!(
+      eval_asa
+        .resulting_profile
+        .get_str("fan_min_speed")
+        .as_deref(),
+      Some("10")
+    );
+    assert_eq!(
+      eval_asa
+        .resulting_profile
+        .get_str("fan_max_speed")
+        .as_deref(),
+      Some("25")
+    );
+
+    // 2. Group 4: Coupled Flush / Purge Matrix (`flush_volumes_matrix.lua` + `coupled_purge_factor`)
+    let flush_lua = include_str!("../transformations/flush_volumes_matrix.lua");
+    let flush_spools = json!([
+      { "material_type": "PETG", "color_hex": "#111111", "opacity": 1.0 },
+      { "material_type": "PETG", "color_hex": "#FFFFFF", "opacity": 1.0 }
+    ]);
+    // Stock Brass (melt_zone = 1.0, Brass = 1.0) vs FlowTech Hardened Steel (melt_zone = 1.15) vs FlowTech DiamondBack (1.15 * 0.80 = 0.92)
+    let (flush_brass, _, _) = execute_transformation_lua(
+      flush_lua,
+      &json!({}),
+      &json!({
+        "nozzle_type": "brass",
+        "melt_zone_multiplier": 1.0,
+        "slots": flush_spools,
+      }),
+    )
+    .unwrap();
+    let (flush_ft_hs, _, _) = execute_transformation_lua(
+      flush_lua,
+      &json!({}),
+      &json!({
+        "nozzle_type": "hardened_steel",
+        "melt_zone_multiplier": 1.15,
+        "slots": flush_spools,
+      }),
+    )
+    .unwrap();
+    let (flush_ft_db, _, _) = execute_transformation_lua(
+      flush_lua,
+      &json!({}),
+      &json!({
+        "nozzle_type": "diamondback",
+        "melt_zone_multiplier": 1.15,
+        "slots": flush_spools,
+      }),
+    )
+    .unwrap();
+    // Cold-extrusion excursion (-10°C below t_eq) increases melt viscosity and requires more purge volume
+    let (flush_ft_db_cold, _, _) = execute_transformation_lua(
+      flush_lua,
+      &json!({
+        "nozzle_temperature": ["210"],
+        "_coupled_state": { "t_eq": 220.0 }
+      }),
+      &json!({
+        "nozzle_type": "diamondback",
+        "melt_zone_multiplier": 1.15,
+        "slots": flush_spools,
+      }),
+    )
+    .unwrap();
+    let parse_cell_01 = |cfg: &serde_json::Value| -> i32 {
+      cfg["flush_volumes_matrix"][1]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+    };
+    let v_brass = parse_cell_01(&flush_brass);
+    let v_ft_hs = parse_cell_01(&flush_ft_hs);
+    let v_ft_db = parse_cell_01(&flush_ft_db);
+    let v_ft_db_cold = parse_cell_01(&flush_ft_db_cold);
+    assert!(
+      v_ft_hs > v_brass,
+      "FlowTech 1.15x melt zone on Hardened Steel ({}) must exceed stock Brass ({})",
+      v_ft_hs,
+      v_brass
+    );
+    assert!(
+      v_ft_db < v_ft_hs,
+      "DiamondBack PCD low-CoF wall slip ({}) must evacuate faster than Hardened Steel ({})",
+      v_ft_db,
+      v_ft_hs
+    );
+    assert!(
+      v_ft_db_cold > v_ft_db,
+      "Colder, more viscous melt ({}) must require more purge volume than nominal temp ({})",
+      v_ft_db_cold,
+      v_ft_db
+    );
+
+    // 3. Group 5: Symptom temperature rules (`sym_stringing`, `sym_weak_layers`, `sym_under_extrusion`)
+    //    synchronize coupled PA & fans while preserving explicit MVS/fan overrides.
+    let (str_cfg, _, _) = execute_transformation_lua(
+      include_str!("../transformations/parametric/sym_stringing.lua"),
+      &json!({
+        "nozzle_temperature": "250",
+        "pressure_advance": "0.040",
+        "filament_max_volumetric_speed": "16.0",
+      }),
+      &json!({ "filament_type": "PCTG", "nozzle_diameter": 0.4 }),
+    )
+    .unwrap();
+    assert_eq!(str_cfg["nozzle_temperature"], "247");
+    let str_pa: f64 = str_cfg["pressure_advance"].as_str().unwrap().parse().unwrap();
+    let str_mvs: f64 = str_cfg["filament_max_volumetric_speed"]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+    assert!(str_pa > 0.040, "lowering temp by -3C increases PA: {}", str_pa);
+    assert!(str_mvs < 16.0, "lowering temp by -3C trims MVS: {}", str_mvs);
+
+    // In `sym_weak_layers`, explicit fan_max_speed 0.75x cut is preserved while PA and MVS sync with +5C boost
+    let (wl_cfg, _, _) = execute_transformation_lua(
+      include_str!("../transformations/parametric/sym_weak_layers.lua"),
+      &json!({
+        "nozzle_temperature": "240",
+        "fan_max_speed": "60",
+        "pressure_advance": "0.040",
+        "filament_max_volumetric_speed": "15.0",
+      }),
+      &json!({ "filament_type": "PETG", "nozzle_diameter": 0.4 }),
+    )
+    .unwrap();
+    assert_eq!(wl_cfg["nozzle_temperature"], "245");
+    assert_eq!(wl_cfg["fan_max_speed"], "45"); // 60 * 0.75 explicit cut honored
+    let wl_pa: f64 = wl_cfg["pressure_advance"].as_str().unwrap().parse().unwrap();
+    assert!(wl_pa < 0.040, "+5C boost lowers viscosity and PA: {}", wl_pa);
+
+    // 4. Group 6: Coupled Shell Thickness (`structural_strength.lua`, `transparent_optical_glass.lua`, `sym_transparent_glass.lua`)
+    let (ss_cfg, _, _) = execute_transformation_lua(
+      include_str!("../transformations/parametric/structural_strength.lua"),
+      &json!({
+        "layer_height": "0.24",
+        "top_shell_thickness": "0.80",
+        "bottom_shell_thickness": "0.80",
+      }),
+      &json!({ "filament_type": "PETG" }),
+    )
+    .unwrap();
+    assert_eq!(ss_cfg["top_shell_layers"], "5");
+    assert_eq!(ss_cfg["top_shell_thickness"], "1.20");
+    assert_eq!(ss_cfg["bottom_shell_thickness"], "1.20");
+
+    let (glass_cfg, _, _) = execute_transformation_lua(
+      include_str!("../transformations/transparent_optical_glass.lua"),
+      &json!({ "top_shell_thickness": "0.80", "bottom_shell_thickness": "0.80" }),
+      &json!({ "nozzle_diameter": 0.4 }),
+    )
+    .unwrap();
+    assert_eq!(glass_cfg["top_shell_layers"], "0");
+    assert_eq!(glass_cfg["top_shell_thickness"], "0.00");
+    assert_eq!(glass_cfg["bottom_shell_thickness"], "0.00");
+
+    // 5. Group 7: Coupled Volumetric Speed Ceiling for Solid Infill & Top Surface (`volumetric_speed_ceiling.lua`)
+    let (vsc_cfg, _, _) = execute_transformation_lua(
+      include_str!("../transformations/volumetric_speed_ceiling.lua"),
+      &json!({
+        "layer_height": "0.28",
+        "outer_wall_line_width": "0.63",
+        "internal_solid_infill_line_width": "0.63",
+        "top_surface_line_width": "0.57",
+        "internal_solid_infill_speed": "250",
+        "top_surface_speed": "200",
+      }),
+      &json!({ "hotend_max_flow": 18.0, "filament_max_flow": 15.0 }),
+    )
+    .unwrap();
+    // 15.0 / (0.28 * 0.63) = 85 mm/s for solid infill; 15.0 / (0.28 * 0.57) = 93 mm/s for top surface
+    assert_eq!(vsc_cfg["internal_solid_infill_speed"], "85");
+    assert_eq!(vsc_cfg["top_surface_speed"], "93");
+
+    // 6. Group 8 & Group 9: Orifice-Diameter Coupled Ironing Spacing, Support XY Distance & Roof Spacing, and Wet 1st-Layer Width
+    let (iron_06, _, _) = execute_transformation_lua(
+      include_str!("../transformations/parametric/ironing_tuning.lua"),
+      &json!({}),
+      &json!({ "filament_type": "PETG", "nozzle_diameter": 0.6 }),
+    )
+    .unwrap();
+    assert_eq!(iron_06["ironing_spacing"], "0.20");
+
+    let (sup_06, _, _) = execute_transformation_lua(
+      include_str!("../transformations/parametric/support_tuning.lua"),
+      &json!({ "layer_height": "0.24" }),
+      &json!({ "filament_type": "PETG", "nozzle_diameter": 0.6, "layer_height": 0.24 }),
+    )
+    .unwrap();
+    assert_eq!(sup_06["support_interface_spacing"], "0.18");
+    assert_eq!(sup_06["support_object_xy_distance"], "0.51");
+
+    let (wet_06, _, _) = execute_transformation_lua(
+      include_str!("../transformations/parametric/sym_wet_filament.lua"),
+      &json!({ "nozzle_temperature": "250" }),
+      &json!({ "filament_type": "PETG", "nozzle_diameter": 0.6 }),
+    )
+    .unwrap();
+    assert_eq!(wet_06["initial_layer_line_width"], "0.84");
+  }
 }

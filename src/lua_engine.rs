@@ -1130,6 +1130,18 @@ impl LuaEnv {
     self.set_local("pwl", LuaVal::NativeFn("pwl".to_string()));
     self.set_local("clamp", LuaVal::NativeFn("clamp".to_string()));
     self.set_local("constrain", LuaVal::NativeFn("constrain".to_string()));
+    self.set_local(
+      "capture_coupled_baseline",
+      LuaVal::NativeFn("capture_coupled_baseline".to_string()),
+    );
+    self.set_local(
+      "sync_coupled_physics",
+      LuaVal::NativeFn("sync_coupled_physics".to_string()),
+    );
+    self.set_local(
+      "coupled_purge_factor",
+      LuaVal::NativeFn("coupled_purge_factor".to_string()),
+    );
     self.set_local("bounds", LuaVal::Table(Rc::new(RefCell::new(HashMap::new()))));
 
     // string library
@@ -2382,6 +2394,47 @@ impl Interpreter {
 
         Ok(LuaVal::Table(entry_tbl))
       }
+      "capture_coupled_baseline" => {
+        let cfg_tbl = match args.get(0).cloned().unwrap_or_else(|| env.borrow().get("config")) {
+          LuaVal::Table(t) => t,
+          _ => return Ok(LuaVal::Nil),
+        };
+        let state_tbl = ensure_coupled_state_table(&cfg_tbl);
+        let cur_t_opt = lua_refcell_get_scalar_f64(&cfg_tbl, "nozzle_temperature");
+        if let Some(cur_t) = cur_t_opt {
+          state_tbl
+            .borrow_mut()
+            .insert("t0".to_string(), LuaVal::Number(cur_t));
+        }
+        state_tbl
+          .borrow_mut()
+          .insert("awaiting_p10_eq".to_string(), LuaVal::Boolean(true));
+        Ok(LuaVal::Nil)
+      }
+      "sync_coupled_physics" => {
+        let cfg_tbl = match args.get(0).cloned().unwrap_or_else(|| env.borrow().get("config")) {
+          LuaVal::Table(t) => t,
+          _ => return Ok(LuaVal::Nil),
+        };
+        let ctx_tbl = match args.get(1).cloned().unwrap_or_else(|| env.borrow().get("ctx")) {
+          LuaVal::Table(t) => t,
+          _ => Rc::new(RefCell::new(HashMap::new())),
+        };
+        self.apply_sync_coupled_physics(&cfg_tbl, &ctx_tbl);
+        Ok(LuaVal::Nil)
+      }
+      "coupled_purge_factor" => {
+        let cfg_tbl = match args.get(0).cloned().unwrap_or_else(|| env.borrow().get("config")) {
+          LuaVal::Table(t) => t,
+          _ => Rc::new(RefCell::new(HashMap::new())),
+        };
+        let ctx_tbl = match args.get(1).cloned().unwrap_or_else(|| env.borrow().get("ctx")) {
+          LuaVal::Table(t) => t,
+          _ => Rc::new(RefCell::new(HashMap::new())),
+        };
+        let factor = compute_coupled_purge_factor(&cfg_tbl, &ctx_tbl);
+        Ok(LuaVal::Number(factor))
+      }
       "table.insert" => {
         if let Some(LuaVal::Table(t)) = args.get(0) {
           if t.borrow().len() >= MAX_LUA_TABLE_ENTRIES {
@@ -2429,6 +2482,459 @@ impl Interpreter {
       _ => Err(format!("Unknown native function: {}", name)),
     }
   }
+
+  fn update_coupled_config_key(
+    &mut self,
+    cfg_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+    key: &str,
+    new_str: String,
+  ) {
+    let existing = cfg_tbl.borrow().get(key).cloned();
+    match existing {
+      Some(LuaVal::Table(arr_tbl)) => {
+        let old_str = arr_tbl
+          .borrow()
+          .get("1")
+          .map(|v| v.to_lua_string())
+          .unwrap_or_default();
+        if old_str != new_str {
+          let mut new_arr = HashMap::new();
+          new_arr.insert("1".to_string(), LuaVal::String(new_str.clone()));
+          cfg_tbl
+            .borrow_mut()
+            .insert(key.to_string(), LuaVal::Table(Rc::new(RefCell::new(new_arr))));
+          self
+            .modified_keys
+            .push((key.to_string(), old_val_or_nil(&old_str), new_str));
+        }
+      }
+      Some(val) if !matches!(val, LuaVal::Nil) => {
+        let old_str = val.to_lua_string();
+        if old_str != new_str {
+          cfg_tbl
+            .borrow_mut()
+            .insert(key.to_string(), LuaVal::String(new_str.clone()));
+          self
+            .modified_keys
+            .push((key.to_string(), old_val_or_nil(&old_str), new_str));
+        }
+      }
+      _ => {}
+    }
+  }
+
+  fn apply_sync_coupled_physics(
+    &mut self,
+    cfg_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+    ctx_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+  ) {
+    let state_tbl = ensure_coupled_state_table(cfg_tbl);
+    let cur_temp_opt = lua_refcell_get_scalar_f64(cfg_tbl, "nozzle_temperature");
+
+    {
+      let mut sb = state_tbl.borrow_mut();
+      let awaiting = matches!(sb.get("awaiting_p10_eq"), Some(LuaVal::Boolean(true)));
+      if awaiting {
+        if let Some(t_cur) = cur_temp_opt {
+          sb.insert("t_eq".to_string(), LuaVal::Number(t_cur));
+        }
+        sb.insert("awaiting_p10_eq".to_string(), LuaVal::Boolean(false));
+      } else if !sb.contains_key("t_eq") {
+        let pre_mut_t = self
+          .modified_keys
+          .iter()
+          .find(|(k, _, _)| k == "nozzle_temperature")
+          .and_then(|(_, old_v, _)| old_v.trim().parse::<f64>().ok());
+        if let Some(t_init) = pre_mut_t.or(cur_temp_opt) {
+          sb.insert("t_eq".to_string(), LuaVal::Number(t_init));
+        }
+      }
+    }
+
+    let already_modified_in_rule =
+      |modified: &[(String, String, String)], key: &str| modified.iter().any(|(k, _, _)| k == key);
+
+    let props = extract_coupled_physics_props(cfg_tbl, ctx_tbl, &state_tbl);
+
+    // 1. Coupled Pressure Advance: PA = PA_0 * c_trib * (0.40 / d)^1.35 * exp(-alpha_eta * dt_net)
+    let c_trib = if props.is_diamond {
+      0.85
+    } else if props.is_cht {
+      0.90
+    } else if props.is_cm2 || props.is_twinclad {
+      0.95
+    } else {
+      1.00
+    };
+    let alpha_eta = if props.is_copolyester {
+      0.014
+    } else if props.is_elastomer {
+      0.010
+    } else {
+      0.012
+    };
+    let target_pa_factor = (c_trib
+      * (0.40 / props.nozzle_diameter).powf(1.35)
+      * (-alpha_eta * props.dt_net).exp())
+    .clamp(0.25, 2.50);
+
+    let prev_pa_factor = lua_refcell_get_scalar_f64(&state_tbl, "prev_pa_factor")
+      .filter(|v| *v > 0.0)
+      .unwrap_or(1.0);
+    let step_pa_ratio = target_pa_factor / prev_pa_factor;
+    if (step_pa_ratio - 1.0).abs() > 1e-6 {
+      if !already_modified_in_rule(&self.modified_keys, "pressure_advance") {
+        if let Some(cur_pa) = lua_refcell_get_scalar_f64(cfg_tbl, "pressure_advance") {
+          if cur_pa > 0.0 {
+            let new_pa = (cur_pa * step_pa_ratio).clamp(0.005, 0.120);
+            self.update_coupled_config_key(cfg_tbl, "pressure_advance", format!("{:.3}", new_pa));
+          }
+        }
+      }
+      state_tbl
+        .borrow_mut()
+        .insert("prev_pa_factor".to_string(), LuaVal::Number(target_pa_factor));
+    }
+
+    // 2. Coupled Max Volumetric Speed: MVS = MVS_0 * c_bore * (d / 0.40)^beta_Q * c_T(dt_net)
+    let c_bore = if props.is_cht { 1.25 } else { 1.00 };
+    let beta_q = if props.nozzle_diameter < 0.40 {
+      0.85
+    } else if props.is_diamond {
+      0.42
+    } else if props.is_cht || props.is_cm2 {
+      0.35
+    } else if props.is_hardened {
+      0.22
+    } else {
+      0.30
+    };
+    let c_t = if props.dt_net < 0.0 {
+      1.0 + 0.012 * props.dt_net
+    } else {
+      1.0 + 0.008 * props.dt_net
+    };
+    let target_mvs_factor = (c_bore * (props.nozzle_diameter / 0.40).powf(beta_q) * c_t)
+      .clamp(0.35, 1.85);
+
+    let prev_mvs_factor = lua_refcell_get_scalar_f64(&state_tbl, "prev_mvs_factor")
+      .filter(|v| *v > 0.0)
+      .unwrap_or(1.0);
+    let step_mvs_ratio = target_mvs_factor / prev_mvs_factor;
+    if (step_mvs_ratio - 1.0).abs() > 1e-6 {
+      let skip_machine_placeholder = {
+        let cb = cfg_tbl.borrow();
+        let is_machine = lua_table_get_str(&cb, "type")
+          .map(|s| s.eq_ignore_ascii_case("machine"))
+          .unwrap_or(false);
+        let cur_mvs = lua_table_get_scalar_f64(&cb, "filament_max_volumetric_speed").unwrap_or(0.0);
+        let ctx_mvs = lua_refcell_get_scalar_f64(ctx_tbl, "filament_max_flow");
+        is_machine
+          && (cur_mvs - 12.0).abs() < 0.01
+          && ctx_mvs.map(|cm| (cm - 12.0).abs() > 0.01).unwrap_or(false)
+      };
+      if !skip_machine_placeholder
+        && !already_modified_in_rule(&self.modified_keys, "filament_max_volumetric_speed")
+      {
+        if let Some(cur_mvs) = lua_refcell_get_scalar_f64(cfg_tbl, "filament_max_volumetric_speed")
+        {
+          if cur_mvs > 0.0 {
+            let hotend_limit = lua_refcell_get_scalar_f64(ctx_tbl, "hotend_max_flow")
+              .filter(|v| *v > 0.0)
+              .unwrap_or(35.0);
+            let new_mvs = (cur_mvs * step_mvs_ratio).clamp(1.5, hotend_limit);
+            self.update_coupled_config_key(
+              cfg_tbl,
+              "filament_max_volumetric_speed",
+              format!("{:.1}", new_mvs),
+            );
+          }
+        }
+      }
+      state_tbl.borrow_mut().insert(
+        "prev_mvs_factor".to_string(),
+        LuaVal::Number(target_mvs_factor),
+      );
+    }
+
+    // 3. Coupled Cooling Fan Curves: fan_min_speed, fan_max_speed, overhang_fan_speed
+    let dfan_rad = if props.is_warp_prone {
+      0.0
+    } else if props.is_diamond {
+      6.0 * (props.nozzle_diameter / 0.40).sqrt()
+    } else if props.is_cm2 || props.is_cht || props.is_twinclad {
+      2.0 * (props.nozzle_diameter / 0.40).sqrt()
+    } else {
+      0.0
+    };
+    let k_t = if props.is_warp_prone {
+      0.0
+    } else if props.is_copolyester || props.is_elastomer {
+      1.0
+    } else {
+      1.2
+    };
+    let dt_fan = k_t * props.dt_net;
+    let structural_fan_cut =
+      lua_refcell_get_scalar_f64(cfg_tbl, "_structural_fan_cut_pct").unwrap_or(0.0);
+    let dt_fan_part = if structural_fan_cut > 0.0 && dt_fan > 0.0 {
+      0.0
+    } else {
+      dt_fan
+    };
+
+    let target_fan_min_delta = (0.75 * dfan_rad + dt_fan_part).round();
+    let target_fan_max_delta = (0.50 * dfan_rad + dt_fan_part).round();
+    let target_ovh_fan_delta = (dfan_rad + 0.50 * dt_fan).round();
+
+    let prev_fan_min_delta =
+      lua_refcell_get_scalar_f64(&state_tbl, "prev_fan_min_delta").unwrap_or(0.0);
+    let prev_fan_max_delta =
+      lua_refcell_get_scalar_f64(&state_tbl, "prev_fan_max_delta").unwrap_or(0.0);
+    let prev_ovh_fan_delta =
+      lua_refcell_get_scalar_f64(&state_tbl, "prev_ovh_fan_delta").unwrap_or(0.0);
+
+    let step_fan_min = target_fan_min_delta - prev_fan_min_delta;
+    if step_fan_min.abs() > 1e-6 {
+      for fan_key in ["fan_min_speed", "fan_min_speed_BRASS", "fan_min_speed_HS"] {
+        if !already_modified_in_rule(&self.modified_keys, fan_key) {
+          if let Some(cur_fan) = lua_refcell_get_scalar_f64(cfg_tbl, fan_key) {
+            let new_fan = (cur_fan + step_fan_min).round().clamp(0.0, 100.0) as i32;
+            self.update_coupled_config_key(cfg_tbl, fan_key, new_fan.to_string());
+          }
+        }
+      }
+      state_tbl.borrow_mut().insert(
+        "prev_fan_min_delta".to_string(),
+        LuaVal::Number(target_fan_min_delta),
+      );
+    }
+
+    let step_fan_max = target_fan_max_delta - prev_fan_max_delta;
+    if step_fan_max.abs() > 1e-6 {
+      let cur_min_floor = lua_refcell_get_scalar_f64(cfg_tbl, "fan_min_speed").unwrap_or(0.0);
+      for fan_key in ["fan_max_speed", "fan_max_speed_BRASS", "fan_max_speed_HS"] {
+        if !already_modified_in_rule(&self.modified_keys, fan_key) {
+          if let Some(cur_fan) = lua_refcell_get_scalar_f64(cfg_tbl, fan_key) {
+            let new_fan = (cur_fan + step_fan_max)
+              .round()
+              .max(cur_min_floor)
+              .clamp(0.0, 100.0) as i32;
+            self.update_coupled_config_key(cfg_tbl, fan_key, new_fan.to_string());
+          }
+        }
+      }
+      state_tbl.borrow_mut().insert(
+        "prev_fan_max_delta".to_string(),
+        LuaVal::Number(target_fan_max_delta),
+      );
+    }
+
+    let step_ovh_fan = target_ovh_fan_delta - prev_ovh_fan_delta;
+    if step_ovh_fan.abs() > 1e-6 {
+      if !already_modified_in_rule(&self.modified_keys, "overhang_fan_speed") {
+        if let Some(cur_ovh) = lua_refcell_get_scalar_f64(cfg_tbl, "overhang_fan_speed") {
+          let new_ovh = (cur_ovh + step_ovh_fan).round().clamp(0.0, 100.0) as i32;
+          self.update_coupled_config_key(cfg_tbl, "overhang_fan_speed", new_ovh.to_string());
+        }
+      }
+      state_tbl.borrow_mut().insert(
+        "prev_ovh_fan_delta".to_string(),
+        LuaVal::Number(target_ovh_fan_delta),
+      );
+    }
+  }
+}
+
+fn old_val_or_nil(s: &str) -> String {
+  if s.is_empty() {
+    "nil".to_string()
+  } else {
+    s.to_string()
+  }
+}
+
+fn lua_val_scalar_f64(val: &LuaVal) -> Option<f64> {
+  match val {
+    LuaVal::Number(n) if !n.is_nan() => Some(*n),
+    LuaVal::String(s) => s.trim().trim_end_matches('%').trim().parse::<f64>().ok(),
+    LuaVal::Table(t) => t.borrow().get("1").and_then(lua_val_scalar_f64),
+    _ => None,
+  }
+}
+
+fn lua_table_get_scalar_f64(map: &HashMap<String, LuaVal>, key: &str) -> Option<f64> {
+  map.get(key).and_then(lua_val_scalar_f64)
+}
+
+fn lua_refcell_get_scalar_f64(
+  tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+  key: &str,
+) -> Option<f64> {
+  let borrow = tbl.borrow();
+  lua_table_get_scalar_f64(&borrow, key)
+}
+
+fn ensure_coupled_state_table(
+  cfg_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+) -> Rc<RefCell<HashMap<String, LuaVal>>> {
+  if let Some(LuaVal::Table(existing)) = cfg_tbl.borrow().get("_coupled_state").cloned() {
+    return existing;
+  }
+  let mut init_map = HashMap::new();
+  if let Some(t_cur) = lua_refcell_get_scalar_f64(cfg_tbl, "nozzle_temperature") {
+    init_map.insert("t0".to_string(), LuaVal::Number(t_cur));
+  }
+  init_map.insert("prev_pa_factor".to_string(), LuaVal::Number(1.0));
+  init_map.insert("prev_mvs_factor".to_string(), LuaVal::Number(1.0));
+  init_map.insert("prev_fan_min_delta".to_string(), LuaVal::Number(0.0));
+  init_map.insert("prev_fan_max_delta".to_string(), LuaVal::Number(0.0));
+  init_map.insert("prev_ovh_fan_delta".to_string(), LuaVal::Number(0.0));
+  init_map.insert("awaiting_p10_eq".to_string(), LuaVal::Boolean(false));
+  let tbl = Rc::new(RefCell::new(init_map));
+  cfg_tbl
+    .borrow_mut()
+    .insert("_coupled_state".to_string(), LuaVal::Table(tbl.clone()));
+  tbl
+}
+
+struct CoupledPhysicsProps {
+  is_diamond: bool,
+  is_cht: bool,
+  is_cm2: bool,
+  is_twinclad: bool,
+  is_hardened: bool,
+  nozzle_diameter: f64,
+  is_elastomer: bool,
+  is_copolyester: bool,
+  is_warp_prone: bool,
+  dt_net: f64,
+  melt_zone_multiplier: f64,
+}
+
+fn extract_coupled_physics_props(
+  cfg_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+  ctx_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+  state_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+) -> CoupledPhysicsProps {
+  let cb = cfg_tbl.borrow();
+  let xb = ctx_tbl.borrow();
+  let sb = state_tbl.borrow();
+
+  let n_type = lua_table_get_str(&xb, "nozzle_type")
+    .or_else(|| lua_table_get_str(&cb, "nozzle_type"))
+    .unwrap_or_else(|| "brass".to_string())
+    .to_lowercase();
+  let n_mat = lua_table_get_str(&xb, "nozzle_material")
+    .unwrap_or_default()
+    .to_lowercase();
+
+  let is_diamond = n_type.contains("diamondback")
+    || n_type.contains("diamond")
+    || n_mat.contains("diamondback")
+    || n_mat.contains("diamond");
+  let is_cht = n_type.contains("cht") || n_mat.contains("cht");
+  let is_cm2 = n_type.contains("cm2") || n_mat.contains("cm2");
+  let is_twinclad = n_type.contains("microswiss_brass")
+    || n_type.contains("twinclad")
+    || n_mat.contains("twinclad");
+  let is_hardened = !is_diamond
+    && !is_cht
+    && !is_cm2
+    && !is_twinclad
+    && (n_type.contains("hardened")
+      || n_type.contains("stainless")
+      || n_mat.contains("hardened")
+      || n_mat.contains("stainless"));
+
+  let nozzle_diameter = lua_table_get_scalar_f64(&xb, "nozzle_diameter")
+    .or_else(|| lua_table_get_scalar_f64(&cb, "nozzle_diameter"))
+    .unwrap_or(0.40)
+    .clamp(0.20, 1.20);
+
+  let fil_type = lua_table_get_str(&xb, "filament_type")
+    .or_else(|| {
+      cb.get("filament_type").and_then(|v| match v {
+        LuaVal::Table(t) => t.borrow().get("1").map(|x| x.to_lua_string()),
+        other => Some(other.to_lua_string()),
+      })
+    })
+    .unwrap_or_else(|| "PLA".to_string())
+    .to_uppercase();
+
+  let is_elastomer = matches!(xb.get("filament_is_elastomer"), Some(LuaVal::Boolean(true)))
+    || fil_type.contains("TPU")
+    || fil_type.contains("TPE")
+    || fil_type.contains("PEBA")
+    || fil_type.contains("FLEX");
+  let is_copolyester = fil_type.contains("PETG") || fil_type.contains("PCTG");
+  let is_warp_prone = fil_type.contains("ABS")
+    || fil_type.contains("ASA")
+    || fil_type == "PA"
+    || fil_type.starts_with("PA-")
+    || fil_type.starts_with("PA6")
+    || fil_type.starts_with("PA12")
+    || fil_type.contains("NYLON")
+    || fil_type == "PC"
+    || fil_type.starts_with("PC-")
+    || fil_type.contains("PEEK")
+    || fil_type.contains("PEI")
+    || fil_type.contains("ULTEM")
+    || fil_type.contains("PSU")
+    || fil_type.contains("PPSU")
+    || fil_type.contains("PPS")
+    || fil_type == "PP"
+    || fil_type.starts_with("PP-");
+
+  let cur_temp = lua_table_get_scalar_f64(&cb, "nozzle_temperature");
+  let t_eq = lua_table_get_scalar_f64(&sb, "t_eq").or(cur_temp);
+  let pre_delta = lua_table_get_scalar_f64(&xb, "pre_temp_delta_c").unwrap_or(0.0);
+  let dt_net = match (cur_temp, t_eq) {
+    (Some(tc), Some(te)) => ((tc - te) + pre_delta).clamp(-15.0, 15.0),
+    _ => pre_delta.clamp(-15.0, 15.0),
+  };
+
+  let melt_zone_multiplier = lua_table_get_scalar_f64(&xb, "melt_zone_multiplier")
+    .unwrap_or(1.00)
+    .clamp(0.80, 1.50);
+
+  CoupledPhysicsProps {
+    is_diamond,
+    is_cht,
+    is_cm2,
+    is_twinclad,
+    is_hardened,
+    nozzle_diameter,
+    is_elastomer,
+    is_copolyester,
+    is_warp_prone,
+    dt_net,
+    melt_zone_multiplier,
+  }
+}
+
+fn compute_coupled_purge_factor(
+  cfg_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+  ctx_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+) -> f64 {
+  let state_tbl = ensure_coupled_state_table(cfg_tbl);
+  let props = extract_coupled_physics_props(cfg_tbl, ctx_tbl, &state_tbl);
+
+  let c_vol = props.melt_zone_multiplier;
+  let c_wall_slip = if props.is_diamond {
+    0.80
+  } else if props.is_cm2 || props.is_twinclad {
+    0.94
+  } else if props.is_cht {
+    1.08
+  } else if props.is_hardened {
+    1.04
+  } else {
+    1.00
+  };
+  let beta_eta = if props.is_copolyester { 0.015 } else { 0.012 };
+  let c_visc = (-beta_eta * props.dt_net).exp();
+  (c_vol * c_wall_slip * c_visc).clamp(0.70, 1.65)
 }
 
 /// Generalized parameter type specifier declared inside a Lua transformation rule (`params = { ... }`).

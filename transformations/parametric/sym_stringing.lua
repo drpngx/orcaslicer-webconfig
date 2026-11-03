@@ -143,6 +143,7 @@ function apply(config, ctx, p)
   local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.40
   config["filament_wipe_distance"] = string.format("%.1f", noz * 5.0)
   config["filament_retract_before_wipe"] = pre_wipe
+  sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:Stringing] " .. (d.badge or ""))
 end

@@ -35,7 +35,7 @@ local function polymer_family(mat)
 end
 
 function apply(config, ctx)
-  local slots = ctx.slots
+  local slots = ctx.slots or ctx.filament_spools
   if not slots then
     return
   end
@@ -50,6 +50,7 @@ function apply(config, ctx)
   -- raw UI context knob, so the matrix bakes the EFFECTIVE purge scaling instead of clobbering
   -- the earlier rule's flush_multiplier with the context value.
   local flush_mult = tonumber(config["flush_multiplier"]) or tonumber(ctx.flush_multiplier) or 1.0
+  local purge_factor = coupled_purge_factor(config, ctx)
   local matrix = {}
   local idx = 1
 
@@ -79,7 +80,7 @@ function apply(config, ctx)
           if stickiness > 1.2 then
             cross_base = 300.0 * math.min(1.25, stickiness)
           end
-          vol = cross_base * flush_mult
+          vol = cross_base * flush_mult * purge_factor
         else
           -- 2. Same Polymer Family Luminance Delta (Dark -> Light scales 180..300 at 1.0x; Light -> Dark scales 95..150 at 1.0x)
           local delta = lum_in - lum_out
@@ -95,7 +96,7 @@ function apply(config, ctx)
           if opacity_in < 0.85 then
             translucency_factor = math.min(1.30, 1.0 / opacity_in)
           end
-          vol = base_vol * stickiness * translucency_factor * flush_mult
+          vol = base_vol * stickiness * translucency_factor * flush_mult * purge_factor
         end
 
         -- 4. Clamp to [70, 900] mm3

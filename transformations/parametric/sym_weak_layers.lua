@@ -111,6 +111,7 @@ function apply(config, ctx, p)
   config["fan_max_speed"] = tostring(math.max(10, math.floor(cur_fan * fan_scale + 0.5)))
   local cur_w = tonumber(config["wall_loops"]) or 2
   config["wall_loops"] = tostring(math.max(2, math.floor(cur_w + extra_loops)))
+  sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:LayerStrength] " .. (d.badge or ""))
 end

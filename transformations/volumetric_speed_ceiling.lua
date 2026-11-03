@@ -44,5 +44,23 @@ function apply(config, ctx)
     config["sparse_infill_speed"] = tostring(infill_ceiling)
   end
 
+  local solid_spd = tonumber(config["internal_solid_infill_speed"])
+  if solid_spd then
+    local solid_w = tonumber(config["internal_solid_infill_line_width"]) or line_w
+    local solid_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * solid_w))
+    if solid_spd > solid_ceiling then
+      config["internal_solid_infill_speed"] = tostring(solid_ceiling)
+    end
+  end
+
+  local top_spd = tonumber(config["top_surface_speed"])
+  if top_spd then
+    local top_w = tonumber(config["top_surface_line_width"]) or line_w
+    local top_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * top_w))
+    if top_spd > top_ceiling then
+      config["top_surface_speed"] = tostring(top_ceiling)
+    end
+  end
+
   print("[VolumetricCeiling] min(" .. string.format("%.1f", hotend_flow) .. ", " .. string.format("%.1f", filament_flow) .. ") / (" .. string.format("%.2f", layer_h) .. " * " .. string.format("%.2f", line_w) .. ") = " .. tostring(safe_ceiling) .. " mm/s safe speed ceiling")
 end

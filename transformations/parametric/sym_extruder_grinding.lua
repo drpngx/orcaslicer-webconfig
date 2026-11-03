@@ -115,6 +115,7 @@ function apply(config, ctx, p)
   config["filament_retraction_minimum_travel"] = string.format("%.1f", cur_mt + min_trv_boost)
   local cur_t = tonumber(config["nozzle_temperature"]) or 230
   config["nozzle_temperature"] = tostring(cur_t + t_rel)
+  sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:ExtruderGrind] " .. (d.badge or ""))
 end

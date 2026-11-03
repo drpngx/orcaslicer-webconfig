@@ -192,6 +192,7 @@ function apply(config, ctx, p)
       config["spiral_mode"] = "1"
       config["wall_loops"] = "1"
       config["top_shell_layers"] = "0"
+      config["top_shell_thickness"] = "0.00"
       config["bottom_shell_layers"] = "3"
       config["sparse_infill_density"] = "0%"
       config["line_width"] = lw
@@ -216,6 +217,8 @@ function apply(config, ctx, p)
       config["wall_loops"] = "1"
       config["top_shell_layers"] = "0"
       config["bottom_shell_layers"] = "0"
+      config["top_shell_thickness"] = "0.00"
+      config["bottom_shell_thickness"] = "0.00"
       config["sparse_infill_density"] = "100%"
       config["sparse_infill_pattern"] = "alignedrectilinear"
       config["internal_solid_infill_pattern"] = "monotonicline"

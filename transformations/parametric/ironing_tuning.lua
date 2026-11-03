@@ -169,14 +169,20 @@ local function resolve_effective_ironing(p, ctx)
 
   if preset == "auto_polymer" then
     local fil = string.upper(tostring((ctx and ctx.filament_type) or "PETG"))
+    local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
+    local scale_sp = function(base_sp)
+      local raw = base_sp * ((nd / 0.40) ^ 0.75)
+      local clamped = math.max(0.08, math.min(0.30, raw))
+      return math.floor(clamped * 100.0 + 0.5) / 100.0
+    end
     if string.find(fil, "PLA") then
-      return { flow = 12, spd = 35, spacing = 0.15, mode_tag = "Auto PLA (12%)" }
+      return { flow = 12, spd = 35, spacing = scale_sp(0.15), mode_tag = "Auto PLA (12%)" }
     elseif string.find(fil, "ASA") or string.find(fil, "ABS") or string.find(fil, "PC") or string.find(fil, "PA") then
-      return { flow = 22, spd = 40, spacing = 0.12, mode_tag = string.format("Auto %s (22%%)", fil) }
+      return { flow = 22, spd = 40, spacing = scale_sp(0.12), mode_tag = string.format("Auto %s (22%%)", fil) }
     elseif string.find(fil, "PETG") or string.find(fil, "PCTG") or string.find(fil, "CPE") then
-      return { flow = 18, spd = 30, spacing = 0.15, mode_tag = string.format("Auto %s (18%%)", fil) }
+      return { flow = 18, spd = 30, spacing = scale_sp(0.15), mode_tag = string.format("Auto %s (18%%)", fil) }
     else
-      return { flow = flow, spd = spd, spacing = spacing, mode_tag = string.format("Auto %s (%d%%)", fil, flow) }
+      return { flow = flow, spd = spd, spacing = scale_sp(spacing), mode_tag = string.format("Auto %s (%d%%)", fil, flow) }
     end
   end
   return { flow = flow, spd = spd, spacing = spacing, mode_tag = string.format("%d%% Flow", flow) }

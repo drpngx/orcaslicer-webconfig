@@ -206,8 +206,10 @@ function apply(config, ctx, p)
     end
     boost_init_bed("textured_plate_temp_initial_layer", "textured_plate_temp")
     boost_init_bed("hot_plate_temp_initial_layer", "hot_plate_temp")
+    local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
+    local eff_init_w = c.init_width * (nd / 0.40)
     config["bottom_solid_infill_flow_ratio"] = string.format("%.2f", c.bottom_flow)
-    config["initial_layer_line_width"] = string.format("%.2f", c.init_width)
+    config["initial_layer_line_width"] = string.format("%.2f", eff_init_w)
     config["initial_layer_speed"] = tostring(c.init_speed)
     config["initial_layer_infill_speed"] = tostring(c.init_infill_speed)
   end
@@ -219,6 +221,7 @@ function apply(config, ctx, p)
   config["_wet_filament_flow_trim"] = string.format("%.2f", c.flow_trim)
   config["_wet_filament_retract_add_mm"] = string.format("%.2f", c.retract_add)
   config["_wet_filament_retract_before_wipe_pct"] = tostring(c.retract_before_wipe)
+  sync_coupled_physics(config, ctx)
 
   local d = describe(p or {}, ctx)
   print("[Symptom:WetFilament] " .. (d.badge or ""))

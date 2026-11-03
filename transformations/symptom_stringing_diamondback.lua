@@ -104,6 +104,7 @@ function apply(config, ctx)
 
   -- 6. Mechanical inward wipe before the travel move shears the strand off the tip.
   config["wipe_on_loops"] = "1"
+  sync_coupled_physics(config, ctx)
 
   print("[Symptom:Stringing] PCD anti-stringing: gated -2C trim (rigid_gate " .. string.format("%.2f", rigid_gate) .. "), retraction recovery <= +0.07mm, speed damp -> " .. tostring(scalar_num(config["filament_retraction_speed"], 0)) .. " mm/s, filament_z_hop +orifice bump, travel accel -> " .. config["travel_acceleration"] .. " mm/s2, wipe=1")
 end

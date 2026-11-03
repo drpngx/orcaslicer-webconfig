@@ -141,6 +141,7 @@ function apply(config, ctx, p)
   local cur_cut = tonumber(config["retraction_distances_when_cut"]) or 14.0
   config["retraction_distances_when_cut"] = string.format("%.1f", math.min(12.0, cur_cut * 0.85))
   config["flush_temperature"] = tostring(new_t)
+  sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:AntiClog] " .. (d.badge or ""))
 end

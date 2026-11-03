@@ -105,6 +105,7 @@ function apply(config, ctx, p)
   config["filament_max_volumetric_speed"] = string.format("%.1f", cur_mvs * scale)
   local cur_t = tonumber(config["nozzle_temperature"]) or 230
   config["nozzle_temperature"] = tostring(cur_t + t_boost)
+  sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:UnderExtrusion] " .. (d.badge or ""))
 end

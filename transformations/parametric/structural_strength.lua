@@ -213,8 +213,17 @@ function apply(config, ctx, p)
   config["alternate_extra_wall"] = c.alt_wall
   config["top_shell_layers"] = tostring(c.shells)
   config["bottom_shell_layers"] = tostring(c.shells)
+  local lh = tonumber(config["layer_height"]) or tonumber(ctx and ctx.layer_height) or 0.20
+  local shell_mm = string.format("%.2f", c.shells * lh)
+  if config["top_shell_thickness"] ~= nil then
+    config["top_shell_thickness"] = shell_mm
+  end
+  if config["bottom_shell_thickness"] ~= nil then
+    config["bottom_shell_thickness"] = shell_mm
+  end
   config["infill_wall_overlap"] = string.format("%d%%", c.overlap)
   config["sparse_infill_pattern"] = c.pattern
+  sync_coupled_physics(config, ctx)
 
   local d = describe(p or {}, ctx)
   print("[Pack:StructuralStrength] " .. (d.badge or ""))
