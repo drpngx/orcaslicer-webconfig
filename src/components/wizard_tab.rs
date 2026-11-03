@@ -2616,6 +2616,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                                 Some(RuleShadowKind::Overwritten) => Some("⚡ Overwritten"),
                                 Some(RuleShadowKind::Recomputed) => Some("♻ Recomputed"),
                                 Some(RuleShadowKind::Accepted) => Some("✔ Accepted"),
+                                Some(RuleShadowKind::Clamped) => Some("🛡️ Clamped"),
                                 None => None,
                               };
                               html! {
@@ -2674,7 +2675,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
             let shadowed_diffs: Vec<&RuleBeforeAfterChange> = per_rule_diffs
               .iter()
               .copied()
-              .filter(|c| c.shadow_kind.is_some())
+              .filter(|c| c.shadow_kind == Some(RuleShadowKind::Overwritten))
               .collect();
             let has_shadow_warning = is_active && !shadowed_diffs.is_empty();
             let is_completely_shadowed =
@@ -2990,6 +2991,10 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                             )),
                             Some(RuleShadowKind::Accepted) => Some(format!(
                               "✔ Accepted by Step #{}",
+                              ch.shadowed_by_step.unwrap_or(0)
+                            )),
+                            Some(RuleShadowKind::Clamped) => Some(format!(
+                              "🛡️ Clamped by Step #{}",
                               ch.shadowed_by_step.unwrap_or(0)
                             )),
                             None => None,

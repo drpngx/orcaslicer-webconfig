@@ -534,7 +534,8 @@ pub struct LuaFilamentOverrides {
 /// and return the stack's final values for the keys the rules own. Both export paths
 /// (standalone filament `.json` and 3MF per-slot columns) go through
 /// `resolve_spool_orca_filament_map_with_rig_and_overrides`, so they get parity for free.
-fn evaluate_spool_lua_filament_overrides(
+#[allow(clippy::too_many_arguments)]
+fn evaluate_spool_lua_filament_overrides_with_eval(
   spool: &FilamentSpool,
   rig: &MachineRig,
   base_map: &serde_json::Map<String, serde_json::Value>,
@@ -553,7 +554,15 @@ fn evaluate_spool_lua_filament_overrides(
   seed_fan_max: i32,
   structural_fan_cut_pct: i32,
   pre_temp_delta_c: i32,
-) -> LuaFilamentOverrides {
+  trim_floor: i32,
+  min_safe_noz: i32,
+  max_safe_noz: i32,
+  mvs_ceil: f32,
+  base_hop_positive: bool,
+) -> (
+  LuaFilamentOverrides,
+  crate::transformations::StackEvaluationResult,
+) {
   // Seed from the spool's full resolved filament base map (`default_filament_bases` +
   // `raw_disk_json` + canonical dual-scope `filament_*` fallbacks) so every filament-scoped
   // parameter has its base value populated before the Lua transformation stack executes.
@@ -603,6 +612,92 @@ fn evaluate_spool_lua_filament_overrides(
       serde_json::Value::String(structural_fan_cut_pct.to_string()),
     );
   }
+
+  // Seed hard domain bounds into `_bounds` so Phase 3 Epilogue Constraint Projection projects
+  // all filament parameters inside `evaluate_stack` and records any clamp as a typed ledger step.
+  let mut bounds_obj = serde_json::Map::new();
+  for k in [
+    "nozzle_temperature",
+    "nozzle_temperature_BRASS",
+    "nozzle_temperature_HS",
+  ] {
+    bounds_obj.insert(
+      k.to_string(),
+      serde_json::json!({
+        "min": trim_floor as f64,
+        "max": max_safe_noz as f64,
+        "min_by": "Polymer + Machine Safe Extrusion Floor",
+        "max_by": "Polymer + Machine Hotend Thermal Ceiling",
+      }),
+    );
+  }
+  for k in [
+    "nozzle_temperature_initial_layer",
+    "nozzle_temperature_initial_layer_BRASS",
+    "nozzle_temperature_initial_layer_HS",
+  ] {
+    bounds_obj.insert(
+      k.to_string(),
+      serde_json::json!({
+        "min": min_safe_noz as f64,
+        "max": max_safe_noz as f64,
+        "min_by": "Polymer Safe First-Layer Extrusion Floor",
+        "max_by": "Polymer + Machine Hotend Thermal Ceiling",
+      }),
+    );
+  }
+  bounds_obj.insert(
+    "pressure_advance".to_string(),
+    serde_json::json!({
+      "min": 0.005,
+      "max": 0.120,
+      "min_by": "Pressure Advance Physical Floor",
+      "max_by": "Pressure Advance Physical Ceiling",
+    }),
+  );
+  bounds_obj.insert(
+    "filament_max_volumetric_speed".to_string(),
+    serde_json::json!({
+      "min": 1.5,
+      "max": mvs_ceil as f64,
+      "min_by": "Volumetric Flow Floor",
+      "max_by": "Polymer Volumetric Flow Ceiling",
+    }),
+  );
+  for k in [
+    "fan_min_speed",
+    "fan_min_speed_BRASS",
+    "fan_min_speed_HS",
+    "fan_max_speed",
+    "fan_max_speed_BRASS",
+    "fan_max_speed_HS",
+  ] {
+    bounds_obj.insert(
+      k.to_string(),
+      serde_json::json!({
+        "min": 0.0,
+        "max": 100.0,
+        "min_by": "PWM Fan Speed Floor",
+        "max_by": "PWM Fan Speed Ceiling",
+      }),
+    );
+  }
+  if !base_hop_positive {
+    bounds_obj.insert(
+      "filament_z_hop".to_string(),
+      serde_json::json!({
+        "min": 0.0,
+        "max": 0.0,
+        "min_by": "Flexible / Foaming Polymer Zero Z-Hop Baseline",
+        "max_by": "Flexible / Foaming Polymer Zero Z-Hop Baseline",
+      }),
+    );
+  }
+  seed_map.insert(
+    "_bounds".to_string(),
+    serde_json::Value::Object(bounds_obj),
+  );
+
   let ctx = serde_json::json!({
     "printer_model": rig.printer_model,
     "hotend": rig.hotend,
@@ -633,6 +728,17 @@ fn evaluate_spool_lua_filament_overrides(
     &rig.nozzle_material,
     rig.ace_pro_units,
   );
+  rules.retain(|r| {
+    matches!(
+      r.id.as_str(),
+      "thermal_conductivity"
+        | "rig_addons_cooling"
+        | "anycubic_pctg_as_petg"
+        | "symptom_stringing_diamondback"
+        | "filament_pctg_antistringing"
+        | "pctg_antistringing"
+    )
+  });
   let seed_profile = crate::orca_profile::OrcaProfile {
     name: spool.name.clone(),
     profile_type: "filament".to_string(),
@@ -642,7 +748,7 @@ fn evaluate_spool_lua_filament_overrides(
   };
   let eval =
     crate::transformations::TransformationEngine::evaluate_stack(&seed_profile, &rules, &ctx);
-  let vals = eval.resulting_profile.values;
+  let vals = &eval.resulting_profile.values;
   let take = |key: &str, seed: &str| -> Option<String> {
     let cur = vals
       .get(key)
@@ -660,7 +766,7 @@ fn evaluate_spool_lua_filament_overrides(
       None
     }
   };
-  LuaFilamentOverrides {
+  let overrides = LuaFilamentOverrides {
     nozzle_temperature: take("nozzle_temperature", &seed_temp.to_string()),
     nozzle_temperature_initial_layer: take(
       "nozzle_temperature_initial_layer",
@@ -675,7 +781,8 @@ fn evaluate_spool_lua_filament_overrides(
     filament_max_volumetric_speed: take("filament_max_volumetric_speed", &seed_mvs_str),
     fan_min_speed: take("fan_min_speed", &seed_fan_min_str),
     fan_max_speed: take("fan_max_speed", &seed_fan_max_str),
-  }
+  };
+  (overrides, eval)
 }
 
 pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
@@ -683,6 +790,46 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   rig_opt: Option<&MachineRig>,
   derived_overrides: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> serde_json::Map<String, serde_json::Value> {
+  resolve_spool_orca_filament_map_and_provenance(spool, rig_opt, derived_overrides).0
+}
+
+/// Evaluates the per-spool Filament transformation stack and returns the full typed
+/// [`StackEvaluationResult`](crate::transformations::StackEvaluationResult) (including
+/// `provenance_items` ledger chains $x_0 \to \dots \to x_{\text{shipped}}$) using the exact same
+/// seed and domain bounds as `resolve_spool_orca_filament_map_with_rig_and_overrides`.
+pub fn evaluate_spool_filament_provenance(
+  spool: &FilamentSpool,
+  rig: &MachineRig,
+  derived_overrides: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> crate::transformations::StackEvaluationResult {
+  let (resolved_map, eval_opt) =
+    resolve_spool_orca_filament_map_and_provenance(spool, Some(rig), derived_overrides);
+  if let Some(eval) = eval_opt {
+    eval
+  } else {
+    let seed_profile = crate::orca_profile::OrcaProfile {
+      name: spool.name.clone(),
+      profile_type: "filament".to_string(),
+      inherits: None,
+      from: None,
+      values: resolved_map,
+    };
+    crate::transformations::TransformationEngine::evaluate_stack(
+      &seed_profile,
+      &[],
+      &serde_json::json!({}),
+    )
+  }
+}
+
+fn resolve_spool_orca_filament_map_and_provenance(
+  spool: &FilamentSpool,
+  rig_opt: Option<&MachineRig>,
+  derived_overrides: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> (
+  serde_json::Map<String, serde_json::Value>,
+  Option<crate::transformations::StackEvaluationResult>,
+) {
   let c = crate::constants::constants();
   let cat = crate::catalog::load_merged_catalog();
   let orca_fil_type = resolve_orca_filament_type(&spool.material_type);
@@ -1017,6 +1164,7 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   // unbottleneck, brand/disk retraction), so the stack's output is the FINAL value. Skipped
   // for foaming/Siraya spools whose zero/foam-specific retraction is material physics the
   // curves must not touch. Both export paths share this function → JSON/3MF parity for free.
+  let mut spool_eval_opt: Option<crate::transformations::StackEvaluationResult> = None;
   if let Some(rig) = rig_opt {
     if !spool.is_siraya_foaming_air() && !is_foaming_tpu {
       let noz_cfg = c.lookup_nozzle(&rig.nozzle_type);
@@ -1025,7 +1173,9 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
       // hand-tuned (user edit or disk override) and is honored as the effective baseline by
       // inverting the nozzle offset — a 268°C PCTG spool must never snap back to the
       // catalog's 240°C brass value (test_anycubic_pctg_declared_as_petg...).
-      let noz_delta = if noz_cfg.uses_hs_base_temp {
+      let noz_delta = if rig.nozzle_type.to_lowercase().contains("cm2") {
+        0
+      } else if noz_cfg.uses_hs_base_temp {
         c.hardware_limits.hs_base_temp_delta_c
       } else {
         noz_cfg.temp_offset_from_brass_c
@@ -1043,7 +1193,26 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
         .clamp(min_safe_noz, max_safe_noz);
       let seed_init = (seed_temp + init_delta).clamp(min_safe_noz, max_safe_noz);
       let pre_temp_delta_c = seed_temp - brass_base;
-      let overrides = evaluate_spool_lua_filament_overrides(
+      // The P25 anti-stringing band trim is a bounded, deliberate excursion below the
+      // polymer's conservative floor (`hardware_limits.nozzle_temp_floor_relax_c`, approved in
+      // doc/pwl-nozzle-compensation-math.md §5.1), so the final nozzle temp clamps to
+      // floor−relax instead of undoing it. The initial-layer temp keeps the hard floor (P25
+      // deliberately does not trim it).
+      let trim_floor = (min_safe_noz - c.hardware_limits.nozzle_temp_floor_relax_c)
+        .max(c.hardware_limits.min_extrusion_temp_c)
+        .min(max_safe_noz);
+      let mvs_ceil = if orca_fil_type == "ABS" || orca_fil_type == "ASA" {
+        24.0
+      } else {
+        22.0
+      };
+      // Never invent a hop for polymers that deliberately ship 0.00 z-hop (e.g. flexible).
+      let base_hop_positive = z_hop_str
+        .trim()
+        .parse::<f64>()
+        .map(|v| v > 0.0)
+        .unwrap_or(false);
+      let (overrides, spool_eval) = evaluate_spool_lua_filament_overrides_with_eval(
         spool,
         rig,
         &base_map,
@@ -1062,15 +1231,14 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
         fan_max_pct,
         structural_fan_cut_pct,
         pre_temp_delta_c,
+        trim_floor,
+        min_safe_noz,
+        max_safe_noz,
+        mvs_ceil,
+        base_hop_positive,
       );
-      // The P25 anti-stringing band trim is a bounded, deliberate excursion below the
-      // polymer's conservative floor (`hardware_limits.nozzle_temp_floor_relax_c`, approved in
-      // doc/pwl-nozzle-compensation-math.md §5.1), so the final nozzle temp clamps to
-      // floor−relax instead of undoing it. The initial-layer temp keeps the hard floor (P25
-      // deliberately does not trim it).
-      let trim_floor = (min_safe_noz - c.hardware_limits.nozzle_temp_floor_relax_c)
-        .max(c.hardware_limits.min_extrusion_temp_c)
-        .min(max_safe_noz);
+      effective_temp = seed_temp;
+      initial_temp = seed_init;
       if let Some(t) = overrides.nozzle_temperature {
         if let Ok(parsed) = t.parse::<i32>() {
           effective_temp = parsed.clamp(trim_floor, max_safe_noz);
@@ -1100,11 +1268,6 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
       }
       if let Some(mvs) = overrides.filament_max_volumetric_speed {
         if let Ok(parsed) = mvs.parse::<f32>() {
-          let mvs_ceil = if orca_fil_type == "ABS" || orca_fil_type == "ASA" {
-            24.0
-          } else {
-            22.0
-          };
           effective_mvs = parsed.clamp(1.5, mvs_ceil);
         }
       }
@@ -1118,12 +1281,6 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
           fan_max_pct = parsed.clamp(0, 100).max(fan_min_pct);
         }
       }
-      // Never invent a hop for polymers that deliberately ship 0.00 z-hop (e.g. flexible).
-      let base_hop_positive = z_hop_str
-        .trim()
-        .parse::<f64>()
-        .map(|v| v > 0.0)
-        .unwrap_or(false);
       if base_hop_positive {
         if let Some(z) = overrides.filament_z_hop {
           z_hop_str = z;
@@ -1132,9 +1289,10 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
           z_hop_type_str = zt;
         }
       }
+      spool_eval_opt = Some(spool_eval);
     }
   }
-  if structural_fan_cut_pct > 0 {
+  if structural_fan_cut_pct > 0 && spool_eval_opt.is_none() {
     let cut_max =
       ((fan_max_pct as f64) * (100 - structural_fan_cut_pct) as f64 / 100.0).round() as i32;
     fan_min_pct = fan_min_pct.min(cut_max);
@@ -1380,7 +1538,7 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
     "version".to_string(),
     serde_json::json!(WEBCONFIG_ORCA_PRESET_VERSION),
   );
-  base_map
+  (base_map, spool_eval_opt)
 }
 
 fn build_filament_preset_json_with_source(
@@ -2779,6 +2937,191 @@ pub fn verify_project_settings_matches_standalone_presets(
           slot_idx,
           proj_scalar
         ));
+      }
+    }
+  }
+
+  if errors.is_empty() {
+    Ok(())
+  } else {
+    Err(errors)
+  }
+}
+
+/// Verifies the full 3-way Provenance-to-Export Parity Invariant:
+/// $$x_{\text{provenance\_shipped}} == x_{\text{JSON}} == x_{\text{3MF}}$$
+/// together with continuous ledger chains ($x_0 \to \text{step}_1 \to \dots \to \text{Epilogue} = x_{\text{shipped}}$)
+/// across both Process provenance and per-slot Filament provenance.
+pub fn verify_provenance_matches_standalone_and_3mf_exports(
+  process_provenance: &[crate::transformations::ParameterProvenance],
+  slot_filament_provenance: &[Vec<crate::transformations::ParameterProvenance>],
+  project_settings_json: &str,
+  machine_json: &str,
+  process_json: &str,
+  filament_jsons_by_id: &std::collections::HashMap<String, String>,
+) -> Result<(), Vec<String>> {
+  let mut errors = Vec::new();
+  if let Err(mut preset_errs) = verify_project_settings_matches_standalone_presets(
+    project_settings_json,
+    machine_json,
+    process_json,
+    filament_jsons_by_id,
+  ) {
+    errors.append(&mut preset_errs);
+  }
+
+  let Some(proj_obj) = serde_json::from_str::<serde_json::Value>(project_settings_json)
+    .ok()
+    .and_then(|v| v.as_object().cloned())
+  else {
+    errors.push("project_settings_json is not a valid JSON object".to_string());
+    return Err(errors);
+  };
+  let Some(proc_obj) = serde_json::from_str::<serde_json::Value>(process_json)
+    .ok()
+    .and_then(|v| v.as_object().cloned())
+  else {
+    errors.push("process_json is not a valid JSON object".to_string());
+    return Err(errors);
+  };
+  let slot_ids: Vec<String> = proj_obj
+    .get("filament_settings_id")
+    .and_then(|v| v.as_array())
+    .map(|arr| {
+      arr
+        .iter()
+        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+        .collect()
+    })
+    .unwrap_or_default();
+
+  let scalars_equiv = |a: &str, b: &str| -> bool {
+    let at = a.trim();
+    let bt = b.trim();
+    if at == bt {
+      return true;
+    }
+    if let (Ok(an), Ok(bn)) = (
+      at.trim_end_matches('%').parse::<f64>(),
+      bt.trim_end_matches('%').parse::<f64>(),
+    ) {
+      if at.ends_with('%') == bt.ends_with('%') && (an - bn).abs() < 1e-4 {
+        return true;
+      }
+    }
+    false
+  };
+
+  // 1. Verify Process Provenance ledger chains and x_provenance == x_JSON == x_3MF
+  for prov in process_provenance {
+    if let Err(e) = prov.verify_ledger_chain() {
+      errors.push(format!("Process provenance {}", e));
+    }
+    if prov.is_modified
+      && !prov.steps.is_empty()
+      && classify_key_destination(&prov.param_key) == Some(KeyDestination::Process)
+      && !is_filament_scoped_key(&prov.param_key)
+      && !is_machine_scoped_key(&prov.param_key)
+    {
+      if let Some(json_val) = proc_obj.get(&prov.param_key).and_then(|v| v.as_str()) {
+        let shipped = prov.raw_final_scalar();
+        if !scalars_equiv(&shipped, json_val) {
+          errors.push(format!(
+            "Process provenance parity mismatch on '{}': x_provenance='{}' vs x_JSON='{}'",
+            prov.param_key, shipped, json_val
+          ));
+        }
+      }
+      if let Some(threemf_val) = proj_obj.get(&prov.param_key).and_then(|v| v.as_str()) {
+        let shipped = prov.raw_final_scalar();
+        if !scalars_equiv(&shipped, threemf_val) {
+          errors.push(format!(
+            "Process provenance parity mismatch on '{}': x_provenance='{}' vs x_3MF='{}'",
+            prov.param_key, shipped, threemf_val
+          ));
+        }
+      }
+    }
+  }
+
+  // 2. Verify Per-Slot Filament Provenance ledger chains and x_provenance == x_JSON == x_3MF
+  const CANONICAL_FILAMENT_PROVENANCE_KEYS: &[&str] = &[
+    "nozzle_temperature",
+    "nozzle_temperature_initial_layer",
+    "filament_flow_ratio",
+    "filament_retraction_length",
+    "filament_retraction_speed",
+    "filament_z_hop",
+    "filament_z_hop_types",
+    "pressure_advance",
+    "filament_max_volumetric_speed",
+    "fan_min_speed",
+    "fan_max_speed",
+    "hot_plate_temp",
+    "hot_plate_temp_initial_layer",
+    "textured_plate_temp",
+    "textured_plate_temp_initial_layer",
+    "cool_plate_temp",
+    "cool_plate_temp_initial_layer",
+    "eng_plate_temp",
+    "eng_plate_temp_initial_layer",
+  ];
+
+  for (slot_idx, slot_provs) in slot_filament_provenance.iter().enumerate() {
+    let Some(fid) = slot_ids.get(slot_idx) else {
+      continue;
+    };
+    let Some(fil_str) = filament_jsons_by_id.get(fid) else {
+      continue;
+    };
+    let Some(fil_obj) = serde_json::from_str::<serde_json::Value>(fil_str)
+      .ok()
+      .and_then(|v| v.as_object().cloned())
+    else {
+      continue;
+    };
+    for prov in slot_provs {
+      if let Err(e) = prov.verify_ledger_chain() {
+        errors.push(format!("Slot {} ({}) filament provenance {}", slot_idx + 1, fid, e));
+      }
+      if CANONICAL_FILAMENT_PROVENANCE_KEYS.contains(&prov.param_key.as_str()) {
+        let shipped = prov.raw_final_scalar();
+        if let Some(disk_scalar) = fil_obj
+          .get(&prov.param_key)
+          .and_then(|v| v.as_array())
+          .and_then(|a| a.first())
+          .and_then(|x| x.as_str())
+          .or_else(|| fil_obj.get(&prov.param_key).and_then(|v| v.as_str()))
+        {
+          if !scalars_equiv(&shipped, disk_scalar) {
+            errors.push(format!(
+              "Slot {} ({}) filament provenance parity mismatch on '{}': x_provenance='{}' vs x_JSON='{}'",
+              slot_idx + 1,
+              fid,
+              prov.param_key,
+              shipped,
+              disk_scalar
+            ));
+          }
+        }
+        if let Some(proj_scalar) = proj_obj
+          .get(&prov.param_key)
+          .and_then(|pv| pv.as_array())
+          .and_then(|a| a.get(slot_idx))
+          .and_then(|x| x.as_str())
+        {
+          if !scalars_equiv(&shipped, proj_scalar) {
+            errors.push(format!(
+              "Slot {} ({}) filament provenance parity mismatch on '{}': x_provenance='{}' vs x_3MF[{}]='{}'",
+              slot_idx + 1,
+              fid,
+              prov.param_key,
+              shipped,
+              slot_idx,
+              proj_scalar
+            ));
+          }
+        }
       }
     }
   }

@@ -404,6 +404,10 @@ pub enum RuleShadowKind {
   /// downstream rule's input — if the output follows the perturbation, the rule reads the key, and
   /// since it left the value untouched it ACCEPTED it. Informational (`✔ Accepted by later rule`).
   Accepted,
+  /// The Epilogue Constraint Projection (`[L, U]`, Priority = ∞) or a Priority-∞ Coupled Invariant
+  /// clamped this step's output to enforce a hard hardware, thermal, or kinematic domain bound.
+  /// Informational (`🛡️ Clamped by Epilogue Constraint`), not a rule-ordering problem.
+  Clamped,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -509,6 +513,91 @@ pub struct ParameterProvenance {
   /// Active monotonic constraint interval $I_k = [L_k, U_k]$ narrowed by `constrain(...)` calls.
   #[serde(default)]
   pub active_bound: Option<ParameterBound>,
+}
+
+impl ParameterProvenance {
+  /// Returns the raw scalar string of `final_value` (with the display `unit` suffix stripped).
+  pub fn raw_final_scalar(&self) -> String {
+    if self.final_value == "(unset)" {
+      return String::new();
+    }
+    let suffix = if self.unit.is_empty() {
+      String::new()
+    } else {
+      format!(" {}", self.unit)
+    };
+    if !suffix.is_empty() && self.final_value.ends_with(&suffix) {
+      self.final_value[..self.final_value.len() - suffix.len()].to_string()
+    } else {
+      self.final_value.clone()
+    }
+  }
+
+  /// Verifies the typed ledger chain invariant:
+  /// $$x_0 \xrightarrow{\text{Step } 1} x_1 \xrightarrow{\text{Step } 2} \dots \xrightarrow{\text{Epilogue } [L, U]} x_{\text{shipped}}$$
+  /// Specifically:
+  /// 1. When `steps` is empty, `origin_value == final_value`.
+  /// 2. When `steps` is non-empty:
+  ///    - `steps[0].before_value == origin_value` ($x_0$)
+  ///    - `steps[i].after_value == steps[i + 1].before_value` for all adjacent steps
+  ///    - `steps.last().after_value == final_value` ($x_{\text{shipped}}$)
+  ///    - Any step immediately preceding an Epilogue clamp (`rule_priority == i32::MAX`) is tagged
+  ///      with `shadow_kind == Some(RuleShadowKind::Clamped)` and `shadowed_by_step == Some(epilogue.step_number)`.
+  pub fn verify_ledger_chain(&self) -> Result<(), String> {
+    if self.steps.is_empty() {
+      if self.origin_value != self.final_value {
+        return Err(format!(
+          "[Ledger Chain Broken] '{}': 0 steps but origin_value ('{}') != final_value ('{}')",
+          self.param_key, self.origin_value, self.final_value
+        ));
+      }
+      return Ok(());
+    }
+    if self.steps[0].before_value != self.origin_value {
+      return Err(format!(
+        "[Ledger Chain Broken] '{}': step[0] ('{}') before_value ('{}') != origin_value ('{}')",
+        self.param_key, self.steps[0].rule_id, self.steps[0].before_value, self.origin_value
+      ));
+    }
+    for i in 0..self.steps.len() - 1 {
+      let cur = &self.steps[i];
+      let next = &self.steps[i + 1];
+      if cur.after_value != next.before_value {
+        return Err(format!(
+          "[Ledger Chain Broken] '{}': step[{}] ('{}') after_value ('{}') != step[{}] ('{}') before_value ('{}')",
+          self.param_key,
+          i,
+          cur.rule_id,
+          cur.after_value,
+          i + 1,
+          next.rule_id,
+          next.before_value
+        ));
+      }
+      if next.rule_priority == i32::MAX {
+        if cur.shadow_kind != Some(RuleShadowKind::Clamped) {
+          return Err(format!(
+            "[Ledger Epilogue Link Missing] '{}': step[{}] ('{}') precedes Epilogue step '{}' but shadow_kind is {:?} (expected Some(Clamped))",
+            self.param_key, i, cur.rule_id, next.rule_id, cur.shadow_kind
+          ));
+        }
+        if cur.shadowed_by_step != Some(next.step_number) {
+          return Err(format!(
+            "[Ledger Epilogue Link Missing] '{}': step[{}] ('{}') shadowed_by_step is {:?} (expected Some({}))",
+            self.param_key, i, cur.rule_id, cur.shadowed_by_step, next.step_number
+          ));
+        }
+      }
+    }
+    let last = self.steps.last().unwrap();
+    if last.after_value != self.final_value {
+      return Err(format!(
+        "[Ledger Chain Broken] '{}': last step ('{}') after_value ('{}') != final_value ('{}')",
+        self.param_key, last.rule_id, last.after_value, self.final_value
+      ));
+    }
+    Ok(())
+  }
 }
 
 pub fn compute_delta_summary(before_raw: &str, after_raw: &str, unit: &str) -> String {
@@ -1489,6 +1578,7 @@ end
   ) -> (OrcaProfile, serde_json::Value) {
     let mut working_base = base_profile.clone();
     working_base.set_str("layer_height", &format!("{:.2}", process.layer_height));
+    working_base.set_str("line_width", &format!("{:.2}", process.line_width));
     working_base.set_str(
       "outer_wall_line_width",
       &format!("{:.2}", process.line_width),
@@ -1505,6 +1595,14 @@ end
       "sparse_infill_speed",
       &format!("{:.0}", process.sparse_infill_speed),
     );
+    working_base.set_str(
+      "initial_layer_speed",
+      &format!("{:.0}", process.initial_layer_speed),
+    );
+    working_base.set_str(
+      "default_acceleration",
+      &format!("{:.0}", process.default_acceleration),
+    );
     let mut ctx = context.clone();
     if let serde_json::Value::Object(ref mut m) = ctx {
       m.insert(
@@ -1520,6 +1618,7 @@ end
         serde_json::json!(classify_process_scope_tier(process)),
       );
       m.insert("process_name".to_string(), serde_json::json!(process.name));
+      m.insert("_process_seeded".to_string(), serde_json::json!(true));
     }
     (working_base, ctx)
   }
@@ -2062,7 +2161,9 @@ end
             let kind_tag = match kind {
               RuleShadowKind::Overwritten => "⚡ Overwritten by Later Rule",
               RuleShadowKind::Recomputed => "♻ Recomputed by Later Rule (intent preserved)",
-              RuleShadowKind::Accepted => unreachable!("Accepted is classified below"),
+              RuleShadowKind::Accepted | RuleShadowKind::Clamped => {
+                unreachable!("Accepted/Clamped are classified below")
+              }
             };
             execution_logs.push(format!(
               "⚠️ [{}] {} ({}): Step #{} ('{}': {} → {}) superseded by Step #{} ('{}' → {})",
@@ -2335,6 +2436,17 @@ end
               "🛡️ [Constraint Projection • Priority ∞] {} ({}): {} → {} [{} • Feasible {}]",
               label, k, before_fmt, after_fmt, clamp_rule_name, interval_str
             ));
+            if let Some(prev) = rule_changes
+              .iter_mut()
+              .rev()
+              .find(|rc| rc.param_key == *k)
+            {
+              prev.shadow_kind = Some(RuleShadowKind::Clamped);
+              prev.shadowed_by_step = Some(epilogue_step_num);
+              prev.shadowed_by_rule_id = Some("constraint_projection".to_string());
+              prev.shadowed_by_rule_name = Some(clamp_rule_name.clone());
+              prev.shadowed_final_value = Some(after_fmt.clone());
+            }
             rule_changes.push(RuleBeforeAfterChange {
               rule_id: "constraint_projection".to_string(),
               rule_name: clamp_rule_name,
@@ -2395,6 +2507,17 @@ end
           "🔗 [Coupled Invariant • Priority ∞] {} ({}): {} → {} [{}]",
           label, key, before_fmt, after_fmt, rule_name
         ));
+        if let Some(prev) = rule_changes
+          .iter_mut()
+          .rev()
+          .find(|rc| rc.param_key == key)
+        {
+          prev.shadow_kind = Some(RuleShadowKind::Clamped);
+          prev.shadowed_by_step = Some(epilogue_step_num);
+          prev.shadowed_by_rule_id = Some(rule_id.to_string());
+          prev.shadowed_by_rule_name = Some(rule_name.to_string());
+          prev.shadowed_final_value = Some(after_fmt.clone());
+        }
         rule_changes.push(RuleBeforeAfterChange {
           rule_id: rule_id.to_string(),
           rule_name: rule_name.to_string(),
@@ -2566,6 +2689,354 @@ end
           }
         }
       }
+
+      // (d) Fan Max Speed >= Fan Min Speed:
+      // Ensure `fan_max_speed* >= fan_min_speed*` whenever a rule modified or constrained fan speeds.
+      for (min_key, max_key) in [
+        ("fan_min_speed", "fan_max_speed"),
+        ("fan_min_speed_BRASS", "fan_max_speed_BRASS"),
+        ("fan_min_speed_HS", "fan_max_speed_HS"),
+      ] {
+        let fan_touched = rule_sources.contains_key(min_key)
+          || rule_sources.contains_key(max_key)
+          || parameter_bounds.contains_key(min_key)
+          || parameter_bounds.contains_key(max_key);
+        if !fan_touched {
+          continue;
+        }
+        let Some(min_str) = cmap.get(min_key).map(&extract_scalar) else {
+          continue;
+        };
+        let Some(max_str) = cmap.get(max_key).map(&extract_scalar) else {
+          continue;
+        };
+        if let (Ok(fmin), Ok(fmax)) = (
+          min_str.trim().parse::<f64>(),
+          max_str.trim().parse::<f64>(),
+        ) {
+          if fmax < fmin - 1e-9 {
+            record_coupled_clamp(
+              cmap,
+              &mut rule_sources,
+              max_key,
+              &max_str,
+              fmin,
+              "coupled_constraint_fan_max_ge_min",
+              &format!(
+                "Clamped by Coupled Fan Max ≥ Fan Min Speed (≥ {}%)",
+                min_str.trim()
+              ),
+              format!(
+                "Enforced {} ≥ {} ({}%)",
+                max_key,
+                min_key,
+                min_str.trim()
+              ),
+            );
+          }
+        }
+      }
+
+      // (e) Structural Strength Fan Cut Ceiling (`_structural_fan_cut_pct` side-channel):
+      // When the Structural Strength pack is active on a per-spool filament evaluation,
+      // scales down `fan_max_speed*` by `(100 - cut_pct)%` and clamps `fan_min_speed* <= cut_max`
+      // as an explicit Priority-∞ Epilogue step so Provenance matches the exported filament JSON/3MF.
+      let structural_cut_pct = cmap
+        .get("_structural_fan_cut_pct")
+        .map(&extract_scalar)
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .unwrap_or(0)
+        .clamp(0, 60);
+      if structural_cut_pct > 0 {
+        if let Some(max_str) = cmap.get("fan_max_speed").map(&extract_scalar) {
+          if let Ok(cur_fmax) = max_str.trim().parse::<f64>() {
+            let cut_max = (cur_fmax * (100 - structural_cut_pct) as f64 / 100.0).round();
+            for max_key in ["fan_max_speed", "fan_max_speed_BRASS", "fan_max_speed_HS"] {
+              if let Some(m_str) = cmap.get(max_key).map(&extract_scalar) {
+                record_coupled_clamp(
+                  cmap,
+                  &mut rule_sources,
+                  max_key,
+                  &m_str,
+                  cut_max,
+                  "coupled_constraint_structural_fan_cut",
+                  &format!(
+                    "Clamped by Structural Strength Fan Cut (-{}% → {:.0}%)",
+                    structural_cut_pct, cut_max
+                  ),
+                  format!(
+                    "Scaled {} by (100 - {}%) for inter-layer chain diffusion strength",
+                    max_key, structural_cut_pct
+                  ),
+                );
+              }
+            }
+            for min_key in ["fan_min_speed", "fan_min_speed_BRASS", "fan_min_speed_HS"] {
+              if let Some(min_str) = cmap.get(min_key).map(&extract_scalar) {
+                if let Ok(cur_fmin) = min_str.trim().parse::<f64>() {
+                  if cur_fmin > cut_max + 1e-9 {
+                    record_coupled_clamp(
+                      cmap,
+                      &mut rule_sources,
+                      min_key,
+                      &min_str,
+                      cut_max,
+                      "coupled_constraint_structural_fan_cut",
+                      &format!(
+                        "Clamped by Structural Strength Fan Cut Ceiling (≤ {:.0}%)",
+                        cut_max
+                      ),
+                      format!(
+                        "Clamped {} ≤ fan_max_speed ({:.0}%) after -{}% structural fan cut",
+                        min_key, cut_max, structural_cut_pct
+                      ),
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // (f) Process Preset Speed Policy & VFA Epilogue Projection (when seeded via `seed_process_inputs`):
+      //     Ensures `evaluate_stack`'s resulting profile and provenance ledger chains match the
+      //     exact exported Process preset (`resolve_effective_orca_profile_values`).
+      if context.get("_process_seeded").and_then(|v| v.as_bool()) == Some(true) {
+        let is_optical_glass_mode = cmap
+          .get("sparse_infill_pattern")
+          .map(&extract_scalar)
+          .as_deref()
+          == Some("alignedrectilinear")
+          && cmap
+            .get("sparse_infill_density")
+            .map(&extract_scalar)
+            .as_deref()
+            == Some("100%");
+        let has_wet_filament_first_layer = cmap
+          .get("_wet_filament_init_bed_boost_c")
+          .map(&extract_scalar)
+          .and_then(|s| s.trim().parse::<i32>().ok())
+          .unwrap_or(0)
+          > 0;
+        let proc_lh = base_profile
+          .get_str("layer_height")
+          .and_then(|s| s.trim().parse::<f64>().ok())
+          .unwrap_or(0.20);
+        let proc_lw = base_profile
+          .get_str("line_width")
+          .and_then(|s| s.trim().parse::<f64>().ok())
+          .unwrap_or(0.42);
+
+        if !is_optical_glass_mode {
+          for key in [
+            "outer_wall_speed",
+            "inner_wall_speed",
+            "sparse_infill_speed",
+            "default_acceleration",
+          ] {
+            let Some(base_spd_str) = base_profile.get_str(key) else {
+              continue;
+            };
+            let Ok(raw_spd) = base_spd_str.trim().parse::<f64>() else {
+              continue;
+            };
+            let scale = user_rule_scales.get(key).copied().unwrap_or(1.0);
+            let mut scaled_spd = (raw_spd * scale).round().max(15.0);
+            let mut rule_id_tag = "process_preset_speed_policy";
+            let mut rule_name_tag = format!("Process Preset Speed Policy ({:.0})", scaled_spd);
+            let mut rule_log_tag = format!(
+              "Preserved process preset {} ({:.0} × {:.2} scale)",
+              key, raw_spd, scale
+            );
+            if key == "outer_wall_speed" {
+              if let Some(vfa_mode) = cmap
+                .get("_outer_wall_vfa_mode")
+                .map(&extract_scalar)
+                .filter(|s| !s.is_empty())
+              {
+                let sub_spd = cmap
+                  .get("_outer_wall_vfa_sub_speed")
+                  .map(&extract_scalar)
+                  .and_then(|s| s.trim().parse::<f64>().ok())
+                  .unwrap_or(55.0);
+                let clear_spd = cmap
+                  .get("_outer_wall_vfa_clear_speed")
+                  .map(&extract_scalar)
+                  .and_then(|s| s.trim().parse::<f64>().ok())
+                  .unwrap_or(145.0);
+                let eff_mvs = cmap
+                  .get("_outer_wall_vfa_effective_mvs")
+                  .map(&extract_scalar)
+                  .and_then(|s| s.trim().parse::<f64>().ok())
+                  .unwrap_or(18.0);
+                let is_silk = cmap.get("_outer_wall_vfa_is_silk").map(&extract_scalar).as_deref()
+                  == Some("1");
+                let lock_pref = cmap
+                  .get("_outer_wall_vfa_lock_pref")
+                  .map(&extract_scalar)
+                  .unwrap_or_else(|| "auto".to_string());
+                let ow_width = cmap
+                  .get("outer_wall_line_width")
+                  .map(&extract_scalar)
+                  .and_then(|s| s.trim().parse::<f64>().ok())
+                  .unwrap_or(proc_lw);
+                let cross_sec = (proc_lh * ow_width).max(0.01);
+                let mvs_ceiling = (eff_mvs / cross_sec).floor();
+                let actual_outer_spd = scaled_spd.min(mvs_ceiling);
+                let mut stepped_down = false;
+                if vfa_mode == "sub_resonance_gloss"
+                  || (is_silk && scaled_spd > sub_spd + 5.0)
+                  || (actual_outer_spd > sub_spd + 5.0 && actual_outer_spd < clear_spd)
+                {
+                  scaled_spd = (sub_spd * scale).round().max(15.0);
+                  stepped_down = true;
+                  rule_id_tag = "outer_wall_vfa_epilogue";
+                  rule_name_tag = format!(
+                    "Clamped by Outer-Wall VFA Guard ({} → {:.0} mm/s)",
+                    vfa_mode, scaled_spd
+                  );
+                  rule_log_tag = format!(
+                    "VFA sub-resonance guard stepped outer_wall_speed to {:.0} mm/s",
+                    scaled_spd
+                  );
+                }
+                if lock_pref == "auto" {
+                  let lock_ow = if vfa_mode == "spire_safe"
+                    || (!stepped_down
+                      && !is_silk
+                      && scaled_spd >= clear_spd
+                      && proc_lh <= 0.145)
+                  {
+                    0.0
+                  } else {
+                    1.0
+                  };
+                  if let Some(cur_lock_str) = cmap.get("dont_slow_down_outer_wall").map(&extract_scalar) {
+                    let target_lock_str = format!("{:.0}", lock_ow);
+                    if cur_lock_str != target_lock_str {
+                      record_coupled_clamp(
+                        cmap,
+                        &mut rule_sources,
+                        "dont_slow_down_outer_wall",
+                        &cur_lock_str,
+                        lock_ow,
+                        "outer_wall_vfa_epilogue",
+                        &format!("Outer-Wall VFA Auto-Lock ({})", target_lock_str),
+                        "Synchronized dont_slow_down_outer_wall with per-process VFA speed regime".to_string(),
+                      );
+                    }
+                  }
+                }
+              }
+            }
+            if let Some(cur_spd_str) = cmap.get(key).map(&extract_scalar) {
+              let target_spd_str = format!("{:.0}", scaled_spd);
+              if !values_are_equivalent(&cur_spd_str, &target_spd_str) {
+                record_coupled_clamp(
+                  cmap,
+                  &mut rule_sources,
+                  key,
+                  &cur_spd_str,
+                  scaled_spd,
+                  rule_id_tag,
+                  &rule_name_tag,
+                  rule_log_tag,
+                );
+              }
+            }
+          }
+
+          if !has_wet_filament_first_layer {
+            if let (Some(base_il_str), Some(cur_il_str)) = (
+              base_profile.get_str("initial_layer_speed"),
+              cmap.get("initial_layer_speed").map(&extract_scalar),
+            ) {
+              if let Ok(base_il_num) = base_il_str.trim().parse::<f64>() {
+                if !values_are_equivalent(&cur_il_str, &base_il_str) {
+                  record_coupled_clamp(
+                    cmap,
+                    &mut rule_sources,
+                    "initial_layer_speed",
+                    &cur_il_str,
+                    base_il_num,
+                    "process_preset_speed_policy",
+                    &format!("Clamped by Process Preset Initial-Layer Policy ({:.0} mm/s)", base_il_num),
+                    "Preserved process preset initial_layer_speed (unless Wet Filament first-layer recovery is active)".to_string(),
+                  );
+                }
+              }
+            }
+          }
+
+          for lw_key in ["line_width", "outer_wall_line_width"] {
+            if let (Some(base_lw_str), Some(cur_lw_str)) = (
+              base_profile.get_str(lw_key),
+              cmap.get(lw_key).map(&extract_scalar),
+            ) {
+              if base_lw_str != "0.42" && cur_lw_str == "0.42" {
+                if let Ok(base_lw_num) = base_lw_str.trim().parse::<f64>() {
+                  record_coupled_clamp(
+                    cmap,
+                    &mut rule_sources,
+                    lw_key,
+                    &cur_lw_str,
+                    base_lw_num,
+                    "process_preset_speed_policy",
+                    &format!("Clamped by Process Preset Line-Width Policy ({:.2} mm)", base_lw_num),
+                    format!("Preserved process preset {} ({:.2} mm)", lw_key, base_lw_num),
+                  );
+                }
+              }
+            }
+          }
+        }
+
+        if cmap.get("seam_slope_type").map(&extract_scalar).as_deref() == Some("contour") {
+          cmap.insert(
+            "seam_slope_type".to_string(),
+            serde_json::Value::String("external".to_string()),
+          );
+          let meta = catalog.get("seam_slope_type");
+          let label = meta
+            .map(|m| m.label.clone())
+            .unwrap_or_else(|| "seam slope type".to_string());
+          let rule_name = "Normalized to OrcaSlicer 'external' Seam Enum".to_string();
+          append_rule_source(&mut rule_sources, "seam_slope_type", epilogue_step_num, &rule_name);
+          if let Some(prev) = rule_changes
+            .iter_mut()
+            .rev()
+            .find(|c| c.param_key == "seam_slope_type")
+          {
+            if prev.shadow_kind.is_none() {
+              prev.shadow_kind = Some(RuleShadowKind::Clamped);
+              prev.shadowed_by_step = Some(epilogue_step_num);
+              prev.shadowed_by_rule_id = Some("orca_seam_enum_normalization".to_string());
+              prev.shadowed_by_rule_name = Some(rule_name.clone());
+              prev.shadowed_final_value = Some("external".to_string());
+            }
+          }
+          rule_changes.push(RuleBeforeAfterChange {
+            rule_id: "orca_seam_enum_normalization".to_string(),
+            rule_name,
+            rule_icon: "🛡️".to_string(),
+            rule_category: "Coupled Invariant (Priority ∞)".to_string(),
+            step_number: epilogue_step_num,
+            rule_priority: i32::MAX,
+            param_key: "seam_slope_type".to_string(),
+            param_label: label,
+            before_value: "contour".to_string(),
+            after_value: "external".to_string(),
+            delta_summary: "contour → external".to_string(),
+            rule_log: "Mapped Lua 'contour' scarf enum to OrcaSlicer C++ 'external'".to_string(),
+            shadow_kind: None,
+            shadowed_by_step: None,
+            shadowed_by_rule_id: None,
+            shadowed_by_rule_name: None,
+            shadowed_final_value: None,
+          });
+        }
+      }
     }
 
     let mut diff_items = Vec::new();
@@ -2593,7 +3064,10 @@ end
       }
 
       for (k, v) in final_map {
-        if k.starts_with('_') || k == "flush_volumes_matrix" {
+        if k.starts_with('_')
+          || k == "flush_volumes_matrix"
+          || k == "computed_safe_speed_ceiling"
+        {
           continue;
         }
         let base_val_str = base_profile.get_str(k).unwrap_or_default();
@@ -2709,6 +3183,61 @@ end
       skipped_rules,
       parameter_bounds,
       infeasible_constraints,
+    }
+  }
+
+  /// Merges the per-spool filament provenance ledger (`spool_eval` from
+  /// `threemf::evaluate_spool_filament_provenance`) into `process_eval`'s UI provenance views
+  /// (`provenance_items`, `diff_items`, `rule_changes`, `parameter_bounds`), replacing generic
+  /// stock-profile filament placeholders with the active spool's true $x_0 \to \dots \to x_{\text{shipped}}$
+  /// ledger so the Provenance UI matches the exported Filament `.json` and 3MF slot key-for-key.
+  pub fn merge_active_spool_provenance(
+    process_eval: &mut StackEvaluationResult,
+    spool_eval: &StackEvaluationResult,
+  ) {
+    let is_fil = |k: &str| crate::threemf::is_filament_scoped_key(k);
+    process_eval.diff_items.retain(|d| !is_fil(&d.key));
+    for d in &spool_eval.diff_items {
+      if is_fil(&d.key) {
+        process_eval.diff_items.push(d.clone());
+      }
+    }
+    process_eval.diff_items.sort_by(|a, b| {
+      b.is_modified
+        .cmp(&a.is_modified)
+        .then(a.category.cmp(&b.category))
+        .then(a.label.cmp(&b.label))
+    });
+
+    process_eval.provenance_items.retain(|p| !is_fil(&p.param_key));
+    for p in &spool_eval.provenance_items {
+      if is_fil(&p.param_key) {
+        process_eval.provenance_items.push(p.clone());
+      }
+    }
+    process_eval.provenance_items.sort_by(|a, b| {
+      b.is_modified
+        .cmp(&a.is_modified)
+        .then(a.category.cmp(&b.category))
+        .then(a.param_label.cmp(&b.param_label))
+    });
+
+    process_eval.rule_changes.retain(|rc| !is_fil(&rc.param_key));
+    for rc in &spool_eval.rule_changes {
+      if is_fil(&rc.param_key) {
+        process_eval.rule_changes.push(rc.clone());
+      }
+    }
+    process_eval.rule_changes.sort_by(|a, b| {
+      a.step_number
+        .cmp(&b.step_number)
+        .then(a.param_key.cmp(&b.param_key))
+    });
+
+    for (k, b) in &spool_eval.parameter_bounds {
+      if is_fil(k) {
+        process_eval.parameter_bounds.insert(k.clone(), b.clone());
+      }
     }
   }
 
@@ -7594,5 +8123,180 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       Some("223"),
       "Evaluating PWL regime knots against immutable `base` (x0) makes P10 + P25 temperature composition order-independent"
     );
+  }
+
+  #[test]
+  fn test_provenance_ledger_chain_clamped_step_and_three_way_export_parity() {
+    use crate::models::ProcessProfile;
+    use crate::threemf::{
+      build_machine_preset_json_with_overrides, build_process_preset_json,
+      build_project_settings_config_json, evaluate_spool_filament_provenance,
+      export_standalone_filament_json_with_overrides,
+      verify_provenance_matches_standalone_and_3mf_exports,
+    };
+
+    let mk_rule = |id: &str, name: &str, prio: i32, lua: &str| TransformationRule {
+      id: id.to_string(),
+      name: name.to_string(),
+      description: String::new(),
+      category: "Test".to_string(),
+      icon: "⚙️".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: lua.to_string(),
+      priority: prio,
+      scope: RuleScopeFilter::default(),
+    };
+
+    // 1. Verify exact user scenario:
+    //    x0 (0.80 mm) --[P12 (-0.10 mm)]--> x1 (0.70 mm) --[P25 (+0.05 mm)]--> x2 (0.75 mm)
+    //    --[Epilogue Clamp [0.40, 0.72]]--> x_shipped (0.72 mm)
+    let mut base = OrcaProfile::new("Ledger Clamp Test", "filament");
+    base
+      .values
+      .insert("filament_retraction_length".to_string(), json!(["0.80"]));
+    let r_p12 = mk_rule(
+      "rule_p12",
+      "P12 FlowTech Retraction Trim",
+      12,
+      r#"
+        config["filament_retraction_length"] = {"0.70"}
+        return config
+      "#,
+    );
+    let r_p25 = mk_rule(
+      "rule_p25",
+      "P25 Anti-Stringing Micro-Bump + Ceiling",
+      25,
+      r#"
+        config["filament_retraction_length"] = {"0.75"}
+        constrain("filament_retraction_length", 0.40, 0.72, "Direct-drive heatbreak ceiling")
+        return config
+      "#,
+    );
+    let eval = TransformationEngine::evaluate_stack(&base, &[r_p12, r_p25], &json!({}));
+    let ret_prov = eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "filament_retraction_length")
+      .expect("Expected filament_retraction_length provenance");
+    ret_prov
+      .verify_ledger_chain()
+      .expect("Ledger chain must be continuous from x0 to x_shipped");
+    assert_eq!(ret_prov.raw_final_scalar(), "0.72");
+    assert_eq!(ret_prov.steps.len(), 3, "Must record P12, P25, and Epilogue Clamp steps");
+    assert_eq!(ret_prov.steps[0].rule_id, "rule_p12");
+    assert_eq!(ret_prov.steps[0].before_value, "0.80 mm");
+    assert_eq!(ret_prov.steps[0].after_value, "0.70 mm");
+    assert_eq!(ret_prov.steps[1].rule_id, "rule_p25");
+    assert_eq!(ret_prov.steps[1].before_value, "0.70 mm");
+    assert_eq!(ret_prov.steps[1].after_value, "0.75 mm");
+    assert_eq!(
+      ret_prov.steps[1].shadow_kind,
+      Some(RuleShadowKind::Clamped),
+      "P25 step must be tagged as Clamped by the Epilogue Constraint Projection"
+    );
+    assert_eq!(
+      ret_prov.steps[1].shadowed_by_rule_id.as_deref(),
+      Some("constraint_projection")
+    );
+    assert_eq!(
+      ret_prov.steps[1].shadowed_final_value.as_deref(),
+      Some("0.72 mm")
+    );
+    assert_eq!(ret_prov.steps[2].rule_id, "constraint_projection");
+    assert_eq!(ret_prov.steps[2].before_value, "0.75 mm");
+    assert_eq!(ret_prov.steps[2].after_value, "0.72 mm");
+
+    // 2. Verify full 3-way parity (`x_provenance == x_JSON == x_3MF`) including an Ender-3 (260°C
+    //    hotend ceiling) with Hardened Steel nozzle (+5°C thermal boost) and a PA6-CF spool whose
+    //    260°C seed gets boosted to 265°C by P10 and then clamped back to 260°C by Phase 3 Epilogue!
+    let mut ender_rig = MachineRig::kobra_s1_hardened_steel_png();
+    ender_rig.printer_model = "Creality Ender-3".to_string();
+    ender_rig.kinematics = "Cartesian (Bed-Slinger)".to_string();
+    ender_rig.nozzle_type = "orca_hardened_steel".to_string();
+    ender_rig.nozzle_material = "Hardened Steel".to_string();
+    let catalog = crate::catalog::load_merged_catalog();
+    let pa_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PA-CF" || f.code == "PA6-CF")
+      .expect("PA-CF in catalog");
+    let pa_spool = FilamentSpool::from_catalog_entry(1, pa_entry, "orca_hardened_steel");
+    let spools = vec![pa_spool];
+    let procs = ProcessProfile::get_default_processes();
+    let active_proc = &procs[0];
+    let rules = TransformationEngine::get_default_rules();
+    let base_prof = OrcaProfile::get_stock_kobra_s1();
+    let eval_ctx = json!({
+      "printer_model": ender_rig.printer_model,
+      "nozzle_type": ender_rig.nozzle_type,
+      "nozzle_diameter": ender_rig.nozzle_diameter,
+      "nozzle_material": ender_rig.nozzle_material,
+      "hotend_max_temp_c": 260,
+      "filament_type": spools[0].material_type,
+      "addons": ender_rig.addons,
+      "climate_preset": ender_rig.climate_preset,
+    });
+    let (seeded_base, seeded_ctx) =
+      TransformationEngine::seed_process_inputs(&base_prof, &eval_ctx, active_proc);
+    let mut proc_eval = TransformationEngine::evaluate_stack(&seeded_base, &rules, &seeded_ctx);
+    let per_proc_overrides =
+      TransformationEngine::evaluate_stack_per_process(&base_prof, &rules, &eval_ctx, &procs);
+    let derived_overrides = per_proc_overrides
+      .get(&active_proc.id)
+      .cloned()
+      .unwrap_or_else(|| proc_eval.resulting_profile.values.clone());
+
+    let spool_eval = evaluate_spool_filament_provenance(
+      &spools[0],
+      &ender_rig,
+      Some(&derived_overrides),
+    );
+    // Verify PA6-CF on 260°C Ender-3 with Hardened Steel nozzle shows 260 -> 265 (Clamped) -> 260 in provenance!
+    let noz_prov = spool_eval
+      .provenance_items
+      .iter()
+      .find(|p| p.param_key == "nozzle_temperature")
+      .expect("nozzle_temperature must have provenance (260 -> 265 -> 260)");
+    noz_prov.verify_ledger_chain().unwrap();
+    assert_eq!(noz_prov.raw_final_scalar(), "260");
+    assert!(
+      noz_prov
+        .steps
+        .iter()
+        .any(|s| s.shadow_kind == Some(RuleShadowKind::Clamped)),
+      "Hardened steel +5°C step must be marked Clamped by the 260°C hotend ceiling: {:?}",
+      noz_prov.steps
+    );
+
+    // Also verify merge_active_spool_provenance populates the UI StackEvaluationResult with the active spool's ledger
+    TransformationEngine::merge_active_spool_provenance(&mut proc_eval, &spool_eval);
+    for prov in &proc_eval.provenance_items {
+      prov.verify_ledger_chain().unwrap();
+    }
+
+    let mach_str = build_machine_preset_json_with_overrides(&ender_rig, Some(&derived_overrides));
+    let proc_str = build_process_preset_json(active_proc, &ender_rig, &derived_overrides);
+    let fil_str = export_standalone_filament_json_with_overrides(&spools[0], &ender_rig, &derived_overrides);
+    let mut fil_map = std::collections::HashMap::new();
+    fil_map.insert(spools[0].format_concise_title(), fil_str);
+    let proj_cfg = build_project_settings_config_json(
+      &ender_rig,
+      active_proc,
+      &spools,
+      &proc_eval.flush_matrix,
+      &derived_overrides,
+    );
+    let slot_provs = vec![spool_eval.provenance_items];
+    verify_provenance_matches_standalone_and_3mf_exports(
+      &proc_eval.provenance_items,
+      &slot_provs,
+      &proj_cfg,
+      &mach_str,
+      &proc_str,
+      &fil_map,
+    )
+    .expect("3-way parity (x_provenance == x_JSON == x_3MF) must hold for all keys");
   }
 }

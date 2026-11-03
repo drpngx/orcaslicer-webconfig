@@ -456,8 +456,16 @@ pub fn App() -> Html {
   };
 
   // Evaluate Lua Stack
-  let eval_result: StackEvaluationResult =
+  let mut eval_result: StackEvaluationResult =
     TransformationEngine::evaluate_stack(&working_base, &rules, &eval_context);
+  if let Some(first_spool) = filaments.first() {
+    let spool_eval = crate::threemf::evaluate_spool_filament_provenance(
+      first_spool,
+      &active_rig,
+      Some(&eval_result.resulting_profile.values),
+    );
+    TransformationEngine::merge_active_spool_provenance(&mut eval_result, &spool_eval);
+  }
 
   // Evaluate Safety & Weird Value Warnings across imported files, conflicts, flushing matrix, and derived profile
   let safety_warnings: Vec<SafetyWarning> = TransformationEngine::evaluate_safety_warnings(

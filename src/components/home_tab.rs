@@ -1360,6 +1360,10 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                             format!("✔ Accepted by Step #{}: {} — value satisfied its guard and passed through unchanged (→ {})", by_step, by_name, by_val),
                                             "text-emerald-300 bg-emerald-950/40 border-emerald-500/50",
                                           ),
+                                          RuleShadowKind::Clamped => (
+                                            format!("🛡️ Clamped by Step #{}: {} (→ {}) — projected onto hard domain bound", by_step, by_name, by_val),
+                                            "text-tertiary bg-tertiary/10 border-tertiary/50",
+                                          ),
                                         };
                                         html! {
                                           <div class={format!("text-[10px] font-bold px-2 py-1 rounded border mt-0.5 break-words {}", cls)}>

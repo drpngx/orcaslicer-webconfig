@@ -567,6 +567,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
               orcaslicer_webconfig::transformations::RuleShadowKind::Overwritten => "OVERWRITTEN",
               orcaslicer_webconfig::transformations::RuleShadowKind::Recomputed => "recomputed",
               orcaslicer_webconfig::transformations::RuleShadowKind::Accepted => "accepted",
+              orcaslicer_webconfig::transformations::RuleShadowKind::Clamped => "clamped",
             },
             step.param_key.clone(),
             step.rule_id.clone(),
@@ -648,6 +649,48 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       &flush_matrix,
       &derived_overrides,
     );
+    let slot_filament_prov: Vec<Vec<orcaslicer_webconfig::transformations::ParameterProvenance>> =
+      spools
+        .iter()
+        .map(|sp| {
+          orcaslicer_webconfig::threemf::evaluate_spool_filament_provenance(
+            sp,
+            &rig,
+            Some(&derived_overrides),
+          )
+          .provenance_items
+        })
+        .collect();
+    let mach_json =
+      orcaslicer_webconfig::threemf::build_machine_preset_json_with_overrides(&rig, Some(&derived_overrides));
+    let proc_json =
+      orcaslicer_webconfig::threemf::build_process_preset_json(active_proc, &rig, &derived_overrides);
+    let mut fil_map = std::collections::HashMap::new();
+    for sp in &spools {
+      fil_map.insert(
+        sp.format_concise_title(),
+        orcaslicer_webconfig::threemf::export_standalone_filament_json_with_overrides(
+          sp,
+          &rig,
+          &derived_overrides,
+        ),
+      );
+    }
+    if let Err(errs) =
+      orcaslicer_webconfig::threemf::verify_provenance_matches_standalone_and_3mf_exports(
+        &stack_eval.provenance_items,
+        &slot_filament_prov,
+        &proj_cfg,
+        &mach_json,
+        &proc_json,
+        &fil_map,
+      )
+    {
+      panic!(
+        "[config_{:03}] Provenance ledger chain / 3-way export parity failed: {:?}",
+        cfg_idx, errs
+      );
+    }
     fs::write(cfg_dir.join("project_settings.config"), proj_cfg)
       .expect("Failed to write project_settings.config");
     let threemf_bytes = build_3mf_project_container(
@@ -1720,12 +1763,17 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     .iter()
     .filter(|(k, ..)| *k == "accepted")
     .count();
+  let clamped_total = shadow_census
+    .iter()
+    .filter(|(k, ..)| *k == "clamped")
+    .count();
   println!("------------------------------------------------------------------");
   println!(
-    "Overwrite census: {} intent-lost OVERWRITTEN + {} recomputed + {} accepted (guard pass-through) step(s) across {} configs",
+    "Overwrite census: {} intent-lost OVERWRITTEN + {} recomputed + {} accepted + {} clamped step(s) across {} configs",
     overwritten_total,
     recomputed_total,
     accepted_total,
+    clamped_total,
     config_dirs.len()
   );
   let mut census_rows: Vec<(&(String, String, String, String), &usize)> =
@@ -1734,6 +1782,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
   for ((kind, param, clobbered, clobberer), count) in census_rows.iter().take(40) {
     let verb = match kind.as_str() {
       "accepted" => "accepted by",
+      "clamped" => "clamped by",
       _ => "clobbered by",
     };
     println!(
