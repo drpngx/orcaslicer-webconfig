@@ -77,8 +77,9 @@ function apply(config, ctx, p)
   local cur_ef = tonumber(config["elefant_foot_compensation"]) or 0.05
   config["elefant_foot_compensation"] = string.format("%.2f", cur_ef + ef_boost)
   config["elefant_foot_compensation_layers"] = "1"
-  local cur_b = tonumber(config["textured_pei_plate_temp"]) or 65
-  config["textured_pei_plate_temp"] = tostring(cur_b + b_trim)
+  local cur_b = tonumber(config["textured_plate_temp"]) or tonumber(config["hot_plate_temp"]) or 65
+  config["textured_plate_temp"] = tostring(cur_b + b_trim)
+  config["hot_plate_temp"] = tostring(cur_b + b_trim)
   local d = describe(p or {}, ctx)
   print("[Symptom:ElephantsFoot] " .. (d.badge or ""))
 end

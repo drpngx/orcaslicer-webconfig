@@ -348,6 +348,27 @@ impl OrcaProfile {
         values.insert(k.clone(), v.clone());
       }
     }
+    for (fil_key, mach_key, default_val) in [
+      ("filament_retraction_length", "retraction_length", "0.8"),
+      ("filament_retraction_speed", "retraction_speed", "40"),
+      ("filament_deretraction_speed", "deretraction_speed", "0"),
+      ("filament_retract_before_wipe", "retract_before_wipe", "100%"),
+      ("filament_wipe", "wipe", "1"),
+      ("filament_wipe_distance", "wipe_distance", "2"),
+      ("filament_z_hop", "z_hop", "0.15"),
+      ("filament_z_hop_types", "z_hop_types", "Normal Lift"),
+      ("filament_retraction_minimum_travel", "retraction_minimum_travel", "1.5"),
+      ("filament_retract_lift_enforce", "retract_lift_enforce", "All Surfaces"),
+    ] {
+      if !values.contains_key(fil_key) {
+        let fallback = cat
+          .default_machine_base
+          .get(mach_key)
+          .cloned()
+          .unwrap_or_else(|| serde_json::json!([default_val]));
+        values.insert(fil_key.to_string(), fallback);
+      }
+    }
     values.insert(
       "name".to_string(),
       serde_json::Value::String("Anycubic Kobra S1 0.4 nozzle".to_string()),
@@ -756,6 +777,48 @@ impl OrcaProfile {
         category: "Travel".to_string(),
         unit: "flag".to_string(),
         description: "Detour travel moves around perimeters to prevent nozzle knock".to_string(),
+      },
+      ParameterMeta {
+        key: "filament_z_hop".to_string(),
+        label: "Z-Hop Height".to_string(),
+        category: "Travel".to_string(),
+        unit: "mm".to_string(),
+        description: "Canonical per-filament vertical lift on retract to clear printed contours".to_string(),
+      },
+      ParameterMeta {
+        key: "filament_z_hop_types".to_string(),
+        label: "Z-Hop Strategy".to_string(),
+        category: "Travel".to_string(),
+        unit: "".to_string(),
+        description: "Canonical per-filament Normal, Spiral, or Slope Z-hop trajectory".to_string(),
+      },
+      ParameterMeta {
+        key: "filament_retract_lift_enforce".to_string(),
+        label: "Z-Hop Enforce Surface".to_string(),
+        category: "Travel".to_string(),
+        unit: "".to_string(),
+        description: "Canonical per-filament Z-hop surface enforcement mode".to_string(),
+      },
+      ParameterMeta {
+        key: "filament_retraction_minimum_travel".to_string(),
+        label: "Minimum Travel After Retract".to_string(),
+        category: "Extrusion".to_string(),
+        unit: "mm".to_string(),
+        description: "Canonical per-filament minimum travel distance required to trigger retraction".to_string(),
+      },
+      ParameterMeta {
+        key: "filament_wipe".to_string(),
+        label: "Wipe While Retracting".to_string(),
+        category: "Extrusion".to_string(),
+        unit: "flag".to_string(),
+        description: "Canonical per-filament nozzle wipe flag during retraction".to_string(),
+      },
+      ParameterMeta {
+        key: "retraction_distances_when_cut".to_string(),
+        label: "Cut Retraction Distance".to_string(),
+        category: "Multi-Material".to_string(),
+        unit: "mm".to_string(),
+        description: "Pre-cut pullback distance in ACE Pro / AMS toolhead".to_string(),
       },
       ParameterMeta {
         key: "z_hop".to_string(),
@@ -1580,7 +1643,7 @@ impl OrcaProfile {
       },
       // --- Section: Travel & Z-Hop ---
       WizardSettingDef {
-        key: "z_hop".to_string(),
+        key: "filament_z_hop".to_string(),
         label: "Z-Hop Height".to_string(),
         section: "Travel & Z-Hop".to_string(),
         unit: "mm".to_string(),
@@ -1595,7 +1658,7 @@ impl OrcaProfile {
         },
       },
       WizardSettingDef {
-        key: "z_hop_types".to_string(),
+        key: "filament_z_hop_types".to_string(),
         label: "Z-Hop Strategy".to_string(),
         section: "Travel & Z-Hop".to_string(),
         unit: "".to_string(),

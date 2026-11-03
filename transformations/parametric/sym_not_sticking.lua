@@ -117,8 +117,9 @@ function apply(config, ctx, p)
   config["initial_layer_infill_speed"] = tostring(math.max(15, math.floor(cur_is * s_scale + 0.5)))
   local cur_nt = tonumber(config["nozzle_temperature_initial_layer"]) or 230
   config["nozzle_temperature_initial_layer"] = tostring(cur_nt + fl_t)
-  local cur_bt = tonumber(config["textured_pei_plate_temp_initial_layer"]) or 65
-  config["textured_pei_plate_temp_initial_layer"] = tostring(cur_bt + fl_t)
+  local cur_bt = tonumber(config["textured_plate_temp_initial_layer"]) or tonumber(config["hot_plate_temp_initial_layer"]) or 65
+  config["textured_plate_temp_initial_layer"] = tostring(cur_bt + fl_t)
+  config["hot_plate_temp_initial_layer"] = tostring(cur_bt + fl_t)
   local cur_fo = tonumber(config["close_fan_the_first_x_layers"]) or 1
   config["close_fan_the_first_x_layers"] = tostring(math.max(2, cur_fo + 2))
   local d = describe(p or {}, ctx)

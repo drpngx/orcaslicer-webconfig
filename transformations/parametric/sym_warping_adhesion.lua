@@ -126,9 +126,11 @@ function apply(config, ctx, p)
   local extra_fan_off = math.floor(tonumber(p and p.fan_off_layers) or 2)
   local brim = (p and p.brim_type) or "outer_only"
 
-  local cur_b = tonumber(config["textured_pei_plate_temp"]) or 65
-  config["textured_pei_plate_temp"] = tostring(cur_b + bed_boost)
-  config["textured_pei_plate_temp_initial_layer"] = tostring(cur_b + bed_boost)
+  local cur_b = tonumber(config["textured_plate_temp"]) or tonumber(config["hot_plate_temp"]) or 65
+  config["textured_plate_temp"] = tostring(cur_b + bed_boost)
+  config["textured_plate_temp_initial_layer"] = tostring(cur_b + bed_boost)
+  config["hot_plate_temp"] = tostring(cur_b + bed_boost)
+  config["hot_plate_temp_initial_layer"] = tostring(cur_b + bed_boost)
   local cur_fl_s = tonumber(config["initial_layer_speed"]) or 50
   config["initial_layer_speed"] = tostring(math.max(15, math.floor(cur_fl_s * spd_scale + 0.5)))
   local cur_fl_is = tonumber(config["initial_layer_infill_speed"]) or cur_fl_s

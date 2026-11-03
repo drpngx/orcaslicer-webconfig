@@ -551,19 +551,15 @@ function apply(config, ctx, p)
   set_orca_val(config, "filament_retraction_speed", tostring(next_ret_spd))
 
   -- 4. Z-Hop & Humid Stringing Mitigation (Spiral/Slope Lift, Wipe While Retracting, Avoid Crossing Walls)
-  -- Written to both machine/process keys AND per-filament Setting Overrides (`filament_*`) so a single
-  -- Process profile works across PLA/PETG (Spiral Lift), ABS/ASA/PA (Slope Lift), and TPU (0.00mm Z-Hop)!
+  -- Written to canonical per-filament Setting Overrides (`filament_*`) so OrcaSlicer's non-nil-wins
+  -- hierarchy works across PLA/PETG (Spiral Lift), ABS/ASA/PA (Slope Lift), and TPU (0.00mm Z-Hop)!
   if d.zhop_mm >= 0.0 then
     local zhop_str = string.format("%.2f", d.zhop_mm)
-    set_orca_val(config, "z_hop", zhop_str)
     set_orca_val(config, "filament_z_hop", zhop_str)
-    set_orca_val(config, "z_hop_types", d.zhop_type)
     set_orca_val(config, "filament_z_hop_types", d.zhop_type)
-    set_orca_val(config, "retract_lift_enforce", d.zhop_enforce)
     set_orca_val(config, "filament_retract_lift_enforce", d.zhop_enforce)
   end
   if d.wipe then
-    set_orca_val(config, "wipe", "1")
     set_orca_val(config, "filament_wipe", "1")
     set_orca_val(config, "filament_retract_before_wipe", fam == "PETG" and "0%" or "70%")
     set_orca_val(config, "filament_wipe_distance", d.wipe_dist)

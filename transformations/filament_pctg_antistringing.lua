@@ -87,8 +87,6 @@ function apply(config, ctx, p)
   config["filament_retract_before_wipe"] = { "40%" }
   config["filament_wipe"] = { "1" }
   config["filament_wipe_distance"] = { "2.0" }
-  config["z_hop"] = { "0.1" }
-  config["z_hop_types"] = { z_type }
   config["filament_z_hop"] = { "0.1" }
   config["filament_z_hop_types"] = { z_type }
   config["travel_acceleration"] = "10000"

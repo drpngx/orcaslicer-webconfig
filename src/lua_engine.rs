@@ -1248,6 +1248,7 @@ pub struct Interpreter {
   pub call_depth: usize,
   pub expr_depth: usize,
   pub modified_keys: Vec<(String, String, String)>, // (param, old_val, new_val)
+  pub config_table: Option<Rc<RefCell<HashMap<String, LuaVal>>>>,
 }
 
 impl Interpreter {
@@ -1258,6 +1259,38 @@ impl Interpreter {
       call_depth: 0,
       expr_depth: 0,
       modified_keys: Vec::new(),
+      config_table: None,
+    }
+  }
+
+  fn resolve_config_modification_key(
+    &self,
+    target_tbl: &Rc<RefCell<HashMap<String, LuaVal>>>,
+    key: &str,
+  ) -> Option<String> {
+    if key == "_bounds" {
+      return None;
+    }
+    match &self.config_table {
+      Some(cfg_rc) => {
+        if Rc::ptr_eq(target_tbl, cfg_rc) {
+          Some(key.to_string())
+        } else {
+          let cb = cfg_rc.borrow();
+          for (parent_k, parent_v) in cb.iter() {
+            if parent_k == "_bounds" || parent_k == "_coupled_state" {
+              continue;
+            }
+            if let LuaVal::Table(sub_rc) = parent_v {
+              if Rc::ptr_eq(target_tbl, sub_rc) {
+                return Some(parent_k.clone());
+              }
+            }
+          }
+          None
+        }
+      }
+      None => Some(key.to_string()),
     }
   }
 
@@ -1488,9 +1521,11 @@ impl Interpreter {
             .unwrap_or_else(|| "nil".to_string());
           t.borrow_mut().insert(field.clone(), val.clone());
           if !is_bounds_target {
-            self
-              .modified_keys
-              .push((field.clone(), old_val, val.to_lua_string()));
+            if let Some(cfg_key) = self.resolve_config_modification_key(&t, field) {
+              self
+                .modified_keys
+                .push((cfg_key, old_val, val.to_lua_string()));
+            }
           }
           Ok(())
         } else {
@@ -1527,9 +1562,11 @@ impl Interpreter {
             .unwrap_or_else(|| "nil".to_string());
           t.borrow_mut().insert(key_str.clone(), val.clone());
           if !is_bounds_target && key_str != "_bounds" {
-            self
-              .modified_keys
-              .push((key_str, old_val, val.to_lua_string()));
+            if let Some(cfg_key) = self.resolve_config_modification_key(&t, &key_str) {
+              self
+                .modified_keys
+                .push((cfg_key, old_val, val.to_lua_string()));
+            }
           }
           Ok(())
         } else {
@@ -3648,6 +3685,9 @@ pub fn execute_transformation_lua_with_params(
 
   let lua_config = LuaVal::from_json(config);
   let lua_context = LuaVal::from_json(context);
+  if let LuaVal::Table(ref cfg_tbl) = lua_config {
+    interpreter.config_table = Some(cfg_tbl.clone());
+  }
 
   // Link `bounds` global to `config["_bounds"]` (normalizing unbounded nil endpoints back to ±math.huge).
   if let LuaVal::Table(cfg_tbl) = &lua_config {

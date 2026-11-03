@@ -251,13 +251,171 @@ pub const FILAMENT_SETTING_KEYS: &[&str] = &[
   "textured_plate_temp_initial_layer",
 ];
 
+/// Optional OrcaSlicer Filament-scoped keys that are seeded with base values before running the
+/// Lua stack and exported into both `filament/*.json` and `project_settings.config` whenever a
+/// Lua rule touches them.
+pub const OPTIONAL_FILAMENT_SETTING_KEYS: &[&str] = &[
+  "adaptive_pressure_advance",
+  "additional_cooling_fan_speed",
+  "chamber_fan_speed",
+  "chamber_temperature",
+  "close_fan_the_first_x_layers",
+  "complete_print_exhaust_fan_speed",
+  "during_print_exhaust_fan_speed",
+  "enable_overhang_bridge_fan",
+  "enable_pressure_advance",
+  "fan_cooling_layer_time",
+  "filament_retract_lift_above",
+  "filament_retract_lift_below",
+  "filament_retract_lift_enforce",
+  "filament_retract_when_changing_layer",
+  "filament_retraction_minimum_travel",
+  "overhang_fan_speed",
+  "overhang_fan_threshold",
+  "reduce_fan_stop_start_freq",
+  "slow_down_for_layer_cooling",
+  "slow_down_layer_time",
+  "slow_down_min_speed",
+  "temperature_vitrification",
+];
+
+/// Canonical Machine-scoped keys in OrcaSlicer's schema (`machine/*.json` and
+/// `different_settings_to_system[N+1]`).
+pub const MACHINE_SCHEMA_KEYS: &[&str] = &[
+  "before_layer_change_gcode",
+  "change_filament_gcode",
+  "layer_change_gcode",
+  "machine_end_gcode",
+  "machine_pause_gcode",
+  "machine_start_gcode",
+  "nozzle_diameter",
+  "nozzle_hrc",
+  "nozzle_type",
+  "printable_area",
+  "printable_height",
+  "printer_notes",
+  "retract_restart_extra",
+  "retraction_distances_when_cut",
+  "time_lapse_gcode",
+];
+
+/// Canonical Shadow-Aware Routing for Dual-Scope Keys:
+/// In OrcaSlicer / AnycubicSlicerNext ($\text{Machine} \prec \text{Filament} \prec \text{Process}$),
+/// dual-scope extruder/retraction keys use "non-nil wins" precedence where the Filament preset's
+/// `filament_*` key completely shadows the Machine/Process key unless `filament_* == "nil"`.
+/// All Lua rules must target the canonical `filament_*` key (or `textured_plate_temp*` for
+/// Textured PEI bed keys). Returns `Some(canonical_key)` when `key` is a shadowed dual-scope alias.
+pub fn canonicalize_dual_scope_key(key: &str) -> Option<&'static str> {
+  match key {
+    "z_hop" => Some("filament_z_hop"),
+    "z_hop_types" => Some("filament_z_hop_types"),
+    "retract_lift_enforce" => Some("filament_retract_lift_enforce"),
+    "retract_lift_above" => Some("filament_retract_lift_above"),
+    "retract_lift_below" => Some("filament_retract_lift_below"),
+    "retraction_length" => Some("filament_retraction_length"),
+    "retraction_speed" => Some("filament_retraction_speed"),
+    "deretraction_speed" => Some("filament_deretraction_speed"),
+    "retract_before_wipe" => Some("filament_retract_before_wipe"),
+    "wipe" => Some("filament_wipe"),
+    "wipe_distance" => Some("filament_wipe_distance"),
+    "retraction_minimum_travel" => Some("filament_retraction_minimum_travel"),
+    "retract_when_changing_layer" => Some("filament_retract_when_changing_layer"),
+    "max_volumetric_speed" => Some("filament_max_volumetric_speed"),
+    "textured_pei_plate_temp" => Some("textured_plate_temp"),
+    "textured_pei_plate_temp_initial_layer" => Some("textured_plate_temp_initial_layer"),
+    _ => None,
+  }
+}
+
+/// Exhaustive Key Routing Registry destination for every valid parameter in the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyDestination {
+  /// Exported to standalone `machine/*.json` and the Machine slot of `project_settings.config`
+  Machine,
+  /// Exported to standalone `process/*.json` and `different_settings_to_system[0]` of `project_settings.config`
+  Process,
+  /// Exported to standalone `filament/*.json` and per-slot vectors (`different_settings_to_system[1..=N]`) of `project_settings.config`
+  Filament,
+  /// Exported to project-level multi-material purge settings in `project_settings.config`
+  ProjectFlush,
+  /// Internal engine / cross-rule metadata (`_`-prefixed keys and `computed_safe_speed_ceiling`)
+  InternalMeta,
+}
+
+/// Classifies any parameter key into its exact exported artifact destination (`KeyDestination`).
+/// Returns `None` if `key` is an unrouted phantom key or an un-canonicalized shadowed dual-scope key.
+pub fn classify_key_destination(key: &str) -> Option<KeyDestination> {
+  if key.starts_with('_') || key == "computed_safe_speed_ceiling" {
+    return Some(KeyDestination::InternalMeta);
+  }
+  if matches!(
+    key,
+    "flush_multiplier" | "flush_volumes_matrix" | "flush_volumes_vector"
+  ) {
+    return Some(KeyDestination::ProjectFlush);
+  }
+  // Reject non-canonical shadowed dual-scope keys so rules cannot ambiguously write keys that
+  // would be shadowed by `filament_*` at slice time.
+  if canonicalize_dual_scope_key(key).is_some() {
+    return None;
+  }
+  if FILAMENT_SETTING_KEYS.contains(&key) || OPTIONAL_FILAMENT_SETTING_KEYS.contains(&key) {
+    return Some(KeyDestination::Filament);
+  }
+  if MACHINE_SCHEMA_KEYS.contains(&key) {
+    return Some(KeyDestination::Machine);
+  }
+  if EXTRA_PROCESS_OVERRIDE_KEYS.contains(&key)
+    || matches!(
+      key,
+      "layer_height"
+        | "line_width"
+        | "outer_wall_line_width"
+        | "outer_wall_speed"
+        | "inner_wall_speed"
+        | "sparse_infill_speed"
+        | "internal_solid_infill_speed"
+        | "top_surface_speed"
+        | "gap_infill_speed"
+        | "support_speed"
+        | "initial_layer_speed"
+        | "initial_layer_infill_speed"
+        | "default_acceleration"
+        | "print_sequence"
+    )
+  {
+    return Some(KeyDestination::Process);
+  }
+  let cat = crate::catalog::load_merged_catalog();
+  if cat.default_process_base.contains_key(key)
+    && !is_filament_scoped_key(key)
+    && !is_machine_scoped_key(key)
+    && !matches!(
+      key,
+      "type"
+        | "from"
+        | "is_custom_defined"
+        | "inherits"
+        | "compatible_printers"
+        | "name"
+        | "print_settings_id"
+        | "notes"
+        | "version"
+        | "filename_format"
+    )
+  {
+    return Some(KeyDestination::Process);
+  }
+  None
+}
+
 /// Returns `true` if `key` belongs to OrcaSlicer's **Filament** scope (per-extruder / per-slot
 /// vector in `project_settings.config` and standalone `filament/*.json` presets).
 /// Filament-scoped keys must NEVER be emitted into Process (`process/*.json`,
 /// `different_settings_to_system[0]`) or Machine (`machine/*.json`,
 /// `different_settings_to_system[N+1]`) presets.
 pub fn is_filament_scoped_key(key: &str) -> bool {
-  if FILAMENT_SETTING_KEYS.contains(&key) {
+  if FILAMENT_SETTING_KEYS.contains(&key) || OPTIONAL_FILAMENT_SETTING_KEYS.contains(&key) {
     return true;
   }
   key.starts_with("filament_")
@@ -284,6 +442,7 @@ pub fn is_filament_scoped_key(key: &str) -> bool {
         | "fan_cooling_layer_time"
         | "pressure_advance"
         | "enable_pressure_advance"
+        | "adaptive_pressure_advance"
         | "temperature_vitrification"
         | "required_nozzle_HRC"
         | "default_filament_colour"
@@ -378,8 +537,11 @@ pub struct LuaFilamentOverrides {
 fn evaluate_spool_lua_filament_overrides(
   spool: &FilamentSpool,
   rig: &MachineRig,
+  base_map: &serde_json::Map<String, serde_json::Value>,
   seed_temp: i32,
   seed_init: i32,
+  seed_bed: i32,
+  seed_init_bed: i32,
   seed_ret_len: &str,
   seed_ret_speed: &str,
   seed_flow: f32,
@@ -392,7 +554,10 @@ fn evaluate_spool_lua_filament_overrides(
   structural_fan_cut_pct: i32,
   pre_temp_delta_c: i32,
 ) -> LuaFilamentOverrides {
-  let mut seed_map = serde_json::Map::new();
+  // Seed from the spool's full resolved filament base map (`default_filament_bases` +
+  // `raw_disk_json` + canonical dual-scope `filament_*` fallbacks) so every filament-scoped
+  // parameter has its base value populated before the Lua transformation stack executes.
+  let mut seed_map = base_map.clone();
   let seed_pa_str = format!("{:.3}", seed_pa);
   let seed_mvs_str = format!("{:.1}", seed_mvs);
   let seed_fan_min_str = seed_fan_min.to_string();
@@ -400,8 +565,22 @@ fn evaluate_spool_lua_filament_overrides(
   for (key, val) in [
     ("nozzle_temperature", seed_temp.to_string()),
     ("nozzle_temperature_initial_layer", seed_init.to_string()),
+    ("nozzle_temperature_BRASS", seed_temp.to_string()),
+    ("nozzle_temperature_initial_layer_BRASS", seed_init.to_string()),
     ("nozzle_temperature_HS", seed_temp.to_string()),
     ("nozzle_temperature_initial_layer_HS", seed_init.to_string()),
+    ("hot_plate_temp", seed_bed.to_string()),
+    ("hot_plate_temp_initial_layer", seed_init_bed.to_string()),
+    ("textured_plate_temp", seed_bed.to_string()),
+    ("textured_plate_temp_initial_layer", seed_init_bed.to_string()),
+    ("cool_plate_temp", seed_bed.to_string()),
+    ("cool_plate_temp_initial_layer", seed_init_bed.to_string()),
+    ("eng_plate_temp", seed_bed.to_string()),
+    ("eng_plate_temp_initial_layer", seed_init_bed.to_string()),
+    ("textured_cool_plate_temp", seed_bed.to_string()),
+    ("textured_cool_plate_temp_initial_layer", seed_init_bed.to_string()),
+    ("supertack_plate_temp", seed_bed.to_string()),
+    ("supertack_plate_temp_initial_layer", seed_init_bed.to_string()),
     ("filament_flow_ratio", format!("{:.2}", seed_flow)),
     ("filament_retraction_length", seed_ret_len.to_string()),
     ("filament_retraction_speed", seed_ret_speed.to_string()),
@@ -410,7 +589,11 @@ fn evaluate_spool_lua_filament_overrides(
     ("pressure_advance", seed_pa_str.clone()),
     ("filament_max_volumetric_speed", seed_mvs_str.clone()),
     ("fan_min_speed", seed_fan_min_str.clone()),
+    ("fan_min_speed_BRASS", seed_fan_min_str.clone()),
+    ("fan_min_speed_HS", seed_fan_min_str.clone()),
     ("fan_max_speed", seed_fan_max_str.clone()),
+    ("fan_max_speed_BRASS", seed_fan_max_str.clone()),
+    ("fan_max_speed_HS", seed_fan_max_str.clone()),
   ] {
     seed_map.insert(key.to_string(), serde_json::json!([val]));
   }
@@ -762,6 +945,71 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   let mut ret_len_str = ret_len_str;
   let mut flow_ratio_str_override: Option<String> = None;
 
+  // Ensure all canonical dual-scope `filament_*` keys and optional filament keys have their
+  // base values populated in `base_map` before running the per-spool Lua stack.
+  for (fil_key, mach_key, default_val) in [
+    ("filament_retraction_length", "retraction_length", ret_len_str.as_str()),
+    ("filament_retraction_speed", "retraction_speed", ret_spd_str.as_str()),
+    ("filament_deretraction_speed", "deretraction_speed", "0"),
+    (
+      "filament_retract_before_wipe",
+      "retract_before_wipe",
+      retract_before_wipe_str.as_str(),
+    ),
+    ("filament_wipe", "wipe", "1"),
+    ("filament_wipe_distance", "wipe_distance", "2"),
+    ("filament_z_hop", "z_hop", z_hop_str.as_str()),
+    ("filament_z_hop_types", "z_hop_types", z_hop_type_str.as_str()),
+    (
+      "filament_retraction_minimum_travel",
+      "retraction_minimum_travel",
+      "1.5",
+    ),
+    (
+      "filament_retract_lift_enforce",
+      "retract_lift_enforce",
+      "All Surfaces",
+    ),
+    ("filament_retract_lift_above", "retract_lift_above", "0"),
+    ("filament_retract_lift_below", "retract_lift_below", "0"),
+    (
+      "filament_retract_when_changing_layer",
+      "retract_when_changing_layer",
+      "1",
+    ),
+  ] {
+    if !base_map.contains_key(fil_key) {
+      let fallback = cat
+        .default_machine_base
+        .get(mach_key)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([default_val]));
+      base_map.insert(fil_key.to_string(), fallback);
+    }
+  }
+  for (opt_key, opt_default) in [
+    ("overhang_fan_speed", "100"),
+    ("overhang_fan_threshold", "25%"),
+    ("enable_overhang_bridge_fan", "1"),
+    ("close_fan_the_first_x_layers", "1"),
+    ("slow_down_for_layer_cooling", "1"),
+    ("slow_down_layer_time", "8"),
+    ("slow_down_min_speed", "20"),
+    ("additional_cooling_fan_speed", "0"),
+    ("during_print_exhaust_fan_speed", "60"),
+    ("complete_print_exhaust_fan_speed", "80"),
+    ("chamber_fan_speed", "0"),
+    ("chamber_temperature", "0"),
+    ("reduce_fan_stop_start_freq", "1"),
+    ("fan_cooling_layer_time", "30"),
+    ("adaptive_pressure_advance", "0"),
+    ("enable_pressure_advance", "1"),
+  ] {
+    if !base_map.contains_key(opt_key) {
+      base_map.insert(opt_key.to_string(), serde_json::json!([opt_default]));
+    }
+  }
+
   // ===== Step-1 pipeline unification (doc/pwl-nozzle-compensation-math.md §8) =====
   // The nozzle-material / hotend / anti-stringing Lua rules now OWN these filament keys in the
   // exported presets. Seed = the spool's brass baseline (x0) composed with every pipeline-A
@@ -798,8 +1046,11 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
       let overrides = evaluate_spool_lua_filament_overrides(
         spool,
         rig,
+        &base_map,
         seed_temp,
         seed_init,
+        effective_bed,
+        initial_bed,
         &ret_len_str,
         &ret_spd_str,
         effective_flow_ratio,
@@ -1077,6 +1328,32 @@ pub fn resolve_spool_orca_filament_map_with_rig_and_overrides(
   if !base_map.contains_key("filament_diameter") {
     base_map.insert("filament_diameter".to_string(), serde_json::json!(["1.75"]));
   }
+  if let Some(ov) = derived_overrides {
+    let lua_touched_set: Option<std::collections::HashSet<&str>> = ov
+      .get("_lua_touched_keys")
+      .and_then(|v| v.as_str())
+      .map(|s| s.split(';').filter(|k| !k.is_empty()).collect());
+    if let Some(ref touched) = lua_touched_set {
+      for &opt_key in OPTIONAL_FILAMENT_SETTING_KEYS {
+        if touched.contains(opt_key) {
+          if let Some(s) = first_str_from_map(ov, opt_key) {
+            base_map.insert(opt_key.to_string(), serde_json::json!([s]));
+          }
+        }
+      }
+      for k in [
+        "filament_deretraction_speed",
+        "filament_wipe",
+        "filament_wipe_distance",
+      ] {
+        if touched.contains(k) {
+          if let Some(s) = first_str_from_map(ov, k) {
+            base_map.insert(k.to_string(), serde_json::json!([s]));
+          }
+        }
+      }
+    }
+  }
   let mut notes = spool.generate_descriptive_notes_with_effective_values_and_pa(
     effective_temp,
     effective_bed,
@@ -1132,6 +1409,19 @@ fn build_filament_preset_json_with_source(
   for &key in FILAMENT_SETTING_KEYS {
     if let Some(v) = resolved.get(key) {
       out.insert(key.to_string(), v.clone());
+    }
+  }
+  if let Some(ov) = derived_overrides {
+    if let Some(touched_str) = ov.get("_lua_touched_keys").and_then(|v| v.as_str()) {
+      let touched: std::collections::HashSet<&str> =
+        touched_str.split(';').filter(|k| !k.is_empty()).collect();
+      for &opt_key in OPTIONAL_FILAMENT_SETTING_KEYS {
+        if touched.contains(opt_key) && !out.contains_key(opt_key) {
+          if let Some(v) = resolved.get(opt_key) {
+            out.insert(opt_key.to_string(), v.clone());
+          }
+        }
+      }
     }
   }
   if let Some(v) = resolved.get("version") {
@@ -1450,17 +1740,22 @@ pub const EXTRA_PROCESS_OVERRIDE_KEYS: &[&str] = &[
   "support_interface_bottom_layers",
   "support_interface_spacing",
   "support_interface_speed",
+  "support_object_xy_distance",
   "ironing_type",
   "ironing_flow",
   "ironing_speed",
   "ironing_spacing",
   "top_surface_pattern",
+  "bottom_surface_pattern",
+  "internal_solid_infill_pattern",
+  "infill_direction",
   "only_one_wall_top",
   "wall_sequence",
   "precise_outer_wall",
   "xy_hole_compensation",
   "xy_contour_compensation",
   "elefant_foot_compensation",
+  "elefant_foot_compensation_layers",
   "bridge_flow",
   "bridge_speed",
   "enable_overhang_speed",
@@ -1473,11 +1768,45 @@ pub const EXTRA_PROCESS_OVERRIDE_KEYS: &[&str] = &[
   "alternate_extra_wall",
   "top_shell_layers",
   "bottom_shell_layers",
+  "top_shell_thickness",
+  "bottom_shell_thickness",
   "infill_wall_overlap",
   "sparse_infill_pattern",
+  "sparse_infill_density",
   "dont_slow_down_outer_wall",
   "small_perimeter_speed",
   "small_perimeter_threshold",
+  "bottom_solid_infill_flow_ratio",
+  "top_surface_flow_ratio",
+  "brim_type",
+  "brim_width",
+  "enable_prime_tower",
+  "prime_tower_width",
+  "prime_volume",
+  "initial_layer_print_height",
+  "max_travel_detour_distance",
+  "min_bead_width",
+  "min_feature_size",
+  "outer_wall_acceleration",
+  "outer_wall_jerk",
+  "reduce_crossing_wall",
+  "reduce_infill_retraction",
+  "scarf_angle_threshold",
+  "seam_gap",
+  "seam_position",
+  "seam_slope_conditional",
+  "seam_slope_entire_loop",
+  "seam_slope_min_length",
+  "seam_slope_start_height",
+  "seam_slope_steps",
+  "seam_slope_type",
+  "spiral_mode",
+  "travel_acceleration",
+  "travel_jerk",
+  "wall_generator",
+  "wall_transition_angle",
+  "wall_transition_length",
+  "wipe_on_loops",
 ];
 
 /// Builds a user Process `.json` preset from the imported OrcaSlicer process base + Lua-evaluated overrides
@@ -1679,7 +2008,24 @@ pub fn build_machine_preset_json_with_overrides(
     "retraction_length".to_string(),
     serde_json::json!([ret_len_str]),
   );
-  if rig.ace_pro_units > 0 {
+  let cut_retract_override = derived_overrides.and_then(|ov| {
+    let is_touched = ov
+      .get("_lua_touched_keys")
+      .and_then(|v| v.as_str())
+      .map(|s| s.split(';').any(|k| k == "retraction_distances_when_cut"))
+      .unwrap_or_else(|| ov.contains_key("retraction_distances_when_cut"));
+    if is_touched {
+      first_str_from_map(ov, "retraction_distances_when_cut")
+    } else {
+      None
+    }
+  });
+  if let Some(cut_str) = cut_retract_override {
+    out.insert(
+      "retraction_distances_when_cut".to_string(),
+      serde_json::json!([cut_str]),
+    );
+  } else if rig.ace_pro_units > 0 {
     out.insert(
       "retraction_distances_when_cut".to_string(),
       serde_json::json!(["18"]),
@@ -1692,8 +2038,11 @@ pub fn build_machine_preset_json_with_overrides(
     for gcode_key in [
       "before_layer_change_gcode",
       "change_filament_gcode",
+      "layer_change_gcode",
       "machine_end_gcode",
+      "machine_pause_gcode",
       "machine_start_gcode",
+      "time_lapse_gcode",
     ] {
       if let Some(s) = ov
         .get(gcode_key)
@@ -1842,7 +2191,25 @@ pub fn build_project_settings_config_json(
     "retraction_length".to_string(),
     serde_json::json!([format_retraction_length_str(rig.base_retraction_length)]),
   );
-  if rig.ace_pro_units > 0 {
+  let cut_retract_override = {
+    let is_touched = derived_overrides
+      .get("_lua_touched_keys")
+      .and_then(|v| v.as_str())
+      .map(|s| s.split(';').any(|k| k == "retraction_distances_when_cut"))
+      .unwrap_or_else(|| derived_overrides.contains_key("retraction_distances_when_cut"));
+    if is_touched {
+      first_str_from_map(derived_overrides, "retraction_distances_when_cut")
+    } else {
+      None
+    }
+  };
+  let has_cut_retract_in_machine = cut_retract_override.is_some() || rig.ace_pro_units > 0;
+  if let Some(cut_str) = cut_retract_override {
+    out.insert(
+      "retraction_distances_when_cut".to_string(),
+      serde_json::json!([cut_str]),
+    );
+  } else if rig.ace_pro_units > 0 {
     out.insert(
       "retraction_distances_when_cut".to_string(),
       serde_json::json!(["18"]),
@@ -1876,6 +2243,20 @@ pub fn build_project_settings_config_json(
       );
     }
     out.insert(fk.to_string(), serde_json::json!(vals));
+  }
+  let lua_touched_set: Option<std::collections::HashSet<&str>> = derived_overrides
+    .get("_lua_touched_keys")
+    .and_then(|v| v.as_str())
+    .map(|s| s.split(';').filter(|k| !k.is_empty()).collect());
+  let mut filament_diff_keys: Vec<&str> = FILAMENT_SETTING_KEYS.to_vec();
+  if let Some(ref touched) = lua_touched_set {
+    for &opt_key in OPTIONAL_FILAMENT_SETTING_KEYS {
+      if touched.contains(opt_key) && !out.contains_key(opt_key) {
+        let vals = collect_slot_vec(opt_key);
+        out.insert(opt_key.to_string(), serde_json::json!(vals));
+        filament_diff_keys.push(opt_key);
+      }
+    }
   }
 
   let mut proc_diff_keys = std::collections::BTreeSet::new();
@@ -1935,10 +2316,6 @@ pub fn build_project_settings_config_json(
       }
     }
   }
-  let lua_touched_set: Option<std::collections::HashSet<&str>> = derived_overrides
-    .get("_lua_touched_keys")
-    .and_then(|v| v.as_str())
-    .map(|s| s.split(';').filter(|k| !k.is_empty()).collect());
   for &extra_key in EXTRA_PROCESS_OVERRIDE_KEYS {
     if is_filament_scoped_key(extra_key) || is_machine_scoped_key(extra_key) {
       continue;
@@ -1961,7 +2338,7 @@ pub fn build_project_settings_config_json(
     }
   }
 
-  let filament_diff_str = FILAMENT_SETTING_KEYS.join(";");
+  let filament_diff_str = filament_diff_keys.join(";");
   let mut machine_diff_keys: std::collections::BTreeSet<String> = [
     "nozzle_diameter",
     "nozzle_hrc",
@@ -1973,14 +2350,17 @@ pub fn build_project_settings_config_json(
   .into_iter()
   .map(|s| s.to_string())
   .collect();
-  if rig.ace_pro_units > 0 {
+  if has_cut_retract_in_machine {
     machine_diff_keys.insert("retraction_distances_when_cut".to_string());
   }
   for gcode_key in [
     "before_layer_change_gcode",
     "change_filament_gcode",
+    "layer_change_gcode",
     "machine_end_gcode",
+    "machine_pause_gcode",
     "machine_start_gcode",
+    "time_lapse_gcode",
   ] {
     if let Some(s) = derived_overrides
       .get(gcode_key)

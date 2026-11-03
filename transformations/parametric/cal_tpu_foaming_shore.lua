@@ -287,9 +287,7 @@ function apply(config, ctx, p)
   set_val("fan_max_speed", tostring(c.fan_max))
 
   -- 5. Zero Z-Hop, Minimal/Zero Retraction, and Avoid Crossing Walls
-  set_val("z_hop", "0.00")
   set_val("filament_z_hop", "0.00")
-  set_val("z_hop_types", "Normal Lift")
   set_val("filament_z_hop_types", "Normal Lift")
   if ret_mode == "zero_continuous" then
     set_val("filament_retraction_length", "0.00")

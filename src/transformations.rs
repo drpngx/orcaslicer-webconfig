@@ -1542,6 +1542,27 @@ end
     out
   }
 
+  /// Enforces the **Exhaustive Key Routing Registry + Zero-Drop Invariant**:
+  /// Every parameter key touched by a Lua rule must be routed to an exported OrcaSlicer artifact
+  /// (`Machine`, `Process`, `Filament`, or `ProjectFlush`) or explicitly declared `InternalMeta`
+  /// (`_`-prefixed side-channels / `computed_safe_speed_ceiling`).
+  /// Any unrouted or shadowed dual-scope write fails immediately with
+  /// `"Unrouted phantom write in rule <id>: key <key>"`.
+  pub fn validate_lua_rule_writes(
+    rule_id: &str,
+    modified: &[(String, String, String)],
+  ) -> Result<(), String> {
+    for (mod_key, _, _) in modified {
+      if crate::threemf::classify_key_destination(mod_key).is_none() {
+        return Err(format!(
+          "Unrouted phantom write in rule {}: key {}",
+          rule_id, mod_key
+        ));
+      }
+    }
+    Ok(())
+  }
+
   pub fn evaluate_stack(
     base_profile: &OrcaProfile,
     rules: &[TransformationRule],
@@ -1680,10 +1701,66 @@ end
         );
       }
       match execute_transformation_lua(&rule.lua_code, &current_values, &rule_ctx) {
-        Ok((new_val, stdout, modified)) => {
+        Ok((mut new_val, stdout, mut modified)) => {
           let rule_log_summary = stdout.join(" • ");
           for line in stdout {
             execution_logs.push(format!("   {}", line));
+          }
+          // Canonical Shadow-Aware Routing:
+          // If a custom or external Lua rule writes a shadowed dual-scope key (`z_hop`,
+          // `z_hop_types`, `retraction_length`, `retraction_speed`, `deretraction_speed`,
+          // `retract_lift_enforce`, `retract_before_wipe`, `wipe`, `wipe_distance`,
+          // `retraction_minimum_travel`, `max_volumetric_speed`), canonicalize it onto its
+          // `filament_*` target so AnycubicSlicerNext's "non-nil wins" Filament inheritance
+          // never silently shadows the rule's write at slice time.
+          if let (
+            serde_json::Value::Object(ref before_map),
+            serde_json::Value::Object(ref mut after_map),
+          ) = (&before_snapshot, &mut new_val)
+          {
+            let mut shadowed_keys: Vec<(String, &'static str)> = Vec::new();
+            for k in after_map.keys() {
+              if let Some(canon_key) = crate::threemf::canonicalize_dual_scope_key(k) {
+                let after_str = after_map.get(k).map(&extract_scalar).unwrap_or_default();
+                let before_str = before_map
+                  .get(k)
+                  .map(&extract_scalar)
+                  .or_else(|| base_profile.get_str(k))
+                  .unwrap_or_default();
+                let explicitly_modified = modified.iter().any(|(mk, _, _)| mk == k);
+                if after_str != before_str || explicitly_modified {
+                  shadowed_keys.push((k.clone(), canon_key));
+                }
+              }
+            }
+            for (shadow_key, canon_key) in shadowed_keys {
+              if let Some(written_val) = after_map.get(&shadow_key).cloned() {
+                let scalar = extract_scalar(&written_val);
+                after_map.insert(canon_key.to_string(), serde_json::json!([scalar]));
+              }
+              if let Some(orig) = before_map.get(&shadow_key).cloned() {
+                after_map.insert(shadow_key.clone(), orig);
+              } else {
+                after_map.remove(&shadow_key);
+              }
+              for (mod_k, _, _) in &mut modified {
+                if mod_k == &shadow_key {
+                  *mod_k = canon_key.to_string();
+                }
+              }
+              execution_logs.push(format!(
+                "   ↪ Canonicalized shadowed dual-scope key '{}' → '{}' in rule '{}'",
+                shadow_key, canon_key, rule.id
+              ));
+            }
+          }
+          // Exhaustive Key Routing Registry + Zero-Drop Invariant:
+          // Every key modified by a Lua rule must map to a valid exported artifact destination
+          // (`Machine`, `Process`, `Filament`, `ProjectFlush`, or `InternalMeta`).
+          if let Err(err_msg) = Self::validate_lua_rule_writes(&rule.id, &modified) {
+            execution_logs.push(format!("❌ {}", err_msg));
+            #[cfg(debug_assertions)]
+            panic!("{}", err_msg);
           }
           for (mod_key, _, _) in &modified {
             if !mod_key.starts_with('_') {
@@ -4285,12 +4362,15 @@ end
     assert_eq!(petg_trop_stock["textured_plate_temp"], "77");
     assert_eq!(petg_trop_stock["filament_retraction_length"], "1.15");
     assert_eq!(petg_trop_stock["filament_retraction_speed"], "40");
-    assert_eq!(petg_trop_stock["z_hop"], "0.20");
-    assert_eq!(petg_trop_stock["z_hop_types"], "Spiral Lift");
-    assert_eq!(petg_trop_stock["retract_lift_enforce"], "Top Surfaces Only");
+    assert_eq!(petg_trop_stock["filament_z_hop"], "0.20");
+    assert_eq!(petg_trop_stock["filament_z_hop_types"], "Spiral Lift");
+    assert_eq!(
+      petg_trop_stock["filament_retract_lift_enforce"],
+      "Top Surfaces Only"
+    );
     assert_eq!(petg_trop_stock["additional_cooling_fan_speed"], "40");
     assert_eq!(petg_trop_stock["filament_max_volumetric_speed"], "13.1");
-    assert_eq!(petg_trop_stock["wipe"], "1");
+    assert_eq!(petg_trop_stock["filament_wipe"], "1");
     assert_eq!(petg_trop_stock["reduce_crossing_wall"], "1");
     assert_eq!(petg_trop_stock["outer_wall_speed"], "170");
 
@@ -4334,7 +4414,7 @@ end
     .expect("tropical TPU executes");
     assert_eq!(tpu_trop["nozzle_temperature"], "212");
     assert_eq!(tpu_trop["textured_plate_temp"], "45");
-    assert_eq!(tpu_trop["z_hop"], "0.00");
+    assert_eq!(tpu_trop["filament_z_hop"], "0.00");
     assert_eq!(tpu_trop["filament_retraction_length"], "1.15");
     assert_eq!(tpu_trop["filament_retraction_speed"], "23");
     assert_eq!(tpu_trop["filament_max_volumetric_speed"], "4.2");
@@ -4387,7 +4467,7 @@ end
     assert_eq!(pla_cold_humid["textured_plate_temp_initial_layer"], "65");
     assert_eq!(pla_cold_humid["additional_cooling_fan_speed"], "0");
     assert_eq!(pla_cold_humid["close_fan_the_first_x_layers"], "3");
-    assert_eq!(pla_cold_humid["wipe"], "1");
+    assert_eq!(pla_cold_humid["filament_wipe"], "1");
     assert_eq!(pla_cold_humid["reduce_crossing_wall"], "1");
     assert_eq!(pla_cold_humid["brim_width"], "5");
 
@@ -5711,10 +5791,10 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
   #[test]
   fn test_rule_shadowing_and_contradiction_detector() {
     let mut base = OrcaProfile::get_stock_kobra_s1();
-    base.set_str("z_hop_types", "Auto Lift");
+    base.set_str("filament_z_hop_types", "Auto Lift");
     base.set_str("nozzle_temperature", "220");
     base.set_str("outer_wall_line_width", "0.40");
-    base.set_str("bed_temperature", "60");
+    base.set_str("textured_plate_temp", "60");
     base.set_str("fan_max_speed", "80");
 
     let mk_rule = |id: &str, name: &str, prio: i32, lua: &str| TransformationRule {
@@ -5736,12 +5816,12 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
         "Rule Early",
         10,
         r#"
-          config["z_hop_types"] = "Spiral Lift"
+          config["filament_z_hop_types"] = "Spiral Lift"
           local t = tonumber(config["nozzle_temperature"][1]) or 220
           config["nozzle_temperature"] = { tostring(t - 5) }
           config["outer_wall_line_width"] = "0.42"
-          local b = tonumber(config["bed_temperature"][1]) or 60
-          config["bed_temperature"] = { tostring(b + 5) }
+          local b = tonumber(config["textured_plate_temp"][1]) or 60
+          config["textured_plate_temp"] = { tostring(b + 5) }
           local f = tonumber(config["fan_max_speed"][1]) or 80
           config["fan_max_speed"] = { tostring(f - 10) }
         "#,
@@ -5751,12 +5831,12 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
         "Rule Late",
         20,
         r#"
-          config["z_hop_types"] = "Normal Lift"
+          config["filament_z_hop_types"] = "Normal Lift"
           local t = tonumber(config["nozzle_temperature"][1]) or 220
           config["nozzle_temperature"] = { tostring(t + 8) }
           config["outer_wall_line_width"] = "0.50"
-          local b = tonumber(config["bed_temperature"][1]) or 60
-          config["bed_temperature"] = { tostring(b + 5) }
+          local b = tonumber(config["textured_plate_temp"][1]) or 60
+          config["textured_plate_temp"] = { tostring(b + 5) }
           config["fan_max_speed"] = { "100" }
         "#,
       ),
@@ -5773,7 +5853,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     };
 
     // Absolute enum write clobbers the earlier enum write.
-    let early_zhop = change("z_hop_types");
+    let early_zhop = change("filament_z_hop_types");
     assert_eq!(early_zhop.shadow_kind, Some(RuleShadowKind::Overwritten));
     assert_eq!(early_zhop.shadowed_by_step, Some(2));
     assert_eq!(
@@ -5796,7 +5876,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     );
 
     // Additive same-direction offset (+5°C then +5°C = +10°C) is NOT shadowed!
-    assert_eq!(change("bed_temperature").shadow_kind, None);
+    assert_eq!(change("textured_plate_temp").shadow_kind, None);
 
     let prov = |key: &str| {
       eval
@@ -5807,7 +5887,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
         .clone()
     };
     assert!(!prov("nozzle_temperature").has_shadowed_steps);
-    assert!(!prov("bed_temperature").has_shadowed_steps);
+    assert!(!prov("textured_plate_temp").has_shadowed_steps);
     assert!(prov("fan_max_speed").has_shadowed_steps);
   }
 
@@ -7101,5 +7181,249 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     )
     .unwrap();
     assert_eq!(wet_06["initial_layer_line_width"], "0.84");
+  }
+
+  #[test]
+  fn test_exhaustive_key_routing_registry_zero_drop_and_canonical_dual_scope_shadowing() {
+    use crate::threemf::{
+      build_machine_preset_json_with_overrides, build_process_preset_json,
+      build_project_settings_config_json, canonicalize_dual_scope_key, classify_key_destination,
+      export_standalone_filament_json_with_overrides,
+      verify_project_settings_matches_standalone_presets, KeyDestination,
+    };
+
+    // 1. Verify `validate_lua_rule_writes` rejects unrouted phantom keys and shadowed dual-scope keys:
+    assert_eq!(
+      TransformationEngine::validate_lua_rule_writes(
+        "bad_rule",
+        &[(
+          "phantom_nonexistent_key".to_string(),
+          "0".to_string(),
+          "1".to_string()
+        )]
+      ),
+      Err("Unrouted phantom write in rule bad_rule: key phantom_nonexistent_key".to_string())
+    );
+    for (shadow_key, canon_key) in [
+      ("retraction_length", "filament_retraction_length"),
+      ("retraction_speed", "filament_retraction_speed"),
+      ("deretraction_speed", "filament_deretraction_speed"),
+      ("z_hop", "filament_z_hop"),
+      ("z_hop_types", "filament_z_hop_types"),
+      ("retract_lift_enforce", "filament_retract_lift_enforce"),
+      ("retract_before_wipe", "filament_retract_before_wipe"),
+      ("wipe", "filament_wipe"),
+      ("wipe_distance", "filament_wipe_distance"),
+      (
+        "retraction_minimum_travel",
+        "filament_retraction_minimum_travel",
+      ),
+      ("max_volumetric_speed", "filament_max_volumetric_speed"),
+    ] {
+      assert_eq!(canonicalize_dual_scope_key(shadow_key), Some(canon_key));
+      assert_eq!(
+        classify_key_destination(shadow_key),
+        None,
+        "shadowed dual-scope key '{}' must be rejected unless canonicalized to '{}'",
+        shadow_key,
+        canon_key
+      );
+      assert_eq!(
+        classify_key_destination(canon_key),
+        Some(KeyDestination::Filament),
+        "canonical key '{}' must route to Filament destination",
+        canon_key
+      );
+    }
+
+    // 2. Execute every built-in rule and every one of the 44 parametric calibration/symptom
+    //    templates across representative contexts and verify that EVERY key modified by ANY
+    //    Lua script is classified in the Exhaustive Key Routing Registry (Zero-Drop Invariant).
+    let base = OrcaProfile::get_stock_kobra_s1();
+    // Verify all canonical `filament_*` dual-scope keys are seeded on the base profile!
+    for canon_key in [
+      "filament_retraction_length",
+      "filament_retraction_speed",
+      "filament_deretraction_speed",
+      "filament_retract_before_wipe",
+      "filament_wipe",
+      "filament_wipe_distance",
+      "filament_z_hop",
+      "filament_z_hop_types",
+      "filament_retraction_minimum_travel",
+      "filament_retract_lift_enforce",
+      "filament_max_volumetric_speed",
+    ] {
+      assert!(
+        base.get_str(canon_key).is_some(),
+        "base profile must seed canonical dual-scope key '{}'",
+        canon_key
+      );
+    }
+
+    let contexts = [
+      json!({
+        "printer_model": "Anycubic Kobra S1",
+        "nozzle_type": "diamondback",
+        "nozzle_material": "Diamondback PCD",
+        "nozzle_diameter": "0.4",
+        "hotend": "MicroSwiss FlowTech All-Metal",
+        "hotend_max_flow": 28.0,
+        "filament_type": "PETG",
+        "filament_finish": "High-Speed",
+        "all_filament_types": ["PETG", "PLA", "PCTG", "ABS"],
+        "addons": ["flowtech_hotend", "ace_pro", "activated_carbon_filter", "enclosed_chamber", "pei_textured_plate"],
+        "ace_pro_units": 2,
+        "layer_height": 0.20,
+        "line_width": 0.42,
+      }),
+      json!({
+        "printer_model": "Anycubic Kobra S1",
+        "nozzle_type": "hardened_steel",
+        "nozzle_material": "Hardened Steel",
+        "nozzle_diameter": "0.6",
+        "hotend": "Kobra S1 All-Metal",
+        "hotend_max_flow": 22.0,
+        "filament_type": "TPU 95A",
+        "filament_finish": "Foaming",
+        "filament_is_elastomer": true,
+        "all_filament_types": ["TPU 95A"],
+        "addons": ["aux_part_fan"],
+        "ace_pro_units": 0,
+        "layer_height": 0.24,
+        "line_width": 0.62,
+      }),
+    ];
+
+    for rule in TransformationEngine::get_default_rules() {
+      for ctx in &contexts {
+        let (_, _, modified) = execute_transformation_lua(
+          &rule.lua_code,
+          &serde_json::Value::Object(base.values.clone()),
+          ctx,
+        )
+        .unwrap_or_else(|e| panic!("default rule '{}' failed: {}", rule.id, e));
+        TransformationEngine::validate_lua_rule_writes(&rule.id, &modified)
+          .unwrap_or_else(|e| panic!("{}", e));
+      }
+    }
+
+    for tpl in TransformationEngine::get_parameterized_calibration_templates() {
+      let mut ans = tpl.default_answers();
+      if tpl.id == "weather_climate_adjustment" {
+        tpl.apply_answer_change(&mut ans, "climate_preset", "tropical".to_string());
+      } else if tpl.id == "clogging_heat_creep_reliever" {
+        ans.insert("in_ace_pro".to_string(), "yes".to_string());
+      } else if tpl.id == "first_layer_adhesion_booster" {
+        ans.insert("enable_z_squish".to_string(), "yes".to_string());
+      }
+      let (_, _, _, lua_code) = tpl.generate_from_answers(&ans, "all");
+      for ctx in &contexts {
+        let (_, _, modified) = execute_transformation_lua(
+          &lua_code,
+          &serde_json::Value::Object(base.values.clone()),
+          ctx,
+        )
+        .unwrap_or_else(|e| panic!("template '{}' failed: {}", tpl.id, e));
+        TransformationEngine::validate_lua_rule_writes(&tpl.id, &modified)
+          .unwrap_or_else(|e| panic!("{}", e));
+      }
+    }
+
+    // 3. Verify Canonical Dual-Scope Shadowing in `evaluate_stack` + End-to-End Export Routing:
+    //    Suppose a user or custom rule writes `config["z_hop"] = "0.32"`, `config["wipe"] = "1"`,
+    //    `config["retract_lift_enforce"] = "Top Surfaces Only"`, `config["retraction_distances_when_cut"] = "16"`,
+    //    and `config["elefant_foot_compensation_layers"] = "2"`.
+    //    `evaluate_stack` canonicalizes `z_hop` -> `filament_z_hop`, `wipe` -> `filament_wipe`,
+    //    `retract_lift_enforce` -> `filament_retract_lift_enforce`, and exports all keys to their
+    //    exact standalone JSON and 3MF `project_settings.config` destinations with 100% parity!
+    let custom_rule = TransformationRule {
+      id: "custom_dual_scope_test".to_string(),
+      name: "Custom Dual-Scope & Routing Test".to_string(),
+      description: String::new(),
+      category: "Custom".to_string(),
+      icon: "🧪".to_string(),
+      enabled: true,
+      condition_expr: "all".to_string(),
+      lua_code: r#"
+        config["z_hop"] = "0.32"
+        config["wipe"] = "1"
+        config["retract_lift_enforce"] = "Top Surfaces Only"
+        config["retraction_distances_when_cut"] = "16"
+        config["elefant_foot_compensation_layers"] = "2"
+        config["overhang_fan_speed"] = "95"
+      "#
+      .to_string(),
+      priority: 50,
+      scope: RuleScopeFilter::default(),
+    };
+    let eval = TransformationEngine::evaluate_stack(&base, &[custom_rule], &contexts[0]);
+    assert_eq!(
+      eval.resulting_profile.get_str("filament_z_hop").as_deref(),
+      Some("0.32")
+    );
+    assert_eq!(
+      eval
+        .resulting_profile
+        .get_str("filament_retract_lift_enforce")
+        .as_deref(),
+      Some("Top Surfaces Only")
+    );
+    assert!(eval
+      .execution_logs
+      .iter()
+      .any(|l| l.contains("Canonicalized shadowed dual-scope key 'z_hop' → 'filament_z_hop'")));
+
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let procs = crate::models::ProcessProfile::get_default_processes();
+    let catalog = crate::catalog::load_merged_catalog();
+    let petg_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PETG")
+      .expect("PETG catalog entry");
+    let spool = FilamentSpool::from_catalog_entry(1, petg_entry, &rig.nozzle_type);
+    let overrides = eval.resulting_profile.values.clone();
+
+    let mach_str = build_machine_preset_json_with_overrides(&rig, Some(&overrides));
+    let mach_json: serde_json::Value = serde_json::from_str(&mach_str).unwrap();
+    assert_eq!(
+      mach_json["retraction_distances_when_cut"],
+      json!(["16"]),
+      "retraction_distances_when_cut must route to Machine preset"
+    );
+
+    let proc_str = build_process_preset_json(&procs[0], &rig, &overrides);
+    let proc_json: serde_json::Value = serde_json::from_str(&proc_str).unwrap();
+    assert_eq!(
+      proc_json["elefant_foot_compensation_layers"],
+      json!("2"),
+      "elefant_foot_compensation_layers must route to Process preset"
+    );
+
+    let fil_str = export_standalone_filament_json_with_overrides(&spool, &rig, &overrides);
+    let fil_json: serde_json::Value = serde_json::from_str(&fil_str).unwrap();
+    assert_eq!(
+      fil_json["filament_retract_lift_enforce"],
+      json!(["Top Surfaces Only"]),
+      "canonicalized filament_retract_lift_enforce must route to Filament preset"
+    );
+    assert_eq!(
+      fil_json["overhang_fan_speed"],
+      json!(["95"]),
+      "touched OPTIONAL_FILAMENT_SETTING_KEYS (overhang_fan_speed) must route to Filament preset"
+    );
+
+    let ps_str = build_project_settings_config_json(
+      &rig,
+      &procs[0],
+      std::slice::from_ref(&spool),
+      &[],
+      &overrides,
+    );
+    let mut fil_map = std::collections::HashMap::new();
+    fil_map.insert(spool.format_concise_title(), fil_str);
+    verify_project_settings_matches_standalone_presets(&ps_str, &mach_str, &proc_str, &fil_map)
+      .expect("project_settings.config must match standalone Machine, Process, and Filament presets 100%");
   }
 }
