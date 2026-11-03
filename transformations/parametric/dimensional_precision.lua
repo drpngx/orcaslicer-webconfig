@@ -205,9 +205,9 @@ function apply(config, ctx, p)
 
   config["wall_sequence"] = seq
   config["precise_outer_wall"] = pow
-  config["xy_hole_compensation"] = string.format("%.3f", hole)
-  config["xy_contour_compensation"] = string.format("%.3f", contour)
-  config["elefant_foot_compensation"] = string.format("%.2f", ef)
+  config["xy_hole_compensation"] = fmt_num(hole, "%.3f")
+  config["xy_contour_compensation"] = fmt_num(contour, "%.3f")
+  config["elefant_foot_compensation"] = fmt_num(ef, "%.2f")
 
   local d = describe(p or {}, ctx)
   print("[Pack:DimensionalPrecision] " .. (d.badge or ""))

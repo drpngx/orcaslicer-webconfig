@@ -34,7 +34,7 @@ function apply(config, ctx)
     if config["fan_min_speed"] and config["fan_min_speed"][1] then
       fmin = tonumber(config["fan_min_speed"][1]) or 30
     end
-    local new_min = math.max(10, fmin - 15)
+    local new_min = math.min(fmin, math.max(10, fmin - 15))
     config["fan_min_speed"] = { tostring(new_min) }
     config["during_print_exhaust_fan_speed"] = { "40" }
     config["complete_print_exhaust_fan_speed"] = { "50" }
@@ -48,9 +48,17 @@ function apply(config, ctx)
     end
     local new_max = math.floor(fmax * 0.85)
     config["fan_max_speed"] = { tostring(new_max) }
-    config["overhang_fan_speed"] = { "100" }
+    if config["fan_min_speed"] and config["fan_min_speed"][1] then
+      local cur_min = tonumber(config["fan_min_speed"][1]) or 0
+      if cur_min > new_max then
+        config["fan_min_speed"] = { tostring(new_max) }
+      end
+    end
+    if not ctx.filament_is_warp_prone then
+      config["overhang_fan_speed"] = { "100" }
+    end
     config["enable_overhang_bridge_fan"] = { "1" }
-    print("[AddOn:MicroSwissDuct] Scaled fan_max_speed to " .. tostring(new_max) .. "% (high static pressure duct), overhang fan -> 100%")
+    print("[AddOn:MicroSwissDuct] Scaled fan_max_speed to " .. tostring(new_max) .. "% (high static pressure duct)")
   end
 
   if has_addon(addons, "flowtech_hotend") then

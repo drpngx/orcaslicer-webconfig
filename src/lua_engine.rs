@@ -74,6 +74,29 @@ function map_num(tbl, fn, fmt)
   end
   return out
 end
+
+-- fmt_num(val, fmt): format a scalar numeric value with `string.format(fmt)` when running
+-- standalone, or keep full IEEE-754 float precision `tostring(n)` during Phase 2 of
+-- `TransformationEngine::evaluate_stack` (`config["_defer_quantization"] == "1"`) so all
+-- quantization happens once at the very end of the pipeline.
+function fmt_num(val, fmt)
+  local n = tonumber(val)
+  if not n then
+    return tostring(val)
+  end
+  if type(config) == "table" and config["_defer_quantization"] == "1" then
+    return tostring(n)
+  end
+  local f = fmt or "%.3f"
+  if f == "%.0f" then
+    if n >= 0 then
+      return tostring(math.floor(n + 0.5))
+    else
+      return tostring(math.ceil(n - 0.5))
+    end
+  end
+  return string.format(f, n)
+end
 "#;
 
 /// Evaluate `LUA_RULE_PRELUDE` into `env`. Called by every code path that executes rule Lua
@@ -2753,10 +2776,15 @@ impl Interpreter {
         let is_machine = lua_table_get_str(&cb, "type")
           .map(|s| s.eq_ignore_ascii_case("machine"))
           .unwrap_or(false);
-        let cur_mvs = lua_table_get_scalar_f64(&cb, "filament_max_volumetric_speed").unwrap_or(0.0);
+        let base_mvs = self
+          .base_table
+          .as_ref()
+          .and_then(|b| lua_table_get_scalar_f64(&b.borrow(), "filament_max_volumetric_speed"))
+          .or_else(|| lua_table_get_scalar_f64(&cb, "filament_max_volumetric_speed"))
+          .unwrap_or(0.0);
         let ctx_mvs = lua_refcell_get_scalar_f64(ctx_tbl, "filament_max_flow");
         is_machine
-          && (cur_mvs - 12.0).abs() < 0.01
+          && (base_mvs - 12.0).abs() < 0.01
           && ctx_mvs.map(|cm| (cm - 12.0).abs() > 0.01).unwrap_or(false)
       };
       if !skip_machine_placeholder
@@ -2810,9 +2838,21 @@ impl Interpreter {
       dt_fan
     };
 
-    let target_fan_min_delta = (0.75 * dfan_rad + dt_fan_part).round();
-    let target_fan_max_delta = (0.50 * dfan_rad + dt_fan_part).round();
-    let target_ovh_fan_delta = (dfan_rad + 0.50 * dt_fan).round();
+    let target_fan_min_delta = if defer_quant {
+      0.75 * dfan_rad + dt_fan_part
+    } else {
+      (0.75 * dfan_rad + dt_fan_part).round()
+    };
+    let target_fan_max_delta = if defer_quant {
+      0.50 * dfan_rad + dt_fan_part
+    } else {
+      (0.50 * dfan_rad + dt_fan_part).round()
+    };
+    let target_ovh_fan_delta = if defer_quant {
+      dfan_rad + 0.50 * dt_fan
+    } else {
+      (dfan_rad + 0.50 * dt_fan).round()
+    };
 
     let prev_fan_min_delta =
       lua_refcell_get_scalar_f64(&state_tbl, "prev_fan_min_delta").unwrap_or(0.0);
@@ -2826,8 +2866,13 @@ impl Interpreter {
       for fan_key in ["fan_min_speed", "fan_min_speed_BRASS", "fan_min_speed_HS"] {
         if !already_modified_in_rule(&self.modified_keys, fan_key) {
           if let Some(cur_fan) = lua_refcell_get_scalar_f64(cfg_tbl, fan_key) {
-            let new_fan = (cur_fan + step_fan_min).round().clamp(0.0, 100.0) as i32;
-            self.update_coupled_config_key(cfg_tbl, fan_key, new_fan.to_string());
+            let new_fan = (cur_fan + step_fan_min).clamp(0.0, 100.0);
+            let fan_str = if defer_quant {
+              LuaVal::Number(new_fan).to_lua_string()
+            } else {
+              (new_fan.round() as i32).to_string()
+            };
+            self.update_coupled_config_key(cfg_tbl, fan_key, fan_str);
           }
         }
       }
@@ -2844,10 +2889,14 @@ impl Interpreter {
         if !already_modified_in_rule(&self.modified_keys, fan_key) {
           if let Some(cur_fan) = lua_refcell_get_scalar_f64(cfg_tbl, fan_key) {
             let new_fan = (cur_fan + step_fan_max)
-              .round()
               .max(cur_min_floor)
-              .clamp(0.0, 100.0) as i32;
-            self.update_coupled_config_key(cfg_tbl, fan_key, new_fan.to_string());
+              .clamp(0.0, 100.0);
+            let fan_str = if defer_quant {
+              LuaVal::Number(new_fan).to_lua_string()
+            } else {
+              (new_fan.round() as i32).to_string()
+            };
+            self.update_coupled_config_key(cfg_tbl, fan_key, fan_str);
           }
         }
       }
@@ -2861,8 +2910,13 @@ impl Interpreter {
     if step_ovh_fan.abs() > 1e-6 {
       if !already_modified_in_rule(&self.modified_keys, "overhang_fan_speed") {
         if let Some(cur_ovh) = lua_refcell_get_scalar_f64(cfg_tbl, "overhang_fan_speed") {
-          let new_ovh = (cur_ovh + step_ovh_fan).round().clamp(0.0, 100.0) as i32;
-          self.update_coupled_config_key(cfg_tbl, "overhang_fan_speed", new_ovh.to_string());
+          let new_ovh = (cur_ovh + step_ovh_fan).clamp(0.0, 100.0);
+          let ovh_str = if defer_quant {
+            LuaVal::Number(new_ovh).to_lua_string()
+          } else {
+            (new_ovh.round() as i32).to_string()
+          };
+          self.update_coupled_config_key(cfg_tbl, "overhang_fan_speed", ovh_str);
         }
       }
       state_tbl.borrow_mut().insert(
@@ -2995,15 +3049,21 @@ fn extract_coupled_physics_props(
     || fil_type.contains("PEBA")
     || fil_type.contains("FLEX");
   let is_copolyester = fil_type.contains("PETG") || fil_type.contains("PCTG");
-  let is_warp_prone = fil_type.contains("ABS")
+  let is_warp_prone = matches!(xb.get("filament_is_warp_prone"), Some(LuaVal::Boolean(true)))
+    || fil_type.contains("ABS")
     || fil_type.contains("ASA")
     || fil_type == "PA"
     || fil_type.starts_with("PA-")
     || fil_type.starts_with("PA6")
     || fil_type.starts_with("PA12")
+    || fil_type.starts_with("PPA")
+    || fil_type.starts_with("PAHT")
     || fil_type.contains("NYLON")
     || fil_type == "PC"
     || fil_type.starts_with("PC-")
+    || fil_type == "PET-CF"
+    || fil_type == "PET-GF"
+    || fil_type.contains("HIPS")
     || fil_type.contains("PEEK")
     || fil_type.contains("PEI")
     || fil_type.contains("ULTEM")
@@ -3013,7 +3073,17 @@ fn extract_coupled_physics_props(
     || fil_type == "PP"
     || fil_type.starts_with("PP-");
 
-  let cur_temp = lua_table_get_scalar_f64(&cb, "nozzle_temperature");
+  let mut cur_temp = lua_table_get_scalar_f64(&cb, "nozzle_temperature");
+  if let (Some(tc), Some(LuaVal::Table(b_tbl))) = (cur_temp, cb.get("_bounds")) {
+    if let Some(LuaVal::Table(noz_b)) = b_tbl.borrow().get("nozzle_temperature") {
+      let nb = noz_b.borrow();
+      let b_min = nb.get("min").and_then(lua_val_scalar_f64).unwrap_or(f64::NEG_INFINITY);
+      let b_max = nb.get("max").and_then(lua_val_scalar_f64).unwrap_or(f64::INFINITY);
+      if b_min <= b_max {
+        cur_temp = Some(tc.clamp(b_min, b_max));
+      }
+    }
+  }
   let t_eq = lua_table_get_scalar_f64(&sb, "t_eq").or(cur_temp);
   let pre_delta = lua_table_get_scalar_f64(&xb, "pre_temp_delta_c").unwrap_or(0.0);
   let dt_net = match (cur_temp, t_eq) {
@@ -3908,11 +3978,52 @@ pub fn execute_transformation_lua_with_params(
         }
       }
     }
+    for key in ["retract_lift_enforce", "filament_retract_lift_enforce"] {
+      if let Some(val) = obj.get_mut(key) {
+        let normalize = |s: &str| -> String {
+          match s.trim() {
+            "Top Surfaces Only" | "top_only" | "top" => "Top Only".to_string(),
+            "Bottom Surfaces Only" | "bottom_only" | "bottom" => "Bottom Only".to_string(),
+            "Top and Bottom Surfaces" | "top_and_bottom" => "Top and Bottom".to_string(),
+            "All" | "all" | "all_surfaces" => "All Surfaces".to_string(),
+            other => other.to_string(),
+          }
+        };
+        match val {
+          serde_json::Value::String(s) => {
+            *s = normalize(s);
+          }
+          serde_json::Value::Array(arr) => {
+            for elem in arr.iter_mut() {
+              if let serde_json::Value::String(s) = elem {
+                *s = normalize(s);
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+    }
     if let Some(serde_json::Value::String(s)) = obj.get_mut("wall_sequence") {
       *s = match s.trim() {
         "inner-outer-inner" => "inner-outer-inner wall".to_string(),
         "outer-inner" => "outer wall/inner wall".to_string(),
         "inner-outer" => "inner wall/outer wall".to_string(),
+        other => other.to_string(),
+      };
+    }
+    if let Some(serde_json::Value::String(s)) = obj.get_mut("ironing_type") {
+      *s = match s.trim() {
+        "all solid" | "all_solid" | "All solid layers" => "solid".to_string(),
+        "Top surfaces" => "top".to_string(),
+        "Topmost surface" => "topmost".to_string(),
+        "No ironing" | "none" => "no ironing".to_string(),
+        other => other.to_string(),
+      };
+    }
+    if let Some(serde_json::Value::String(s)) = obj.get_mut("brim_type") {
+      *s = match s.trim() {
+        "ears" | "mouse_ears" => "brim_ears".to_string(),
         other => other.to_string(),
       };
     }

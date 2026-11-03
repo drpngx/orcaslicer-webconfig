@@ -161,7 +161,7 @@ function apply(config, ctx, p)
 
   if is_filament then
     local cur_flow = tonumber(config["filament_flow_ratio"]) or 0.96
-    config["filament_flow_ratio"] = string.format("%.3f", math.min(1.06, cur_flow + flow_boost))
+    config["filament_flow_ratio"] = fmt_num(math.min(1.06, cur_flow + flow_boost), "%.3f")
     config["fan_max_speed"] = tostring(fan_cap)
     config["fan_min_speed"] = tostring(fan_cap)
     if config["fan_max_speed_BRASS"] ~= nil then config["fan_max_speed_BRASS"] = tostring(fan_cap) end
@@ -170,7 +170,7 @@ function apply(config, ctx, p)
     if fan_cap == 0 then
       config["overhang_fan_speed"] = "25"
     end
-    config["filament_max_volumetric_speed"] = string.format("%.1f", mvs)
+    config["filament_max_volumetric_speed"] = fmt_num(mvs, "%.1f")
     config["textured_plate_temp"] = tostring(bed_pei)
     config["textured_plate_temp_initial_layer"] = tostring(bed_pei)
     config["hot_plate_temp"] = tostring(bed_pei)
@@ -188,7 +188,7 @@ function apply(config, ctx, p)
   if is_process then
     local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.4
     if mode == "vase_crystal" then
-      local lw = string.format("%.2f", nd * 1.50)
+      local lw = fmt_num(nd * 1.50, "%.2f")
       config["spiral_mode"] = "1"
       config["wall_loops"] = "1"
       config["top_shell_layers"] = "0"
@@ -198,7 +198,7 @@ function apply(config, ctx, p)
       config["line_width"] = lw
       config["outer_wall_line_width"] = lw
     elseif mode == "clear_shell" then
-      local lw = string.format("%.2f", nd * 1.25)
+      local lw = fmt_num(nd * 1.25, "%.2f")
       config["wall_loops"] = "2"
       config["top_surface_pattern"] = "monotonicline"
       config["bottom_surface_pattern"] = "monotonicline"
@@ -210,10 +210,10 @@ function apply(config, ctx, p)
       config["inner_wall_line_width"] = lw
       config["sparse_infill_line_width"] = lw
     else
-      local lw = string.format("%.2f", nd * 1.25)
-      local lh = string.format("%.2f", math.max(0.10, math.floor(nd * 0.30 * 100 + 0.5) / 100))
+      local lw = fmt_num(nd * 1.25, "%.2f")
+      local lh = fmt_num(math.max(0.10, nd * 0.30), "%.2f")
       config["layer_height"] = lh
-      config["initial_layer_print_height"] = string.format("%.2f", math.min(0.20, nd * 0.50))
+      config["initial_layer_print_height"] = fmt_num(math.min(0.20, nd * 0.50), "%.2f")
       config["wall_loops"] = "1"
       config["top_shell_layers"] = "0"
       config["bottom_shell_layers"] = "0"

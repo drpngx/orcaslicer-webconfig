@@ -89,8 +89,8 @@ function apply(config, ctx, p)
   local hole = tonumber(p and p.measured_hole) or 9.84
   local contour_comp = math.max(-0.5, math.min(0.5, (20.00 - outer) / 2.0))
   local hole_comp = math.max(-0.5, math.min(0.5, (10.00 - hole) / 2.0))
-  config["xy_contour_compensation"] = string.format("%.3f", contour_comp)
-  config["xy_hole_compensation"] = string.format("%.3f", hole_comp)
+  config["xy_contour_compensation"] = fmt_num(contour_comp, "%.3f")
+  config["xy_hole_compensation"] = fmt_num(hole_comp, "%.3f")
   local d = describe(p or {}, ctx)
   print("[Calibration:DimensionalXY] " .. (d.badge or ""))
 end

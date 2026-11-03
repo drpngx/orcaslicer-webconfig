@@ -89,6 +89,13 @@ fn apply_nozzle_metadata(rig: &mut MachineRig, nozzle_type: &str) {
   rig.nozzle_name = noz_cfg.default_name.clone();
   let (_, hrc) = rig.orca_machine_nozzle_type_and_hrc();
   rig.nozzle_hrc = hrc;
+  if MachineRig::is_microswiss_nozzle_type(&rig.nozzle_type) {
+    if !rig.addons.iter().any(|a| a == "flowtech_hotend") {
+      rig.addons.push("flowtech_hotend".to_string());
+    }
+  } else {
+    rig.addons.retain(|a| a != "flowtech_hotend");
+  }
   rig.refresh_title_and_notes(true);
 }
 
@@ -428,11 +435,23 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           r.description = desc;
           r.lua_code = lua_src;
         }
+      } else if r.id == "weather_climate_adjustment"
+        && rig.climate_preset != "temperate"
+        && rng.next_usize(2) == 0
+      {
+        r.enabled = true;
+        let mut params = std::collections::HashMap::new();
+        params.insert("climate_preset".to_string(), rig.climate_preset.clone());
+        params.insert("ambient_temp_c".to_string(), rig.ambient_temp_c.to_string());
+        params.insert("humidity_pct".to_string(), rig.humidity_pct.to_string());
+        let brim_choice = *rng.choose(&["outer_only", "brim_ears", "keep"]);
+        params.insert("cold_brim_mode".to_string(), brim_choice.to_string());
+        r.lua_code =
+          orcaslicer_webconfig::lua_engine::embed_param_defaults_in_lua(&r.lua_code, &params);
       } else if matches!(
         r.id.as_str(),
         "symptom_bed_adhesion_petg"
           | "symptom_spaghetti_pla"
-          | "symptom_stringing_diamondback"
           | "symptom_clog_ace_pro"
           | "filament_pctg_antistringing"
           | "process_scarf_seams_arachne"
@@ -457,8 +476,13 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
                 "pla_matte_satin",
                 "petg_gloss_seal",
                 "asa_abs_dense",
+                "custom",
               ]);
               tpl.apply_answer_change(&mut ans, "ironing_preset", preset.to_string());
+              if preset == "custom" {
+                let itype = *rng.choose(&["top", "topmost", "solid"]);
+                tpl.apply_answer_change(&mut ans, "ironing_type", itype.to_string());
+              }
             }
             "dimensional_precision" => {
               let preset = *rng.choose(&[
@@ -995,6 +1019,23 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           cfg_name, name, fan_min, fan_max
         ));
       }
+      let poly_for_fan = orcaslicer_webconfig::constants::constants().lookup_polymer(mat_for_bounds);
+      let is_warp_prone_mat = poly_for_fan.is_warp_prone()
+        || mat_for_bounds.to_uppercase().contains("HIPS")
+        || mat_for_bounds.to_uppercase().starts_with("PET-CF")
+        || mat_for_bounds.to_uppercase().starts_with("PET-GF");
+      if is_warp_prone_mat {
+        if let Some(ovh_s) = first_str_val(&val, "overhang_fan_speed") {
+          if let Ok(ovh_n) = ovh_s.trim().trim_end_matches('%').parse::<i32>() {
+            if ovh_n > 50 {
+              cfg_failures.push(format!(
+                "[{}] Warp-prone filament '{}' ({}) exported unsafe overhang_fan_speed={}% (> 50% delamination/warp threshold)",
+                cfg_name, name, mat_for_bounds, ovh_n
+              ));
+            }
+          }
+        }
+      }
       let is_foaming = fin_for_bounds.eq_ignore_ascii_case("Foaming");
       let max_allowed_flow = if is_foaming { 1.02 } else { 1.05 };
       let min_allowed_flow = if is_foaming { 0.45 } else { 0.90 };
@@ -1040,6 +1081,37 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
 
       let canon = FilamentSpool::canonical_polymer_key(mat_for_bounds);
+      if matches!(canon, "ABS" | "ASA" | "ASA-CF" | "PC" | "PA" | "PA-CF" | "PPA-CF" | "PET-CF" | "HIPS") {
+        let max_exhaust = if matches!(canon, "ABS" | "ASA" | "ASA-CF") { 10.0 } else { 0.0 };
+        for fan_key in ["chamber_fan_speed", "additional_cooling_fan_speed"] {
+          if let Some(fv) = first_str_val(&val, fan_key).and_then(|s| s.parse::<f64>().ok()) {
+            if fv > max_exhaust {
+              cfg_failures.push(format!(
+                "[{}] Warp-prone filament '{}' ({}) has {}={}% > max safe {}%",
+                cfg_name, name, canon, fan_key, fv, max_exhaust
+              ));
+            }
+          }
+        }
+        if let Some(ovh) = first_str_val(&val, "overhang_fan_speed").and_then(|s| s.parse::<f64>().ok()) {
+          if ovh > 50.0 {
+            cfg_failures.push(format!(
+              "[{}] Warp-prone filament '{}' ({}) has overhang_fan_speed={}% > 50%",
+              cfg_name, name, canon, ovh
+            ));
+          }
+        }
+      }
+      if !matches!(canon, "PETG" | "PETG-CF" | "PCTG") {
+        if let Some(ze) = first_str_val(&val, "filament_retract_lift_enforce") {
+          if ze == "Top Only" {
+            cfg_failures.push(format!(
+              "[{}] Non-PETG filament '{}' ({}) has leaked filament_retract_lift_enforce='Top Only'",
+              cfg_name, name, canon
+            ));
+          }
+        }
+      }
       if name.contains("PETG-CF") || name.contains("PETG-GF") || name.contains("PETG-rCF") {
         // 235°C fiber-flow floor minus the approved anti-stringing band trim (same
         // `nozzle_temp_floor_relax_c` policy as the nozzle-temp floor above).
@@ -1539,6 +1611,131 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
               ));
             }
           }
+        }
+      }
+    }
+
+    // 4b. Exhaustive AnycubicSlicerNext C++ Enum Validator (verified against AnycubicSlicer.dll):
+    let check_enum_value = |failures: &mut Vec<String>, ctx_label: &str, key: &str, val: &str| {
+      let valid_opts: Option<&[&str]> = match key {
+        "z_hop_types" | "filament_z_hop_types" => Some(&[
+          "Auto Lift",
+          "Normal Lift",
+          "Slope Lift",
+          "Spiral Lift",
+          "nil",
+        ]),
+        "retract_lift_enforce" | "filament_retract_lift_enforce" => Some(&[
+          "All Surfaces",
+          "Top Only",
+          "Bottom Only",
+          "Top and Bottom",
+          "nil",
+        ]),
+        "wall_generator" => Some(&["classic", "arachne"]),
+        "wall_sequence" => Some(&[
+          "inner wall/outer wall",
+          "outer wall/inner wall",
+          "inner-outer-inner wall",
+          "inner wall/outer wall/infill",
+          "outer wall/inner wall/infill",
+          "inner-outer-inner wall/infill",
+          "infill/inner wall/outer wall",
+          "infill/outer wall/inner wall",
+        ]),
+        "ironing_type" => Some(&["no ironing", "top", "topmost", "solid"]),
+        "brim_type" => Some(&[
+          "no_brim",
+          "outer_only",
+          "inner_only",
+          "outer_and_inner",
+          "auto_brim",
+          "brim_ears",
+          "painted",
+        ]),
+        "support_type" => Some(&[
+          "normal(auto)",
+          "tree(auto)",
+          "normal(manual)",
+          "tree(manual)",
+          "hybrid(auto)",
+        ]),
+        "support_style" => Some(&[
+          "default",
+          "grid",
+          "snug",
+          "organic",
+          "tree_slim",
+          "tree_strong",
+          "tree_hybrid",
+        ]),
+        "seam_position" => Some(&["nearest", "aligned", "aligned_back", "back", "random"]),
+        "seam_slope_type" => Some(&["none", "external", "all"]),
+        "print_sequence" => Some(&["by layer", "by object"]),
+        "sparse_infill_pattern" => Some(&[
+          "rectilinear",
+          "alignedrectilinear",
+          "grid",
+          "triangles",
+          "tri-hexagon",
+          "cubic",
+          "adaptivecubic",
+          "quartercubic",
+          "line",
+          "concentric",
+          "zig-zag",
+          "zigzag",
+          "crosszag",
+          "lockedzag",
+          "honeycomb",
+          "3dhoneycomb",
+          "gyroid",
+          "hilbertcurve",
+          "archimedeanchords",
+          "octagramspiral",
+          "supportcubic",
+          "lightning",
+          "crosshatch",
+          "tpmsd",
+          "tpmsfk",
+          "lateral-lattice",
+          "lateral-honeycomb",
+        ]),
+        "top_surface_pattern" | "bottom_surface_pattern" => Some(&[
+          "monotonic",
+          "monotonicline",
+          "rectilinear",
+          "alignedrectilinear",
+          "concentric",
+          "zig-zag",
+          "zigzag",
+          "hilbertcurve",
+          "archimedeanchords",
+          "octagramspiral",
+        ]),
+        _ => None,
+      };
+      if let Some(allowed) = valid_opts {
+        if !allowed.contains(&val) {
+          failures.push(format!(
+            "[{}] {} has invalid AnycubicSlicerNext C++ enum value for '{}': {:?} (allowed: {:?})",
+            cfg_name, ctx_label, key, val, allowed
+          ));
+        }
+      }
+    };
+    if let Some(proj_obj) = proj_val.as_object() {
+      for (k, v) in proj_obj {
+        match v {
+          Value::String(s) => check_enum_value(&mut cfg_failures, "project_settings.config", k, s),
+          Value::Array(arr) => {
+            for elem in arr {
+              if let Some(s) = elem.as_str() {
+                check_enum_value(&mut cfg_failures, "project_settings.config", k, s);
+              }
+            }
+          }
+          _ => {}
         }
       }
     }

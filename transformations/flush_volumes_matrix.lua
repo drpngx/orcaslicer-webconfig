@@ -107,7 +107,7 @@ function apply(config, ctx)
     end
   end
 
-  config["flush_multiplier"] = string.format("%.2f", flush_mult)
+  config["flush_multiplier"] = fmt_num(flush_mult, "%.2f")
   config["flush_volumes_matrix"] = matrix
   print("[FlushMatrix] Computed " .. tostring(n) .. "x" .. tostring(n) .. " (" .. tostring(n * n) .. " cells) flushing matrix (flush_multiplier=" .. string.format("%.2f", flush_mult) .. "x, cross-polymer base=300 mm3 -> " .. tostring(math.floor(300.0 * flush_mult + 0.5)) .. " mm3)")
 end

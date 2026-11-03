@@ -90,9 +90,9 @@ function apply(config, ctx, p)
   end
 
   local cur_lh = tonumber(config["initial_layer_print_height"]) or tonumber(config["layer_height"]) or 0.20
-  config["initial_layer_print_height"] = string.format("%.2f", cur_lh * h_scale)
+  config["initial_layer_print_height"] = fmt_num(cur_lh * h_scale, "%.2f")
   local cur_w = tonumber(config["initial_layer_line_width"]) or 0.45
-  config["initial_layer_line_width"] = string.format("%.2f", cur_w * w_scale)
+  config["initial_layer_line_width"] = fmt_num(cur_w * w_scale, "%.2f")
   local d = describe(p or {}, ctx)
   print("[Symptom:FirstLayerRipples] " .. (d.badge or ""))
 end

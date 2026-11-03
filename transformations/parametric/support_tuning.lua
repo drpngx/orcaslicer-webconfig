@@ -290,18 +290,18 @@ function apply(config, ctx, p)
     config["support_top_z_distance"] = "0.00"
     config["support_bottom_z_distance"] = "0.00"
   else
-    local new_zd = string.format("%.2f", lh + z_off)
+    local new_zd = fmt_num(lh + z_off, "%.2f")
     config["support_top_z_distance"] = new_zd
     config["support_bottom_z_distance"] = new_zd
   end
 
   if nd > 0.42 then
-    config["support_object_xy_distance"] = string.format("%.2f", math.max(0.35, nd * 0.85))
+    config["support_object_xy_distance"] = fmt_num(math.max(0.35, nd * 0.85), "%.2f")
   end
 
   config["support_interface_top_layers"] = tostring(top_layers)
   config["support_interface_bottom_layers"] = "2"
-  config["support_interface_spacing"] = string.format("%.2f", eff_spacing)
+  config["support_interface_spacing"] = fmt_num(eff_spacing, "%.2f")
   config["support_interface_speed"] = tostring(spd)
 
   local d = describe(p or {}, ctx)

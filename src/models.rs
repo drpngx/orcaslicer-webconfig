@@ -3420,6 +3420,41 @@ impl WebConfigStateSnapshot {
       }
     }
 
+    for key in ["retract_lift_enforce", "filament_retract_lift_enforce"] {
+      if let Some(val) = self.base_profile.values.get_mut(key) {
+        let normalize = |s: &str| -> String {
+          match s.trim() {
+            "Top Surfaces Only" | "top_only" | "top" => "Top Only".to_string(),
+            "Bottom Surfaces Only" | "bottom_only" | "bottom" => "Bottom Only".to_string(),
+            "Top and Bottom Surfaces" | "top_and_bottom" => "Top and Bottom".to_string(),
+            "All" | "all" | "all_surfaces" => "All Surfaces".to_string(),
+            other => other.to_string(),
+          }
+        };
+        match val {
+          serde_json::Value::String(s) => *s = normalize(s),
+          serde_json::Value::Array(arr) => {
+            for elem in arr.iter_mut() {
+              if let serde_json::Value::String(s) = elem {
+                *s = normalize(s);
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    for fil in &mut self.filaments {
+      if let Some(ref mut raw_json) = fil.raw_disk_json {
+        if raw_json.contains("Top Surfaces Only") || raw_json.contains("Bottom Surfaces Only") {
+          *raw_json = raw_json
+            .replace("\"Top Surfaces Only\"", "\"Top Only\"")
+            .replace("\"Bottom Surfaces Only\"", "\"Bottom Only\"");
+        }
+      }
+    }
+
     for rule in &mut self.rules {
       rule.lua_code = rule
         .lua_code
@@ -3428,14 +3463,31 @@ impl WebConfigStateSnapshot {
         .replace("{ \"Normal\" }", "{ \"Normal Lift\" }")
         .replace("= \"Slope\"", "= \"Slope Lift\"")
         .replace("= \"Spiral\"", "= \"Spiral Lift\"")
-        .replace("= \"Normal\"", "= \"Normal Lift\"");
+        .replace("= \"Normal\"", "= \"Normal Lift\"")
+        .replace("\"Top Surfaces Only\"", "\"Top Only\"")
+        .replace("\"Bottom Surfaces Only\"", "\"Bottom Only\"");
     }
 
     for default_rule in crate::transformations::TransformationEngine::get_default_rules() {
       if let Some(existing_rule) = self.rules.iter_mut().find(|r| r.id == default_rule.id) {
-        if existing_rule.id == "sym_wet_filament"
-          && !existing_rule.lua_code.contains("humidity_pct")
-        {
+        let should_refresh = match existing_rule.id.as_str() {
+          "sym_wet_filament" => !existing_rule.lua_code.contains("wet_retract_add"),
+          "weather_climate_adjustment"
+          | "ironing_tuning"
+          | "thermal_conductivity"
+          | "rig_addons_cooling"
+          | "anycubic_pctg_as_petg"
+          | "volumetric_speed_ceiling"
+          | "flush_volumes_matrix"
+          | "symptom_stringing_diamondback"
+          | "symptom_clog_ace_pro"
+          | "symptom_bed_adhesion_petg"
+          | "symptom_spaghetti_pla"
+          | "process_scarf_seams_arachne"
+          | "filament_pctg_antistringing" => true,
+          _ => false,
+        };
+        if should_refresh {
           existing_rule.name = default_rule.name;
           existing_rule.description = default_rule.description;
           existing_rule.lua_code = default_rule.lua_code;

@@ -82,9 +82,9 @@ function apply(config, ctx, p)
   local top_f_trim = tonumber(p and p.top_flow) or -0.04
 
   local cur_f = tonumber(config["filament_flow_ratio"]) or 0.98
-  config["filament_flow_ratio"] = string.format("%.3f", cur_f + f_drop)
+  config["filament_flow_ratio"] = fmt_num(cur_f + f_drop, "%.3f")
   local cur_tf = tonumber(config["top_surface_flow_ratio"]) or 1.00
-  config["top_surface_flow_ratio"] = string.format("%.2f", cur_tf + top_f_trim)
+  config["top_surface_flow_ratio"] = fmt_num(cur_tf + top_f_trim, "%.2f")
   local d = describe(p or {}, ctx)
   print("[Symptom:OverExtrusion] " .. (d.badge or ""))
 end

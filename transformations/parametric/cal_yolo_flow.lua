@@ -127,7 +127,7 @@ function apply(config, ctx, p)
     new_flow = old_flow * (100.0 + chip_val) / 100.0
   end
   new_flow = math.max(0.75, math.min(1.25, new_flow))
-  config["filament_flow_ratio"] = string.format("%.3f", new_flow)
+  config["filament_flow_ratio"] = fmt_num(new_flow, "%.3f")
   local d = describe(p or {}, ctx)
   print("[Calibration:FlowRate] " .. (d.badge or ""))
 end

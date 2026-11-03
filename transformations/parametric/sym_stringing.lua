@@ -131,17 +131,17 @@ function apply(config, ctx, p)
   if z_hop == "Normal Lift" then zh_mult = 1.00 end
 
   local cur_t = tonumber(config["nozzle_temperature"]) or 255
-  config["nozzle_temperature"] = tostring(cur_t + temp_drop)
+  config["nozzle_temperature"] = fmt_num(cur_t + temp_drop, "%.0f")
   local cur_r = tonumber(config["filament_retraction_length"]) or 0.80
-  config["filament_retraction_length"] = string.format("%.2f", cur_r + retract_boost)
+  config["filament_retraction_length"] = fmt_num(cur_r + retract_boost, "%.2f")
   local cur_d = tonumber(config["filament_deretraction_speed"]) or 40
-  config["filament_deretraction_speed"] = tostring(math.max(15, math.floor(cur_d * 0.75 + 0.5)))
+  config["filament_deretraction_speed"] = fmt_num(math.max(15, cur_d * 0.75), "%.0f")
   local cur_lh = tonumber(config["layer_height"]) or 0.20
-  config["filament_z_hop"] = string.format("%.2f", cur_lh * zh_mult)
+  config["filament_z_hop"] = fmt_num(cur_lh * zh_mult, "%.2f")
   config["filament_z_hop_types"] = z_hop
   config["filament_wipe"] = "1"
   local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.40
-  config["filament_wipe_distance"] = string.format("%.1f", noz * 5.0)
+  config["filament_wipe_distance"] = fmt_num(noz * 5.0, "%.1f")
   config["filament_retract_before_wipe"] = pre_wipe
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)

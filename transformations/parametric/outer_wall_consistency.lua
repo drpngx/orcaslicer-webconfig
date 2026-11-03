@@ -294,7 +294,7 @@ function apply(config, ctx, p)
   config["_outer_wall_vfa_is_silk"] = is_silk and "1" or "0"
   config["_outer_wall_vfa_sub_speed"] = tostring(sub_spd)
   config["_outer_wall_vfa_clear_speed"] = tostring(clear_spd)
-  config["_outer_wall_vfa_effective_mvs"] = string.format("%.2f", effective_flow)
+  config["_outer_wall_vfa_effective_mvs"] = fmt_num(effective_flow, "%.2f")
 
   print(string.format(
     "[OuterWallConsistency:%s] dont_slow_down_outer_wall=%s, MVS=%.1f mm3/s @ %.2fx%.2fmm (ceiling %d mm/s) -> outer_wall_speed=%d mm/s%s",

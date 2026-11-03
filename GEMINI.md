@@ -17,9 +17,14 @@
    - All profile data, machine rigs, filaments, and Lua transformations are stored locally in the browser / loaded from and saved to local files.
    - Nothing is persisted to a remote server or database.
 
-4. **Transformation-Based Architecture**:
-   - Configs are not stored as absolute values; they are modeled as stacks of transformations (e.g. Diamondback nozzle temperature adjustments, PETG stringing mitigation, bed adhesion tuning).
-   - Transformations are written in Lua for safe, sandboxed execution and extensibility.
+4. **Transformation-Based Architecture (100% Lua Domain Physics & Deferred Epilogue Quantization)**:
+   - Configs are not stored as absolute values; they are modeled as stacks of transformations (e.g. Diamondback nozzle temperature adjustments, PETG stringing mitigation, bed adhesion tuning, weather/climate adjustments, wet filament tuning).
+   - **All domain physics and parameter transformations MUST live in Lua (`transformations/*.lua`), never in Rust (`src/*.rs`)**:
+     - Do NOT duplicate or hardcode weather/climate deltas, wet-filament offsets, nozzle conductivity curves, or process/filament parameter math in Rust (`src/transformations.rs`, `src/constants.rs`, `src/threemf.rs`).
+     - Rust is strictly responsible for UI state, File System I/O, executing the Lua transformation stack, enforcing Phase 3 Epilogue box/relational constraints declared by Lua rules, and final schema quantization.
+   - **Deferred Epilogue Quantization Only (No Intermediate `string.format` Rounding)**:
+     - During Phase 2 (`P1 .. PN` Lua rules) and Phase 3 Epilogue constraint projections, keep all numeric config values at full IEEE-754 floating-point precision (`map_num` / `fmt_num` / `tostring(x)` with `_defer_quantization = "1"`).
+     - Never quantize or format numbers early inside Lua `apply(config, ctx)` rules (do not write `string.format("%.0f", ...)` or `string.format("%.2f", ...)` onto `config` keys) or mid-pipeline in Rust; format/quantize ONCE at the very end of `TransformationEngine::evaluate_stack` via `format_orca_schema_scalar`.
    - Includes conflict/drift resolution: when an external tool modifies a value touched by a transformation, the user can accept or discard the change.
    - One-click export and import of all transformations and configuration stacks.
 

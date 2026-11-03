@@ -83,7 +83,7 @@ function apply(config, ctx, p)
   local pa_num = math.max(0.0, math.min(0.25, tonumber(p and p.pa_val) or 0.048))
   local adaptive = (p and p.adaptive_pa) or "0"
   config["enable_pressure_advance"] = "1"
-  config["pressure_advance"] = string.format("%.3f", pa_num)
+  config["pressure_advance"] = fmt_num(pa_num, "%.3f")
   config["adaptive_pressure_advance"] = adaptive
   local d = describe(p or {}, ctx)
   print("[Calibration:PA] " .. (d.badge or ""))

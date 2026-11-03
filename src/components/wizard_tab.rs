@@ -2536,7 +2536,9 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                   let step_shadow_count = props
                     .rule_changes
                     .iter()
-                    .filter(|c| c.rule_id == r.id && c.shadow_kind.is_some())
+                    .filter(|c| {
+                      c.rule_id == r.id && c.shadow_kind == Some(RuleShadowKind::Overwritten)
+                    })
                     .count();
 
                   html! {
@@ -2619,20 +2621,35 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                                 Some(RuleShadowKind::Clamped) => Some("🛡️ Clamped"),
                                 None => None,
                               };
+                              let (box_cls, badge_cls) = match step_ch.shadow_kind {
+                                Some(RuleShadowKind::Overwritten) => (
+                                  "bg-amber-950/40 border-amber-500/60 text-amber-200",
+                                  "text-amber-300",
+                                ),
+                                Some(RuleShadowKind::Clamped) => (
+                                  "bg-tertiary/15 border-tertiary/50 text-on-surface",
+                                  "text-tertiary",
+                                ),
+                                Some(RuleShadowKind::Recomputed) => (
+                                  "bg-secondary/15 border-secondary/50 text-on-surface",
+                                  "text-secondary",
+                                ),
+                                Some(RuleShadowKind::Accepted) => (
+                                  "bg-emerald-950/40 border-emerald-500/60 text-emerald-200",
+                                  "text-emerald-300",
+                                ),
+                                None => (
+                                  "bg-primary/15 border-primary/40 text-on-surface",
+                                  "text-primary",
+                                ),
+                              };
                               html! {
                                 <>
                                   <span class="text-primary font-bold">{"➔"}</span>
-                                  <span class={format!(
-                                    "px-1.5 py-0.5 rounded border {}",
-                                    if step_ch.shadow_kind.is_some() {
-                                      "bg-amber-950/40 border-amber-500/60 text-amber-200"
-                                    } else {
-                                      "bg-primary/15 border-primary/40 text-on-surface"
-                                    }
-                                  )}>
+                                  <span class={format!("px-1.5 py-0.5 rounded border {}", box_cls)}>
                                     {format!("Step #{}: {} ({})", step_ch.step_number, step_ch.rule_name, step_ch.after_value)}
                                     {if let Some(b_txt) = sh_badge {
-                                      html! { <span class="ml-1 text-[10px] font-bold text-amber-300">{format!("[{}]", b_txt)}</span> }
+                                      html! { <span class={format!("ml-1 text-[10px] font-bold {}", badge_cls)}>{format!("[{}]", b_txt)}</span> }
                                     } else {
                                       html! {}
                                     }}
@@ -2999,23 +3016,35 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                             )),
                             None => None,
                           };
+                          let (val_cls, tag_cls) = match ch.shadow_kind {
+                            Some(RuleShadowKind::Overwritten) => (
+                              "text-amber-300 line-through",
+                              "bg-amber-950/70 text-amber-300 border border-amber-500/50",
+                            ),
+                            Some(RuleShadowKind::Clamped) => (
+                              "text-tertiary line-through",
+                              "bg-tertiary/15 text-tertiary border border-tertiary/50",
+                            ),
+                            Some(RuleShadowKind::Recomputed) => (
+                              "text-secondary line-through",
+                              "bg-secondary/15 text-secondary border border-secondary/50",
+                            ),
+                            Some(RuleShadowKind::Accepted) => (
+                              "text-emerald-300",
+                              "bg-emerald-950/70 text-emerald-300 border border-emerald-500/50",
+                            ),
+                            None => ("text-tertiary", ""),
+                          };
                           html! {
                             <div class="flex items-center justify-between gap-2 text-[11px]">
                               <span class="text-on-surface truncate">{format!("{} ({})", ch.param_label, ch.param_key)}</span>
                               <div class="flex items-center gap-1.5 shrink-0">
                                 <span class="text-on-surface-variant line-through">{&ch.before_value}</span>
                                 <span class="text-primary font-bold">{"→"}</span>
-                                <span class={format!(
-                                  "font-bold {}",
-                                  if ch.shadow_kind.is_some() {
-                                    "text-amber-300 line-through"
-                                  } else {
-                                    "text-tertiary"
-                                  }
-                                )}>{&ch.after_value}</span>
+                                <span class={format!("font-bold {}", val_cls)}>{&ch.after_value}</span>
                                 {if let Some(tag) = sh_tag {
                                   html! {
-                                    <span class="bg-amber-950/70 text-amber-300 border border-amber-500/50 px-1.5 py-0.2 rounded text-[10px] font-bold">
+                                    <span class={format!("{} px-1.5 py-0.2 rounded text-[10px] font-bold", tag_cls)}>
                                       {tag}
                                     </span>
                                   }

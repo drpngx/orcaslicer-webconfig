@@ -108,13 +108,13 @@ function apply(config, ctx, p)
   local t_rel = math.floor(tonumber(p and p.temp_relief) or 5)
 
   local cur_rs = tonumber(config["filament_retraction_speed"]) or 45
-  config["filament_retraction_speed"] = tostring(math.max(15, math.floor(cur_rs * r_scale + 0.5)))
+  config["filament_retraction_speed"] = fmt_num(math.max(15, cur_rs * r_scale), "%.0f")
   local cur_ds = tonumber(config["filament_deretraction_speed"]) or 35
-  config["filament_deretraction_speed"] = tostring(math.max(15, math.floor(cur_ds * r_scale + 0.5)))
+  config["filament_deretraction_speed"] = fmt_num(math.max(15, cur_ds * r_scale), "%.0f")
   local cur_mt = tonumber(config["filament_retraction_minimum_travel"]) or 1.5
-  config["filament_retraction_minimum_travel"] = string.format("%.1f", cur_mt + min_trv_boost)
+  config["filament_retraction_minimum_travel"] = fmt_num(cur_mt + min_trv_boost, "%.1f")
   local cur_t = tonumber(config["nozzle_temperature"]) or 230
-  config["nozzle_temperature"] = tostring(cur_t + t_rel)
+  config["nozzle_temperature"] = fmt_num(cur_t + t_rel, "%.0f")
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:ExtruderGrind] " .. (d.badge or ""))

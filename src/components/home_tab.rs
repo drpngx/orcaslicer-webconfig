@@ -1330,10 +1330,19 @@ pub fn HomeTab(props: &HomeTabProps) -> Html {
                                         <span class="text-on-surface-variant font-bold">{"→"}</span>
                                         <span class={format!(
                                           "px-1.5 py-0.5 rounded text-[11px] font-bold break-all border {}",
-                                          if step.shadow_kind.is_some() {
-                                            "bg-amber-950/50 text-amber-300 border-amber-500/40 line-through"
-                                          } else {
-                                            "bg-emerald-950/50 text-emerald-300 border-emerald-500/40"
+                                          match step.shadow_kind {
+                                            Some(RuleShadowKind::Overwritten) => {
+                                              "bg-amber-950/50 text-amber-300 border-amber-500/40 line-through"
+                                            }
+                                            Some(RuleShadowKind::Clamped) => {
+                                              "bg-tertiary/15 text-tertiary border-tertiary/40 line-through"
+                                            }
+                                            Some(RuleShadowKind::Recomputed) => {
+                                              "bg-secondary/15 text-secondary border-secondary/40 line-through"
+                                            }
+                                            Some(RuleShadowKind::Accepted) | None => {
+                                              "bg-emerald-950/50 text-emerald-300 border-emerald-500/40"
+                                            }
                                           }
                                         )}>
                                           {&step.after_value}

@@ -895,7 +895,7 @@ impl OrcaProfile {
         label: "Top Surface Ironing".to_string(),
         category: "Structure".to_string(),
         unit: "".to_string(),
-        description: "Hot nozzle pass over top solid layers (no ironing, top, topmost, all_solid)"
+        description: "Hot nozzle pass over top solid layers (no ironing, top, topmost, solid)"
           .to_string(),
       },
       ParameterMeta {
@@ -1608,7 +1608,7 @@ impl OrcaProfile {
             "no ironing".to_string(),
             "top".to_string(),
             "topmost".to_string(),
-            "all_solid".to_string(),
+            "solid".to_string(),
           ],
           suggested: "top".to_string(),
         },

@@ -167,14 +167,21 @@ function apply(config, ctx, p)
   local c = resolve_pcts(p)
   local d = resolve_nozzle(config, ctx)
 
-  config["initial_layer_line_width"] = w(d, c.initial)
-  config["outer_wall_line_width"] = w(d, c.outer)
-  config["line_width"] = w(d, c.outer)
-  config["top_surface_line_width"] = w(d, c.top)
-  config["inner_wall_line_width"] = w(d, c.inner)
-  config["sparse_infill_line_width"] = w(d, c.infill)
-  config["internal_solid_infill_line_width"] = w(d, c.outer)
-  config["support_line_width"] = w(d, 100)
+  config["initial_layer_line_width"] = fmt_num(d * c.initial / 100.0, "%.2f")
+  local target_outer = d * c.outer / 100.0
+  if (ctx and ctx._process_seeded) and c.outer == 105 then
+    local cur_lw = tonumber(config["line_width"]) or target_outer
+    if cur_lw > target_outer then
+      target_outer = cur_lw
+    end
+  end
+  config["outer_wall_line_width"] = fmt_num(target_outer, "%.2f")
+  config["line_width"] = fmt_num(target_outer, "%.2f")
+  config["top_surface_line_width"] = fmt_num(d * c.top / 100.0, "%.2f")
+  config["inner_wall_line_width"] = fmt_num(d * c.inner / 100.0, "%.2f")
+  config["sparse_infill_line_width"] = fmt_num(d * c.infill / 100.0, "%.2f")
+  config["internal_solid_infill_line_width"] = fmt_num(d * c.outer / 100.0, "%.2f")
+  config["support_line_width"] = fmt_num(d, "%.2f")
 
   local lw_keys = {
     "initial_layer_line_width",

@@ -305,65 +305,6 @@ impl PolymerConstants {
       retract_before_wipe_str,
     )
   }
-
-  /// Computes `(climate_noz_delta, climate_bed_delta, climate_init_bed_extra, climate_retract_delta)`
-  /// for the active ambient weather preset using polymer family properties from `constants.json`.
-  pub fn compute_climate_deltas(
-    &self,
-    temp_c: i32,
-    rh_pct: i32,
-    climate_preset: &str,
-    is_heat_creep_resistant_nozzle: bool,
-  ) -> (i32, i32, i32, f64) {
-    let is_hot = temp_c >= 26 || climate_preset == "tropical" || climate_preset == "hot_dry";
-    let is_cold = temp_c <= 18 || climate_preset == "cold_dry" || climate_preset == "cold_humid";
-    let is_humid = rh_pct >= 60 || climate_preset == "tropical" || climate_preset == "cold_humid";
-
-    let climate_retract_delta = if is_humid {
-      if self.is_copolyester() || self.is_flexible() {
-        0.20
-      } else {
-        0.15
-      }
-    } else {
-      0.0
-    };
-
-    let mut climate_noz_delta = 0;
-    let mut climate_bed_delta = 0;
-    let mut climate_init_bed_extra = 0;
-    if is_hot {
-      climate_noz_delta = if is_heat_creep_resistant_nozzle {
-        -5
-      } else if self.is_copolyester() || self.family == "PLA" {
-        -10
-      } else if self.is_flexible() {
-        -6
-      } else {
-        -4
-      };
-      climate_bed_delta = if self.is_copolyester() {
-        -3
-      } else if self.family == "PLA" || self.is_flexible() {
-        -5
-      } else {
-        0
-      };
-    } else if is_cold {
-      climate_noz_delta =
-        if is_heat_creep_resistant_nozzle { 4 } else { 6 } - if is_humid { 3 } else { 0 };
-      climate_bed_delta = 5;
-      climate_init_bed_extra = 5;
-    } else if is_humid {
-      climate_noz_delta = -3;
-    }
-    (
-      climate_noz_delta,
-      climate_bed_delta,
-      climate_init_bed_extra,
-      climate_retract_delta,
-    )
-  }
 }
 
 pub fn constants() -> &'static WebConfigConstants {

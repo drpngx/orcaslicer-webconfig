@@ -121,7 +121,7 @@ function apply(config, ctx, p)
   if z_hop == "Normal" then z_hop = "Normal Lift" end
   local rbw = (p and p.retract_before_wipe) or "70%"
 
-  config["filament_retraction_length"] = string.format("%.2f", len_num)
+  config["filament_retraction_length"] = fmt_num(len_num, "%.2f")
   config["filament_retraction_speed"] = tostring(spd_num)
   config["filament_deretraction_speed"] = tostring(deretract_spd)
   config["filament_z_hop"] = "0.15"

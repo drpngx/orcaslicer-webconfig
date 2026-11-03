@@ -458,9 +458,13 @@ pub fn App() -> Html {
   // Evaluate Lua Stack
   let mut eval_result: StackEvaluationResult =
     TransformationEngine::evaluate_stack(&working_base, &rules, &eval_context);
-  if let Some(first_spool) = filaments.first() {
+  if let Some(active_spool_ref) = filaments
+    .iter()
+    .find(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
+    .or_else(|| filaments.first())
+  {
     let spool_eval = crate::threemf::evaluate_spool_filament_provenance(
-      first_spool,
+      active_spool_ref,
       &active_rig,
       Some(&eval_result.resulting_profile.values),
     );

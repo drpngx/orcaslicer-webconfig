@@ -75,11 +75,11 @@ function apply(config, ctx, p)
   local b_trim = math.floor(tonumber(p and p.bed_trim) or -5)
 
   local cur_ef = tonumber(config["elefant_foot_compensation"]) or 0.05
-  config["elefant_foot_compensation"] = string.format("%.2f", cur_ef + ef_boost)
+  config["elefant_foot_compensation"] = fmt_num(cur_ef + ef_boost, "%.2f")
   config["elefant_foot_compensation_layers"] = "1"
   local cur_b = tonumber(config["textured_plate_temp"]) or tonumber(config["hot_plate_temp"]) or 65
-  config["textured_plate_temp"] = tostring(cur_b + b_trim)
-  config["hot_plate_temp"] = tostring(cur_b + b_trim)
+  config["textured_plate_temp"] = fmt_num(cur_b + b_trim, "%.0f")
+  config["hot_plate_temp"] = fmt_num(cur_b + b_trim, "%.0f")
   local d = describe(p or {}, ctx)
   print("[Symptom:ElephantsFoot] " .. (d.badge or ""))
 end

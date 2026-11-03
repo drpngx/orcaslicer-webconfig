@@ -126,7 +126,7 @@ function apply(config, ctx, p)
   local margin = tonumber(p and p.margin_pct) or 10.0
   local peak_flow = start + (z_mm * step)
   local safe_mvs = math.max(2.0, math.min(50.0, peak_flow * (1.0 - margin / 100.0)))
-  config["filament_max_volumetric_speed"] = string.format("%.1f", safe_mvs)
+  config["filament_max_volumetric_speed"] = fmt_num(safe_mvs, "%.1f")
   local d = describe(p or {}, ctx)
   print("[Calibration:MVS] " .. (d.badge or ""))
 end

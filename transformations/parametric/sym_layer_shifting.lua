@@ -89,11 +89,11 @@ function apply(config, ctx, p)
   local zh_boost = tonumber(p and p.zhop_height) or 0.10
 
   local cur_ta = tonumber(config["travel_acceleration"]) or 10000
-  config["travel_acceleration"] = tostring(math.max(2500, math.floor(cur_ta * t_scale + 0.5)))
+  config["travel_acceleration"] = fmt_num(math.max(2500, cur_ta * t_scale), "%.0f")
   local cur_tj = tonumber(config["travel_jerk"]) or 12
-  config["travel_jerk"] = tostring(math.max(5, math.floor(cur_tj * t_scale + 0.5)))
+  config["travel_jerk"] = fmt_num(math.max(5, cur_tj * t_scale), "%.0f")
   local cur_zh = tonumber(config["filament_z_hop"]) or 0.15
-  config["filament_z_hop"] = string.format("%.2f", cur_zh + zh_boost)
+  config["filament_z_hop"] = fmt_num(cur_zh + zh_boost, "%.2f")
   config["sparse_infill_pattern"] = "gyroid"
   config["reduce_infill_retraction"] = "0"
   local d = describe(p or {}, ctx)

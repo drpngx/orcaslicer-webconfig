@@ -67,7 +67,7 @@ end
 
 function apply(config, ctx, p)
   local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.40
-  local wide_w = string.format("%.2f", noz * 1.25)
+  local wide_w = fmt_num(noz * 1.25, "%.2f")
   local spd = tostring(math.floor(tonumber(p and p.print_speed) or 20))
   local f_boost = tonumber(p and p.flow_boost) or 0.05
   local fan_spd = tostring(math.floor(tonumber(p and p.fan_speed) or 0))
@@ -84,7 +84,7 @@ function apply(config, ctx, p)
   -- 2. Boost flow ratio (+0.05 -> ~1.01) to flood microscopic air gaps between parallel extrusions
   local cur_flow = tonumber(config["filament_flow_ratio"]) or 0.96
   local new_flow = math.min(1.05, math.max(1.01, cur_flow + f_boost))
-  config["filament_flow_ratio"] = string.format("%.2f", new_flow)
+  config["filament_flow_ratio"] = fmt_num(new_flow, "%.2f")
 
   -- 3. Turn part cooling fan OFF (0%) so polymer chains anneal without crystalline haze
   config["fan_max_speed"] = fan_spd

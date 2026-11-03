@@ -125,9 +125,9 @@ function apply(config, ctx, p)
   local seam_gap = (p and p.seam_gap) or "10%"
 
   local cur_f = tonumber(config["filament_flow_ratio"]) or 0.96
-  config["filament_flow_ratio"] = string.format("%.3f", cur_f + flow_trim)
+  config["filament_flow_ratio"] = fmt_num(cur_f + flow_trim, "%.3f")
   local cur_d = tonumber(config["filament_deretraction_speed"]) or 40
-  config["filament_deretraction_speed"] = tostring(math.max(15, math.floor(cur_d * d_scale + 0.5)))
+  config["filament_deretraction_speed"] = fmt_num(math.max(15, cur_d * d_scale), "%.0f")
   config["filament_retract_before_wipe"] = "80%"
   config["seam_gap"] = seam_gap
   config["wipe_on_loops"] = "1"

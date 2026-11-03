@@ -13,7 +13,7 @@ function apply(config, ctx)
   if cur_mult < 1.45 then
     config["flush_multiplier"] = "1.45"
   else
-    config["flush_multiplier"] = string.format("%.2f", cur_mult)
+    config["flush_multiplier"] = fmt_num(cur_mult, "%.2f")
   end
 
   print("[Symptom:ACEProAntiClog] Transition flush hold -> 240C (PLA max safe range), Slicer cut retract -> 0mm (handled by KobraOS T[n] macro), Flush multiplier -> " .. config["flush_multiplier"] .. "x")

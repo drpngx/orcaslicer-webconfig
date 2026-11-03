@@ -16,7 +16,7 @@ meta = {
   formula_summary = "Relative stackable offsets/scales: ΔNozzle °C, ΔBed °C (+5°C 1st layer cold), ×MVS (halved heat-creep penalty on MicroSwiss), ΔRetract mm, ×Fan & +No-Fan Layers, Spiral Z-Hop + Wipe + Avoid Crossing Walls",
   default_condition_expr = "all",
   how_to_read_print = {
-    "🌴 Tropical (Hot & Humid, ≥26°C & ≥60% RH — e.g. Puerto Rico): Applies relative anti-heat-creep & anti-steam offsets on top of your active nozzle/filament profile: lowers nozzle temp (-10°C stock / -5°C MicroSwiss), lowers PLA/TPU bed temp (-5°C stock / -3°C MicroSwiss), scales Max Volumetric Speed (0.85× stock / 0.94× MicroSwiss for PLA; 0.78× stock / 0.90× MicroSwiss for Silk/PETG), boosts exhaust fan (+30% up to 90–100% PLA/TPU, 40% PETG), and adds humid anti-stringing (+0.15..+0.35mm retraction, 0.20mm Spiral Z-Hop, Top Surfaces Only for PETG, 0mm Z-Hop for TPU, 1.5mm Wipe While Retracting, Avoid Crossing Walls).",
+    "🌴 Tropical (Hot & Humid, ≥26°C & ≥60% RH — e.g. Puerto Rico): Applies relative anti-heat-creep & anti-steam offsets on top of your active nozzle/filament profile: lowers nozzle temp (-10°C stock / -5°C MicroSwiss), lowers PLA/TPU bed temp (-5°C stock / -3°C MicroSwiss), scales Max Volumetric Speed (0.85× stock / 0.94× MicroSwiss for PLA; 0.78× stock / 0.90× MicroSwiss for Silk/PETG), boosts exhaust fan (+30% up to 90–100% PLA/TPU, 40% PETG), and adds humid anti-stringing (+0.15..+0.35mm retraction, 0.20mm Spiral Z-Hop, Top Only for PETG, 0mm Z-Hop for TPU, 1.5mm Wipe While Retracting, Avoid Crossing Walls).",
     "☀️ Hot & Dry (≥26°C & <45% RH — Desert / Summer Shop): Applies relative hot-ambient heat-creep protection (lower nozzle & PLA bed offsets, MVS scaling with MicroSwiss heat-break awareness, boosted exhaust fan) while keeping dry-air retraction (-0.05mm stock / 0.00mm MicroSwiss) so softened plastic isn't pulled into the cold zone.",
     "❄️ Cold & Dry (≤18°C / 65°F & <60% RH — Winter / Garage): Fights thermal shock, corner warping, and cold-filament viscosity with relative boosts: +5..+8°C nozzle (+3..+5°C on high-conductivity MicroSwiss/Diamondback), +5°C bed (+10°C on 1st layer), 0× rear exhaust fan (0% Off), +2..+3 no-cooling initial layers, 0.65× part fan scale, 0.70× first-layer speed, and +5..+10mm Outer Brim or Mouse Ears.",
     "🌧️ Cold & Humid (≤18°C / 65°F & ≥60% RH — Coastal Winter / Heavy AC Room): Stacks Cold-Weather chamber heat retention (+5°C bed / +10°C 1st layer, 0% exhaust fan, +2..+3 no-fan layers, 0.70× 1st-layer speed, Brim) with High-Humidity anti-stringing (+0.15..+0.30mm retraction, 0.20mm Spiral Z-Hop, 1.5mm Wipe, Avoid Crossing Walls, and -4°C anti-steam nozzle trim).",
@@ -131,7 +131,7 @@ params = {
     default = "outer_only",
     options = {
       { value = "outer_only", label = "Outer Brim Only (+5mm PLA/PETG, +8mm ABS/ASA, +10mm PA/PC)" },
-      { value = "ears", label = "Mouse Ears (Corner Anti-Warp Discs)" },
+      { value = "brim_ears", label = "Mouse Ears (Corner Anti-Warp Discs)" },
       { value = "keep", label = "Keep Existing Brim Setting" },
     },
   },
@@ -209,13 +209,13 @@ function detect_material_family(p, config, ctx)
   local finish = (ctx and ctx.finish_type and tostring(ctx.finish_type)) or ""
   local combined = string.upper(raw_mat .. " " .. raw_name .. " " .. finish)
 
-  if string.find(combined, "PETG") or string.find(combined, "PCTG") or string.find(combined, "PET") then
+  if string.find(combined, "PETG") or string.find(combined, "PCTG") then
     return "PETG"
   elseif string.find(combined, "TPU") or string.find(combined, "FLEX") or string.find(combined, "PEBA") then
     return "TPU"
   elseif string.find(combined, "ABS") or string.find(combined, "ASA") then
     return "ABS_ASA"
-  elseif string.find(combined, "PA") or string.find(combined, "NYLON") or string.find(combined, "PC") or string.find(combined, "PPA") then
+  elseif string.find(combined, "PA") or string.find(combined, "NYLON") or string.find(combined, "PC") or string.find(combined, "PPA") or string.find(combined, "PET") then
     return "PA_PC"
   elseif string.find(combined, "SILK") or string.find(combined, "MATTE") then
     return "PLA_SILK"
@@ -272,7 +272,7 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
       d.retract_delta_mm = 0.20 + extra_r
     elseif fam == "PETG" then
       d.retract_delta_mm = 0.35 + extra_r
-      d.zhop_enforce = "Top Surfaces Only"
+      d.zhop_enforce = "Top Only"
     elseif fam == "TPU" then
       d.retract_delta_mm = 0.35 + extra_r
       d.retract_speed_scale = 0.75
@@ -512,15 +512,23 @@ function apply(config, ctx, p)
   -- 1. Relative Nozzle Temperature Offset (stacked on top of nozzle thermal_conductivity rules)
   if d.nozzle_delta_c ~= 0 or config["nozzle_temperature"] ~= nil then
     local cur_noz = get_orca_num(config, "nozzle_temperature", base_noz)
+    local cur_noz_hs = get_orca_num(config, "nozzle_temperature_HS", cur_noz)
+    local cur_noz_brass = get_orca_num(config, "nozzle_temperature_BRASS", cur_noz)
     local cur_noz_init = get_orca_num(config, "nozzle_temperature_initial_layer", cur_noz)
+    local cur_noz_init_hs = get_orca_num(config, "nozzle_temperature_initial_layer_HS", cur_noz_init)
+    local cur_noz_init_brass = get_orca_num(config, "nozzle_temperature_initial_layer_BRASS", cur_noz_init)
     local next_noz = math.max(185, math.min(320, math.floor(cur_noz + d.nozzle_delta_c + 0.5)))
+    local next_noz_hs = math.max(185, math.min(320, math.floor(cur_noz_hs + d.nozzle_delta_c + 0.5)))
+    local next_noz_brass = math.max(185, math.min(320, math.floor(cur_noz_brass + d.nozzle_delta_c + 0.5)))
     local next_noz_init = math.max(185, math.min(320, math.floor(cur_noz_init + d.nozzle_delta_c + 0.5)))
+    local next_noz_init_hs = math.max(185, math.min(320, math.floor(cur_noz_init_hs + d.nozzle_delta_c + 0.5)))
+    local next_noz_init_brass = math.max(185, math.min(320, math.floor(cur_noz_init_brass + d.nozzle_delta_c + 0.5)))
     set_orca_val(config, "nozzle_temperature", tostring(next_noz))
-    set_orca_val(config, "nozzle_temperature_HS", tostring(next_noz))
-    set_orca_val(config, "nozzle_temperature_BRASS", tostring(next_noz))
+    set_orca_val(config, "nozzle_temperature_HS", tostring(next_noz_hs))
+    set_orca_val(config, "nozzle_temperature_BRASS", tostring(next_noz_brass))
     set_orca_val(config, "nozzle_temperature_initial_layer", tostring(next_noz_init))
-    set_orca_val(config, "nozzle_temperature_initial_layer_HS", tostring(next_noz_init))
-    set_orca_val(config, "nozzle_temperature_initial_layer_BRASS", tostring(next_noz_init))
+    set_orca_val(config, "nozzle_temperature_initial_layer_HS", tostring(next_noz_init_hs))
+    set_orca_val(config, "nozzle_temperature_initial_layer_BRASS", tostring(next_noz_init_brass))
   end
 
   -- 2. Relative Bed Temperature Offset (+ extra +5°C on first layer in Cold weather;
@@ -544,17 +552,19 @@ function apply(config, ctx, p)
   local max_safe_retract = is_ms and 1.45 or 1.40
   local cur_ret = get_orca_num(config, "filament_retraction_length", base_retract)
   local next_ret = math.max(0.30, math.min(max_safe_retract, cur_ret + d.retract_delta_mm))
-  set_orca_val(config, "filament_retraction_length", string.format("%.2f", next_ret))
+  set_orca_val(config, "filament_retraction_length", fmt_num(next_ret, "%.2f"))
 
   local cur_ret_spd = get_orca_num(config, "filament_retraction_speed", 40)
-  local next_ret_spd = math.max(20, math.min(55, math.floor(cur_ret_spd * d.retract_speed_scale + 0.5)))
-  set_orca_val(config, "filament_retraction_speed", tostring(next_ret_spd))
+  local next_ret_spd = math.max(20, math.min(55, cur_ret_spd * d.retract_speed_scale))
+  set_orca_val(config, "filament_retraction_speed", fmt_num(next_ret_spd, "%.0f"))
 
   -- 4. Z-Hop & Humid Stringing Mitigation (Spiral/Slope Lift, Wipe While Retracting, Avoid Crossing Walls)
   -- Written to canonical per-filament Setting Overrides (`filament_*`) so OrcaSlicer's non-nil-wins
   -- hierarchy works across PLA/PETG (Spiral Lift), ABS/ASA/PA (Slope Lift), and TPU (0.00mm Z-Hop)!
   if d.zhop_mm >= 0.0 then
-    local zhop_str = string.format("%.2f", d.zhop_mm)
+    local cur_zhop = get_orca_num(config, "filament_z_hop", 0.0)
+    local eff_zhop = (d.zhop_mm == 0.0) and 0.0 or math.max(cur_zhop, d.zhop_mm)
+    local zhop_str = fmt_num(eff_zhop, "%.2f")
     set_orca_val(config, "filament_z_hop", zhop_str)
     set_orca_val(config, "filament_z_hop_types", d.zhop_type)
     set_orca_val(config, "filament_retract_lift_enforce", d.zhop_enforce)
@@ -573,14 +583,14 @@ function apply(config, ctx, p)
   -- 5. Relative Part Cooling Fan, No-Cooling Initial Layers, and Chamber Exhaust Fan
   local cur_fmin = get_orca_num(config, "fan_min_speed", base_fan_min)
   local cur_fmax = get_orca_num(config, "fan_max_speed", base_fan_max)
-  local next_fmin = math.max(0, math.min(100, math.floor((cur_fmin + d.fan_min_delta) * d.fan_scale + 0.5)))
-  local next_fmax = math.max(next_fmin, math.min(100, math.floor((cur_fmax + d.fan_max_delta) * d.fan_scale + 0.5)))
-  set_orca_val(config, "fan_min_speed", tostring(next_fmin))
-  set_orca_val(config, "fan_min_speed_HS", tostring(next_fmin))
-  set_orca_val(config, "fan_min_speed_BRASS", tostring(next_fmin))
-  set_orca_val(config, "fan_max_speed", tostring(next_fmax))
-  set_orca_val(config, "fan_max_speed_HS", tostring(next_fmax))
-  set_orca_val(config, "fan_max_speed_BRASS", tostring(next_fmax))
+  local next_fmin = math.max(0, math.min(100, (cur_fmin + d.fan_min_delta) * d.fan_scale))
+  local next_fmax = math.max(next_fmin, math.min(100, (cur_fmax + d.fan_max_delta) * d.fan_scale))
+  set_orca_val(config, "fan_min_speed", fmt_num(next_fmin, "%.0f"))
+  set_orca_val(config, "fan_min_speed_HS", fmt_num(next_fmin, "%.0f"))
+  set_orca_val(config, "fan_min_speed_BRASS", fmt_num(next_fmin, "%.0f"))
+  set_orca_val(config, "fan_max_speed", fmt_num(next_fmax, "%.0f"))
+  set_orca_val(config, "fan_max_speed_HS", fmt_num(next_fmax, "%.0f"))
+  set_orca_val(config, "fan_max_speed_BRASS", fmt_num(next_fmax, "%.0f"))
 
   if d.no_fan_layers_delta ~= 0 or config["close_fan_the_first_x_layers"] ~= nil then
     local cur_nfl = get_orca_num(config, "close_fan_the_first_x_layers", 1)
@@ -595,31 +605,76 @@ function apply(config, ctx, p)
 
   -- 6. Relative Max Volumetric Speed Multiplier (×mvs_scale, stacked on CHT/nozzle flow)
   local cur_mvs = get_orca_num(config, "filament_max_volumetric_speed", base_mvs)
+  local ctx_mvs = tonumber(ctx and ctx.filament_max_flow)
+  if config["type"] == "machine" and math.abs(cur_mvs - 12.0) < 0.01 and ctx_mvs and ctx_mvs > 0 then
+    cur_mvs = ctx_mvs
+  end
   local next_mvs = math.max(2.5, cur_mvs * d.mvs_scale)
-  set_orca_val(config, "filament_max_volumetric_speed", string.format("%.1f", next_mvs))
+  set_orca_val(config, "filament_max_volumetric_speed", fmt_num(next_mvs, "%.1f"))
 
-  -- 7. Relative Print Speed & First-Layer Speed Multipliers + Cold Corner Brim
-  if math.abs(d.print_speed_scale - 1.0) > 0.001 then
-    for _, sk in ipairs({ "outer_wall_speed", "inner_wall_speed", "sparse_infill_speed", "internal_solid_infill_speed" }) do
-      if config[sk] ~= nil then
-        local cur_s = get_orca_num(config, sk, 150)
-        set_orca_val(config, sk, tostring(math.max(20, math.floor(cur_s * d.print_speed_scale + 0.5))))
+  -- 7. Relative Print Speed & First-Layer Speed Multipliers (standalone profile evaluation) + Cold Corner Brim
+  -- On `_process_seeded` evaluations, Process presets retain their nominal speeds while
+  -- `filament_max_volumetric_speed` (×mvs_scale) caps volumetric flow uniformly across all layer heights.
+  if not (ctx and ctx._process_seeded) then
+    if math.abs(d.print_speed_scale - 1.0) > 0.001 then
+      for _, sk in ipairs({ "outer_wall_speed", "inner_wall_speed", "sparse_infill_speed", "internal_solid_infill_speed" }) do
+        if config[sk] ~= nil then
+          local cur_s = get_orca_num(config, sk, 150)
+          set_orca_val(config, sk, fmt_num(math.max(20, cur_s * d.print_speed_scale), "%.0f"))
+        end
       end
     end
-  end
 
-  if math.abs(d.first_layer_speed_scale - 1.0) > 0.001 then
-    local cur_fls = get_orca_num(config, "initial_layer_speed", 50)
-    local cur_flis = get_orca_num(config, "initial_layer_infill_speed", 60)
-    set_orca_val(config, "initial_layer_speed", tostring(math.max(20, math.floor(cur_fls * d.first_layer_speed_scale + 0.5))))
-    set_orca_val(config, "initial_layer_infill_speed", tostring(math.max(25, math.floor(cur_flis * d.first_layer_speed_scale + 0.5))))
+    if math.abs(d.first_layer_speed_scale - 1.0) > 0.001 then
+      local cur_fls = get_orca_num(config, "initial_layer_speed", 50)
+      local cur_flis = get_orca_num(config, "initial_layer_infill_speed", 60)
+      set_orca_val(config, "initial_layer_speed", fmt_num(math.max(20, cur_fls * d.first_layer_speed_scale), "%.0f"))
+      set_orca_val(config, "initial_layer_infill_speed", fmt_num(math.max(25, cur_flis * d.first_layer_speed_scale), "%.0f"))
+    end
   end
 
   if d.brim_type ~= "keep" and d.brim_width_add > 0 then
     config["brim_type"] = d.brim_type
     local cur_bw = get_orca_num(config, "brim_width", 0)
-    config["brim_width"] = tostring(math.max(d.brim_width_add, math.floor(cur_bw + d.brim_width_add + 0.5)))
+    config["brim_width"] = fmt_num(math.max(d.brim_width_add, cur_bw + d.brim_width_add), "%.0f")
   end
+
+  -- 8. Per-spool relative climate metadata computed 100% in Lua (zero climate math in Rust)
+  local preset_id = tostring((p and p.climate_preset) or (ctx and ctx.climate_preset) or "")
+  local is_hot_c = (temp_c >= 26) or (preset_id == "tropical") or (preset_id == "hot_dry")
+  local is_cold_c = (temp_c <= 18) or (preset_id == "cold_dry") or (preset_id == "cold_humid")
+  local is_humid_c = (rh_pct >= 60) or (preset_id == "tropical") or (preset_id == "cold_humid")
+  local spool_retract_delta = is_humid_c and ((fam == "PETG" or fam == "TPU") and 0.20 or 0.15) or 0.0
+  local spool_noz_delta = 0
+  local spool_bed_delta = 0
+  local spool_init_bed_extra = 0
+  if is_hot_c then
+    if fam == "PETG" or fam == "PLA" or fam == "PLA_SILK" then
+      spool_noz_delta = is_ms and -5 or -10
+    elseif fam == "TPU" then
+      spool_noz_delta = is_ms and -3 or -6
+    else
+      spool_noz_delta = is_ms and -2 or -4
+    end
+    if fam == "PETG" then
+      spool_bed_delta = -3
+    elseif fam == "PLA" or fam == "PLA_SILK" or fam == "TPU" then
+      spool_bed_delta = -5
+    end
+  elseif is_cold_c then
+    spool_noz_delta = (is_ms and 4 or 6) - (is_humid_c and 3 or 0)
+    spool_bed_delta = 5
+    spool_init_bed_extra = 5
+  elseif is_humid_c then
+    spool_noz_delta = -3
+  end
+  config["_climate_noz_delta_c"] = tostring(spool_noz_delta)
+  config["_climate_bed_delta_c"] = tostring(spool_bed_delta)
+  config["_climate_init_bed_extra_c"] = tostring(spool_init_bed_extra)
+  config["_climate_retract_delta_mm"] = tostring(spool_retract_delta)
+  config["_climate_min_bed_c"] = tostring(min_bed_floor)
+  config["_climate_zhop_enforce"] = tostring(d.zhop_enforce)
+  config["_climate_exhaust_target"] = tostring(d.exhaust_target)
 
   print(string.format(
     "[WeatherClimate:%s] Ambient=%dC, RH=%d%%, MicroSwiss=%s -> dNozzle=%+dC, dBed=%+dC (1st=%+dC), dRetract=%+.2fmm, MVS*%.2f (%.1f->%.1f), Exhaust=%d%%, Enclosure=%s",

@@ -527,6 +527,7 @@ pub struct LuaFilamentOverrides {
   pub filament_max_volumetric_speed: Option<String>,
   pub fan_min_speed: Option<String>,
   pub fan_max_speed: Option<String>,
+  pub overhang_fan_speed: Option<String>,
 }
 
 /// Step-1 pipeline unification: evaluate the default Lua transformation stack once per spool,
@@ -552,13 +553,19 @@ fn evaluate_spool_lua_filament_overrides_with_eval(
   seed_mvs: f32,
   seed_fan_min: i32,
   seed_fan_max: i32,
+  seed_ovh_fan: i32,
   structural_fan_cut_pct: i32,
   pre_temp_delta_c: i32,
+  brass_base_temp_c: i32,
+  brass_base_init_temp_c: i32,
+  brass_base_retract_str: &str,
   trim_floor: i32,
   min_safe_noz: i32,
   max_safe_noz: i32,
   mvs_ceil: f32,
   base_hop_positive: bool,
+  is_warp_prone_spool: bool,
+  max_ovh_fan_pct: i32,
 ) -> (
   LuaFilamentOverrides,
   crate::transformations::StackEvaluationResult,
@@ -571,6 +578,7 @@ fn evaluate_spool_lua_filament_overrides_with_eval(
   let seed_mvs_str = format!("{:.1}", seed_mvs);
   let seed_fan_min_str = seed_fan_min.to_string();
   let seed_fan_max_str = seed_fan_max.to_string();
+  let seed_ovh_fan_str = seed_ovh_fan.to_string();
   for (key, val) in [
     ("nozzle_temperature", seed_temp.to_string()),
     ("nozzle_temperature_initial_layer", seed_init.to_string()),
@@ -603,6 +611,7 @@ fn evaluate_spool_lua_filament_overrides_with_eval(
     ("fan_max_speed", seed_fan_max_str.clone()),
     ("fan_max_speed_BRASS", seed_fan_max_str.clone()),
     ("fan_max_speed_HS", seed_fan_max_str.clone()),
+    ("overhang_fan_speed", seed_ovh_fan_str.clone()),
   ] {
     seed_map.insert(key.to_string(), serde_json::json!([val]));
   }
@@ -682,6 +691,19 @@ fn evaluate_spool_lua_filament_overrides_with_eval(
       }),
     );
   }
+  bounds_obj.insert(
+    "overhang_fan_speed".to_string(),
+    serde_json::json!({
+      "min": 0.0,
+      "max": max_ovh_fan_pct as f64,
+      "min_by": "PWM Fan Speed Floor",
+      "max_by": if max_ovh_fan_pct < 100 {
+        "Warp-Prone Engineering Polymer Overhang Fan Ceiling"
+      } else {
+        "PWM Fan Speed Ceiling"
+      },
+    }),
+  );
   if !base_hop_positive {
     bounds_obj.insert(
       "filament_z_hop".to_string(),
@@ -715,11 +737,15 @@ fn evaluate_spool_lua_filament_overrides_with_eval(
     "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&spool.material_type).1,
     "filament_is_elastomer": crate::constants::constants()
       .is_elastomer_family_material(&spool.material_type),
+    "filament_is_warp_prone": is_warp_prone_spool,
     "addons": rig.addons,
     "climate_preset": rig.climate_preset,
     "ambient_temp_c": rig.ambient_temp_c,
     "humidity_pct": rig.humidity_pct,
     "pre_temp_delta_c": pre_temp_delta_c,
+    "brass_base_temp_c": brass_base_temp_c,
+    "brass_base_init_temp_c": brass_base_init_temp_c,
+    "brass_base_retract_mm": brass_base_retract_str,
   });
   let mut rules = crate::transformations::TransformationEngine::get_default_rules();
   crate::transformations::TransformationEngine::sync_rules_for_rig(
@@ -781,6 +807,7 @@ fn evaluate_spool_lua_filament_overrides_with_eval(
     filament_max_volumetric_speed: take("filament_max_volumetric_speed", &seed_mvs_str),
     fan_min_speed: take("fan_min_speed", &seed_fan_min_str),
     fan_max_speed: take("fan_max_speed", &seed_fan_max_str),
+    overhang_fan_speed: take("overhang_fan_speed", &seed_ovh_fan_str),
   };
   (overrides, eval)
 }
@@ -863,18 +890,64 @@ fn resolve_spool_orca_filament_map_and_provenance(
     }
   }
 
-  // Compute relative weather/climate deltas when a non-temperate rig climate is active
-  let (climate_noz_delta, climate_bed_delta, climate_init_bed_extra, climate_retract_delta) =
-    if let Some(rig) = rig_opt {
-      poly_cfg.compute_climate_deltas(
-        rig.ambient_temp_c,
-        rig.humidity_pct,
-        &rig.climate_preset,
-        rig.is_heat_creep_resistant_nozzle(),
+  // Evaluate per-spool weather/climate adjustments in Lua (`sym_weather_climate.lua`)
+  // so 100% of weather/climate math lives in Lua (zero climate math in Rust).
+  let (
+    climate_noz_delta,
+    climate_bed_delta,
+    climate_init_bed_extra,
+    climate_retract_delta,
+    lua_climate_min_bed,
+    lua_climate_zhop_enforce,
+    lua_climate_exhaust_target,
+  ) = if let Some(rig) = rig_opt {
+    let mut params = std::collections::HashMap::new();
+    params.insert("climate_preset".to_string(), rig.climate_preset.clone());
+    params.insert("ambient_temp_c".to_string(), rig.ambient_temp_c.to_string());
+    params.insert("humidity_pct".to_string(), rig.humidity_pct.to_string());
+    let weather_lua = crate::lua_engine::embed_param_defaults_in_lua(
+      include_str!("../transformations/parametric/sym_weather_climate.lua"),
+      &params,
+    );
+    let weather_ctx = serde_json::json!({
+      "filament_type": spool.material_type,
+      "finish_type": spool.finish_type,
+      "nozzle_type": rig.nozzle_type,
+      "nozzle_material": rig.nozzle_material,
+      "hotend": rig.hotend,
+      "addons": rig.addons,
+      "climate_preset": rig.climate_preset,
+      "ambient_temp_c": rig.ambient_temp_c,
+      "humidity_pct": rig.humidity_pct,
+    });
+    let weather_in = serde_json::json!({ "name": spool.name });
+    if let Ok((serde_json::Value::Object(wmap), _, _)) =
+      crate::lua_engine::execute_transformation_lua(&weather_lua, &weather_in, &weather_ctx)
+    {
+      let gs = |k: &str| wmap.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+      (
+        gs("_climate_noz_delta_c")
+          .and_then(|s| s.parse::<i32>().ok())
+          .unwrap_or(0),
+        gs("_climate_bed_delta_c")
+          .and_then(|s| s.parse::<i32>().ok())
+          .unwrap_or(0),
+        gs("_climate_init_bed_extra_c")
+          .and_then(|s| s.parse::<i32>().ok())
+          .unwrap_or(0),
+        gs("_climate_retract_delta_mm")
+          .and_then(|s| s.parse::<f64>().ok())
+          .unwrap_or(0.0),
+        gs("_climate_min_bed_c").and_then(|s| s.parse::<i32>().ok()),
+        gs("_climate_zhop_enforce"),
+        gs("_climate_exhaust_target").and_then(|s| s.parse::<i32>().ok()),
       )
     } else {
-      (0, 0, 0, 0.0)
-    };
+      (0, 0, 0, 0.0, None, None, None)
+    }
+  } else {
+    (0, 0, 0, 0.0, None, None, None)
+  };
 
   let wet_rh = derived_overrides
     .and_then(|m| m.get("_wet_filament_rh"))
@@ -957,18 +1030,9 @@ fn resolve_spool_orca_filament_map_and_provenance(
     }
   }
   let (min_safe_bed, max_safe_bed) = FilamentSpool::polymer_safe_bed_bounds(&spool.material_type);
-  let climate_min_bed = if let Some(rig) = rig_opt {
-    if rig.ambient_temp_c >= 26
-      || rig.climate_preset == "tropical"
-      || rig.climate_preset == "hot_dry"
-    {
-      min_safe_bed.max((rig.ambient_temp_c + 15).clamp(45, 50))
-    } else {
-      min_safe_bed
-    }
-  } else {
-    min_safe_bed
-  };
+  let climate_min_bed = lua_climate_min_bed
+    .map(|mb| min_safe_bed.max(mb))
+    .unwrap_or(min_safe_bed);
   let pre_wet_temp = (spool.print_temp + climate_noz_delta).clamp(min_safe_noz, max_safe_noz);
   // Structural Strength pack side-channel: per-spool nozzle boost (clamped to THIS polymer's safe max)
   // and max-fan reduction. Skipped for active-foaming TPU, where temperature controls foam density.
@@ -1134,8 +1198,44 @@ fn resolve_spool_orca_filament_map_and_provenance(
       base_map.insert(fil_key.to_string(), fallback);
     }
   }
+  if let Some(existing_lift_enforce) = first_str_from_map(&base_map, "filament_retract_lift_enforce")
+  {
+    let normalized = match existing_lift_enforce.trim() {
+      "Top Surfaces Only" | "top_only" | "top" => "Top Only",
+      "Bottom Surfaces Only" | "bottom_only" | "bottom" => "Bottom Only",
+      "Top and Bottom Surfaces" | "top_and_bottom" => "Top and Bottom",
+      "All" | "all" | "all_surfaces" => "All Surfaces",
+      other => other,
+    };
+    if normalized != existing_lift_enforce {
+      base_map.insert(
+        "filament_retract_lift_enforce".to_string(),
+        serde_json::json!([normalized]),
+      );
+    }
+  }
+  let mat_up_for_warp = spool.material_type.to_uppercase();
+  let is_warp_prone_spool = poly_cfg.is_warp_prone()
+    || orca_fil_type == "PET-CF"
+    || orca_fil_type == "PET-GF"
+    || mat_up_for_warp.contains("HIPS")
+    || mat_up_for_warp.contains("PET-CF")
+    || mat_up_for_warp.contains("PET-GF");
+  let max_ovh_fan_pct: i32 = if is_warp_prone_spool {
+    let boost = if fan_max_pct == 0 { 10 } else { 15 };
+    (fan_max_pct + boost).clamp(10, (poly_cfg.catalog_fan_bounds_pct[1] as i32 + 10).min(50))
+  } else {
+    100
+  };
+  let default_ovh_fan_str = max_ovh_fan_pct.to_string();
+  if is_warp_prone_spool && !is_external_disk_spool {
+    base_map.insert(
+      "overhang_fan_speed".to_string(),
+      serde_json::json!([default_ovh_fan_str.clone()]),
+    );
+  }
   for (opt_key, opt_default) in [
-    ("overhang_fan_speed", "100"),
+    ("overhang_fan_speed", default_ovh_fan_str.as_str()),
     ("overhang_fan_threshold", "25%"),
     ("enable_overhang_bridge_fan", "1"),
     ("close_fan_the_first_x_layers", "1"),
@@ -1156,6 +1256,11 @@ fn resolve_spool_orca_filament_map_and_provenance(
       base_map.insert(opt_key.to_string(), serde_json::json!([opt_default]));
     }
   }
+  let seed_ovh_fan = first_str_from_map(&base_map, "overhang_fan_speed")
+    .and_then(|s| s.trim().trim_end_matches('%').parse::<i32>().ok())
+    .unwrap_or(max_ovh_fan_pct)
+    .clamp(0, max_ovh_fan_pct);
+  let mut spool_ovh_fan_override: Option<String> = None;
 
   // ===== Step-1 pipeline unification (doc/pwl-nozzle-compensation-math.md §8) =====
   // The nozzle-material / hotend / anti-stringing Lua rules now OWN these filament keys in the
@@ -1189,16 +1294,29 @@ fn resolve_spool_orca_filament_map_and_provenance(
       } else {
         (spool.print_temp - noz_delta).max(190)
       };
-      let seed_temp = (brass_base + climate_noz_delta + structural_boost + wet_temp_drop)
+      let pre_wet_seed = (brass_base + climate_noz_delta + structural_boost)
         .clamp(min_safe_noz, max_safe_noz);
-      let seed_init = (seed_temp + init_delta).clamp(min_safe_noz, max_safe_noz);
+      let seed_temp = (pre_wet_seed + wet_temp_drop).clamp(min_safe_noz, max_safe_noz);
+      let seed_init = (pre_wet_seed + init_delta).clamp(min_safe_noz, max_safe_noz);
       let pre_temp_delta_c = seed_temp - brass_base;
       // The P25 anti-stringing band trim is a bounded, deliberate excursion below the
       // polymer's conservative floor (`hardware_limits.nozzle_temp_floor_relax_c`, approved in
-      // doc/pwl-nozzle-compensation-math.md §5.1), so the final nozzle temp clamps to
-      // floor−relax instead of undoing it. The initial-layer temp keeps the hard floor (P25
-      // deliberately does not trim it).
-      let trim_floor = (min_safe_noz - c.hardware_limits.nozzle_temp_floor_relax_c)
+      // doc/pwl-nozzle-compensation-math.md §5.1) for neat standard/copolyester polymers
+      // (`min_safe_noz <= 230`, non-elastomer, non-fiber), so the final nozzle temp clamps to
+      // floor−relax instead of undoing it. Elastomers (TPU), fiber composites (PETG-CF/PA-CF),
+      // and high-temp engineering polymers (ABS/ASA/PC/PA) keep their hard `min_safe_noz` floor
+      // to prevent cold-extrusion buckling, fiber clogging, or inter-layer delamination.
+      let is_elastomer_spool = c.is_elastomer_family_material(&spool.material_type);
+      let is_fiber_spool = spool.material_type.contains("-CF")
+        || spool.material_type.contains("-GF")
+        || spool.finish_type.contains("Carbon")
+        || spool.finish_type.contains("Glass");
+      let floor_relax = if !is_elastomer_spool && !is_fiber_spool && min_safe_noz <= 230 {
+        c.hardware_limits.nozzle_temp_floor_relax_c
+      } else {
+        0
+      };
+      let trim_floor = (min_safe_noz - floor_relax)
         .max(c.hardware_limits.min_extrusion_temp_c)
         .min(max_safe_noz);
       let mvs_ceil = if orca_fil_type == "ABS" || orca_fil_type == "ASA" {
@@ -1212,6 +1330,8 @@ fn resolve_spool_orca_filament_map_and_provenance(
         .parse::<f64>()
         .map(|v| v > 0.0)
         .unwrap_or(false);
+      let base_ret_len_str =
+        crate::constants::PolymerConstants::format_retraction_mm(base_ret_len);
       let (overrides, spool_eval) = evaluate_spool_lua_filament_overrides_with_eval(
         spool,
         rig,
@@ -1229,13 +1349,19 @@ fn resolve_spool_orca_filament_map_and_provenance(
         effective_mvs,
         fan_min_pct,
         fan_max_pct,
+        seed_ovh_fan,
         structural_fan_cut_pct,
         pre_temp_delta_c,
+        brass_base,
+        brass_base + init_delta,
+        &base_ret_len_str,
         trim_floor,
         min_safe_noz,
         max_safe_noz,
         mvs_ceil,
         base_hop_positive,
+        is_warp_prone_spool,
+        max_ovh_fan_pct,
       );
       effective_temp = seed_temp;
       initial_temp = seed_init;
@@ -1249,6 +1375,7 @@ fn resolve_spool_orca_filament_map_and_provenance(
           initial_temp = parsed.clamp(min_safe_noz, max_safe_noz);
         }
       }
+      initial_temp = initial_temp.max(effective_temp);
       if let Some(r) = overrides.filament_retraction_length {
         ret_len_str = r;
       }
@@ -1281,6 +1408,9 @@ fn resolve_spool_orca_filament_map_and_provenance(
           fan_max_pct = parsed.clamp(0, 100).max(fan_min_pct);
         }
       }
+      if let Some(ovh) = overrides.overhang_fan_speed {
+        spool_ovh_fan_override = Some(ovh);
+      }
       if base_hop_positive {
         if let Some(z) = overrides.filament_z_hop {
           z_hop_str = z;
@@ -1297,6 +1427,20 @@ fn resolve_spool_orca_filament_map_and_provenance(
       ((fan_max_pct as f64) * (100 - structural_fan_cut_pct) as f64 / 100.0).round() as i32;
     fan_min_pct = fan_min_pct.min(cut_max);
     fan_max_pct = cut_max;
+  }
+  let effective_max_ovh_fan_pct: i32 = if is_warp_prone_spool {
+    let boost = if fan_max_pct == 0 { 10 } else { 15 };
+    (fan_max_pct + boost).clamp(10, (poly_cfg.catalog_fan_bounds_pct[1] as i32 + 10).min(50))
+  } else {
+    100
+  };
+  if let Some(ref ovh) = spool_ovh_fan_override {
+    let clamped = ovh
+      .trim()
+      .parse::<f64>()
+      .map(|n| (n.round() as i32).clamp(0, effective_max_ovh_fan_pct).to_string())
+      .unwrap_or_else(|_| ovh.clone());
+    base_map.insert("overhang_fan_speed".to_string(), serde_json::json!([clamped]));
   }
 
   let compat_printer = rig_opt
@@ -1495,7 +1639,67 @@ fn resolve_spool_orca_filament_map_and_provenance(
       for &opt_key in OPTIONAL_FILAMENT_SETTING_KEYS {
         if touched.contains(opt_key) {
           if let Some(s) = first_str_from_map(ov, opt_key) {
-            base_map.insert(opt_key.to_string(), serde_json::json!([s]));
+            let final_s = if opt_key == "overhang_fan_speed" {
+              if is_warp_prone_spool {
+                s.trim()
+                  .trim_end_matches('%')
+                  .parse::<f64>()
+                  .map(|n| (n.round() as i32).clamp(0, effective_max_ovh_fan_pct).to_string())
+                  .unwrap_or_else(|_| effective_max_ovh_fan_pct.to_string())
+              } else if let Some(ref per_spool_ovh) = spool_ovh_fan_override {
+                if matches!(s.trim(), "25" | "80" | "85" | "90" | "95" | "100") {
+                  s
+                } else {
+                  per_spool_ovh.clone()
+                }
+              } else {
+                s
+              }
+            } else if opt_key == "filament_retract_lift_enforce" {
+              let normalized = match s.trim() {
+                "Top Surfaces Only" | "top_only" | "top" => "Top Only",
+                "Bottom Surfaces Only" | "bottom_only" | "bottom" => "Bottom Only",
+                "Top and Bottom Surfaces" | "top_and_bottom" => "Top and Bottom",
+                "All" | "all" | "all_surfaces" => "All Surfaces",
+                other => other,
+              };
+              if ov.get("_climate_zhop_enforce").and_then(|v| v.as_str()) == Some(normalized) {
+                lua_climate_zhop_enforce
+                  .clone()
+                  .unwrap_or_else(|| normalized.to_string())
+              } else {
+                normalized.to_string()
+              }
+            } else if opt_key == "additional_cooling_fan_speed" || opt_key == "chamber_fan_speed" {
+              let parsed_pct = s
+                .trim()
+                .trim_end_matches('%')
+                .parse::<f64>()
+                .map(|n| n.round() as i32)
+                .unwrap_or(0);
+              if is_warp_prone_spool {
+                let max_exhaust = if orca_fil_type == "ABS"
+                  || orca_fil_type == "ASA"
+                  || orca_fil_type == "ASA-CF"
+                {
+                  10
+                } else {
+                  0
+                };
+                parsed_pct.clamp(0, max_exhaust).to_string()
+              } else if let Some(lua_ex) = lua_climate_exhaust_target {
+                if lua_ex >= 0 && matches!(parsed_pct, 0 | 10 | 40 | 80 | 90 | 100) {
+                  lua_ex.to_string()
+                } else {
+                  s
+                }
+              } else {
+                s
+              }
+            } else {
+              s
+            };
+            base_map.insert(opt_key.to_string(), serde_json::json!([final_s]));
           }
         }
       }

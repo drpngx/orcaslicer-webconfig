@@ -234,7 +234,7 @@ function apply(config, ctx, p)
   local s4 = math.floor((tonumber(p and p.overhang_4_4_speed) or 15) + 0.5)
   local fan = math.floor((tonumber(p and p.overhang_fan_speed) or 100) + 0.5)
 
-  config["bridge_flow"] = string.format("%.2f", bf)
+  config["bridge_flow"] = fmt_num(bf, "%.2f")
   config["bridge_speed"] = tostring(bs)
   config["enable_overhang_speed"] = "1"
   config["detect_overhang_wall"] = "1"

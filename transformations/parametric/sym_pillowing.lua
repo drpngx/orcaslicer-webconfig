@@ -79,7 +79,7 @@ function apply(config, ctx, p)
   config["top_shell_layers"] = tostring(new_tl)
   local lh = tonumber(config["layer_height"]) or 0.20
   local cur_tt = tonumber(config["top_shell_thickness"]) or (cur_tl * lh)
-  config["top_shell_thickness"] = string.format("%.2f", cur_tt + (extra_layers * lh))
+  config["top_shell_thickness"] = fmt_num(cur_tt + (extra_layers * lh), "%.2f")
   local cur_inf = tonumber(config["sparse_infill_density"]) or 15
   config["sparse_infill_density"] = tostring(math.min(100, math.floor(cur_inf + inf_boost))) .. "%"
   local d = describe(p or {}, ctx)

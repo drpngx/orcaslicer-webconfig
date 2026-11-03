@@ -100,11 +100,11 @@ function apply(config, ctx, p)
   local scale = math.max(0.5, math.min(1.0, (100.0 - mvs_trim) / 100.0))
 
   local cur_f = tonumber(config["filament_flow_ratio"]) or 0.96
-  config["filament_flow_ratio"] = string.format("%.3f", cur_f + f_boost)
+  config["filament_flow_ratio"] = fmt_num(cur_f + f_boost, "%.3f")
   local cur_mvs = tonumber(config["filament_max_volumetric_speed"]) or 15.0
-  config["filament_max_volumetric_speed"] = string.format("%.1f", cur_mvs * scale)
+  config["filament_max_volumetric_speed"] = fmt_num(cur_mvs * scale, "%.1f")
   local cur_t = tonumber(config["nozzle_temperature"]) or 230
-  config["nozzle_temperature"] = tostring(cur_t + t_boost)
+  config["nozzle_temperature"] = fmt_num(cur_t + t_boost, "%.0f")
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:UnderExtrusion] " .. (d.badge or ""))

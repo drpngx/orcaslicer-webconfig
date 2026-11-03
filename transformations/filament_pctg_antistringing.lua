@@ -62,8 +62,8 @@ function validate(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local r_len = string.format("%.2f", tonumber(p and p.retract_len) or 1.00)
-  local r_spd = tostring(math.floor((tonumber(p and p.retract_speed) or 45) + 0.5))
+  local r_len = fmt_num(tonumber(p and p.retract_len) or 1.00, "%.2f")
+  local r_spd = fmt_num(tonumber(p and p.retract_speed) or 45, "%.0f")
   local z_type = (p and p.zhop_type) or "Spiral Lift"
 
   if ctx.filament_type == "PCTG" then

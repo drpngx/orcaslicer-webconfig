@@ -5,17 +5,19 @@
 
 function apply(config, ctx)
   local base_w = tonumber(config["initial_layer_line_width"]) or (tonumber(ctx.nozzle_diameter) and (tonumber(ctx.nozzle_diameter) * 1.25) or 0.50)
-  config["initial_layer_line_width"] = string.format("%.2f", base_w * 1.10)
-  local base_spd = tonumber(config["initial_layer_speed"]) or 50
-  config["initial_layer_speed"] = tostring(math.max(15, math.floor(base_spd * 0.50 + 0.5)))
+  config["initial_layer_line_width"] = fmt_num(base_w * 1.10, "%.2f")
+  if not (ctx and ctx._process_seeded) then
+    local base_spd = tonumber(config["initial_layer_speed"]) or 50
+    config["initial_layer_speed"] = fmt_num(math.max(15, base_spd * 0.50), "%.0f")
+  end
 
   if config["hot_plate_temp_initial_layer"] and config["hot_plate_temp_initial_layer"][1] then
     local bt = tonumber(config["hot_plate_temp_initial_layer"][1]) or 80
     local new_bt = bt + 5
     config["hot_plate_temp_initial_layer"] = { tostring(new_bt) }
-    print("[Symptom:BedAdhesion] Initial layer width +10% -> " .. config["initial_layer_line_width"] .. "mm, speed -50% -> " .. config["initial_layer_speed"] .. "mm/s, bed initial temp +5C -> " .. tostring(new_bt) .. "C")
+    print("[Symptom:BedAdhesion] Initial layer width +10% -> " .. config["initial_layer_line_width"] .. "mm, bed initial temp +5C -> " .. tostring(new_bt) .. "C")
   else
     config["hot_plate_temp_initial_layer"] = { "85" }
-    print("[Symptom:BedAdhesion] Initial layer width +10% -> " .. config["initial_layer_line_width"] .. "mm, speed -50% -> " .. config["initial_layer_speed"] .. "mm/s, bed initial temp -> 85C")
+    print("[Symptom:BedAdhesion] Initial layer width +10% -> " .. config["initial_layer_line_width"] .. "mm, bed initial temp -> 85C")
   end
 end

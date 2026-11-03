@@ -1,6 +1,6 @@
 -- Core Slicer Config Pack #2: Top Surface Ironing & Gloss
 -- Polymer-aware `ironing_flow` (`12%` PLA, `18%` PETG/PCTG, `22%` ASA/ABS/PC),
--- `ironing_type` (`topmost` vs. `top` / `all solid`), `ironing_speed`, `ironing_spacing`,
+-- `ironing_type` (`topmost` vs. `top` / `solid`), `ironing_speed`, `ironing_spacing`,
 -- and `top_surface_pattern = "monotonicline"`.
 
 meta = {
@@ -10,7 +10,7 @@ meta = {
   category = "Core Slicer Config Pack (Top Surface & Ironing)",
   tree_category = "5. Top/Bottom Surfaces & Infill",
   tree_subcategory = "Top Surface Ironing & Gloss",
-  slicer_menu_path = "Process → Quality → Ironing (`topmost` / `top` / `all solid`) + Polymer-Aware Ironing Flow (`12%` PLA / `18%` PETG / `22%` ASA·ABS) + Speed + Spacing + `monotonicline`",
+  slicer_menu_path = "Process → Quality → Ironing (`topmost` / `top` / `solid`) + Polymer-Aware Ironing Flow (`12%` PLA / `18%` PETG / `22%` ASA·ABS) + Speed + Spacing + `monotonicline`",
   when_to_run = "Enable when printing flat badges, enclosures, nameplates, or mechanical faces that need an injection-molded, line-free top finish.",
   formula_summary = "ironing_flow = Polymer_Flow (12% PLA / 18% PETG·PCTG / 22% ASA·ABS)  •  ironing_speed = 30–40 mm/s  •  ironing_spacing = 0.15 mm  •  top_surface_pattern = monotonicline",
   default_condition_expr = "all",
@@ -84,13 +84,13 @@ params = {
   {
     id = "ironing_type",
     label = "2. Ironing Scope (ironing_type)",
-    description = "topmost irons only the highest Z horizontal face; top irons every stepped horizontal top surface; all solid irons every solid internal layer for maximum density.",
+    description = "topmost irons only the highest Z horizontal face; top irons every stepped horizontal top surface; solid irons every solid internal layer for maximum density.",
     type = "enum",
     default = "topmost",
     options = {
       { value = "topmost", label = "topmost — Topmost Horizontal Surface Only (Fast)" },
       { value = "top", label = "top — All Stepped Top Surfaces (Recommended for Multi-Tier Parts)" },
-      { value = "all solid", label = "all solid — Every Solid Layer (Structural / Optical Density)" },
+      { value = "solid", label = "solid — Every Solid Layer (Structural / Optical Density)" },
     },
   },
   {
@@ -229,7 +229,7 @@ function apply(config, ctx, p)
   config["ironing_type"] = itype
   config["ironing_flow"] = string.format("%d%%", flow)
   config["ironing_speed"] = tostring(spd)
-  config["ironing_spacing"] = string.format("%.2f", spacing)
+  config["ironing_spacing"] = fmt_num(spacing, "%.2f")
   config["top_surface_pattern"] = pat
   config["only_one_wall_top"] = "1"
 

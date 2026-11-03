@@ -121,7 +121,7 @@ local function compute_moisture_curve(rh_raw)
 end
 
 function validate(p, ctx)
-  local rh = tonumber(p and p.humidity_pct) or 40
+  local rh = tonumber((p and (p.humidity_pct or p.filament_humidity_pct)) or (ctx and ctx.filament_humidity_pct)) or 40
   if rh < 10 or rh > 95 then
     return false, "Filament humidity must be between 10% and 95% RH."
   end
@@ -129,7 +129,7 @@ function validate(p, ctx)
 end
 
 function describe(p, ctx)
-  local c = compute_moisture_curve(p and p.humidity_pct)
+  local c = compute_moisture_curve((p and (p.humidity_pct or p.filament_humidity_pct)) or (ctx and ctx.filament_humidity_pct))
   local fl_mode = (p and p.first_layer_recovery) or "auto"
   local scope = (ctx and ctx.scope) or "All Active Filaments"
   if c.rh <= 20 then
@@ -168,7 +168,7 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local c = compute_moisture_curve(p and p.humidity_pct)
+  local c = compute_moisture_curve((p and (p.humidity_pct or p.filament_humidity_pct)) or (ctx and ctx.filament_humidity_pct))
   local fl_mode = (p and p.first_layer_recovery) or "auto"
   if c.rh <= 20 then
     return
@@ -184,18 +184,21 @@ function apply(config, ctx, p)
   config["nozzle_temperature_initial_layer"] = tostring(cur_init_t)
 
   local cur_f = tonumber(config["filament_flow_ratio"]) or 0.94
-  config["filament_flow_ratio"] = string.format("%.2f", cur_f + c.flow_trim)
+  config["filament_flow_ratio"] = fmt_num(cur_f + c.flow_trim, "%.2f")
 
   local cur_ret = tonumber(config["filament_retraction_length"]) or 1.00
-  config["filament_retraction_length"] = string.format("%.2f", math.min(1.45, cur_ret + c.retract_add))
+  config["filament_retraction_length"] = fmt_num(math.min(1.45, cur_ret + c.retract_add), "%.2f")
   config["filament_retract_before_wipe"] = string.format("%d%%", c.retract_before_wipe)
   config["filament_wipe"] = "1"
   config["filament_wipe_distance"] = "2"
-  local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
-  if cur_zhop < 0.10 then
-    config["filament_z_hop"] = "0.1"
+  local is_elastomer = ctx and ctx.filament_is_elastomer == true
+  if not is_elastomer then
+    local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
+    if cur_zhop < 0.10 then
+      config["filament_z_hop"] = "0.1"
+    end
+    config["filament_z_hop_types"] = "Spiral Lift"
   end
-  config["filament_z_hop_types"] = "Spiral Lift"
   config["reduce_crossing_wall"] = "1"
 
   if fl_mode ~= "off" then
@@ -210,19 +213,24 @@ function apply(config, ctx, p)
     boost_init_bed("textured_plate_temp_initial_layer", "textured_plate_temp")
     boost_init_bed("hot_plate_temp_initial_layer", "hot_plate_temp")
     local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
-    local eff_init_w = c.init_width * (nd / 0.40)
-    config["bottom_solid_infill_flow_ratio"] = string.format("%.2f", c.bottom_flow)
-    config["initial_layer_line_width"] = string.format("%.2f", eff_init_w)
-    config["initial_layer_speed"] = tostring(c.init_speed)
-    config["initial_layer_infill_speed"] = tostring(c.init_infill_speed)
+    local base_iw = 0.50 * (nd / 0.40)
+    local cur_iw = tonumber(config["initial_layer_line_width"]) or base_iw
+    local wet_iw_delta = (c.init_width - 0.50) * (nd / 0.40)
+    local eff_init_w = math.min(0.65 * (nd / 0.40), cur_iw + wet_iw_delta)
+    config["bottom_solid_infill_flow_ratio"] = fmt_num(c.bottom_flow, "%.2f")
+    config["initial_layer_line_width"] = fmt_num(eff_init_w, "%.2f")
+    if not (ctx and ctx._process_seeded) then
+      config["initial_layer_speed"] = tostring(c.init_speed)
+      config["initial_layer_infill_speed"] = tostring(c.init_infill_speed)
+    end
   end
 
   -- Export relative metadata markers so standalone filament exports apply the exact per-spool deltas
   config["_wet_filament_rh"] = tostring(c.rh)
   config["_wet_filament_temp_drop_c"] = tostring(c.temp_drop)
   config["_wet_filament_init_bed_boost_c"] = tostring((fl_mode ~= "off") and c.init_bed_boost or 0)
-  config["_wet_filament_flow_trim"] = string.format("%.2f", c.flow_trim)
-  config["_wet_filament_retract_add_mm"] = string.format("%.2f", c.retract_add)
+  config["_wet_filament_flow_trim"] = tostring(c.flow_trim)
+  config["_wet_filament_retract_add_mm"] = tostring(c.retract_add)
   config["_wet_filament_retract_before_wipe_pct"] = tostring(c.retract_before_wipe)
   sync_coupled_physics(config, ctx)
 

@@ -105,9 +105,9 @@ function apply(config, ctx, p)
   end
 
   local cur_bf = tonumber(config["bridge_flow"]) or 1.00
-  config["bridge_flow"] = string.format("%.2f", cur_bf * bf_scale)
+  config["bridge_flow"] = fmt_num(cur_bf * bf_scale, "%.2f")
   local cur_bs = tonumber(config["bridge_speed"]) or 45
-  config["bridge_speed"] = tostring(math.max(15, math.floor(cur_bs * bs_scale + 0.5)))
+  config["bridge_speed"] = fmt_num(math.max(15, cur_bs * bs_scale), "%.0f")
   config["overhang_fan_speed"] = "100"
   local d = describe(p or {}, ctx)
   print("[Symptom:Bridging] " .. (d.badge or ""))

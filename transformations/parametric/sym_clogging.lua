@@ -133,14 +133,14 @@ function apply(config, ctx, p)
 
   local cur_t = tonumber(config["nozzle_temperature"]) or 230
   local new_t = cur_t + temp_adj
-  config["nozzle_temperature"] = tostring(new_t)
+  config["nozzle_temperature"] = fmt_num(new_t, "%.0f")
   local cur_r = tonumber(config["filament_retraction_length"]) or 0.80
-  config["filament_retraction_length"] = string.format("%.2f", cur_r * ret_scale)
+  config["filament_retraction_length"] = fmt_num(cur_r * ret_scale, "%.2f")
   local cur_mvs = tonumber(config["filament_max_volumetric_speed"]) or 15.0
-  config["filament_max_volumetric_speed"] = string.format("%.1f", cur_mvs * scale)
+  config["filament_max_volumetric_speed"] = fmt_num(cur_mvs * scale, "%.1f")
   local cur_cut = tonumber(config["retraction_distances_when_cut"]) or 14.0
-  config["retraction_distances_when_cut"] = string.format("%.1f", math.min(12.0, cur_cut * 0.85))
-  config["_flush_temperature"] = tostring(new_t)
+  config["retraction_distances_when_cut"] = fmt_num(math.min(12.0, cur_cut * 0.85), "%.1f")
+  config["_flush_temperature"] = fmt_num(new_t, "%.0f")
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:AntiClog] " .. (d.badge or ""))

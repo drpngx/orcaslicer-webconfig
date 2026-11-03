@@ -110,13 +110,13 @@ function apply(config, ctx, p)
 
   local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.42
   local cur_w = tonumber(config["initial_layer_line_width"]) or noz
-  config["initial_layer_line_width"] = string.format("%.2f", cur_w * w_scale)
+  config["initial_layer_line_width"] = fmt_num(cur_w * w_scale, "%.2f")
   local cur_s = tonumber(config["initial_layer_speed"]) or 45
-  config["initial_layer_speed"] = tostring(math.max(15, math.floor(cur_s * s_scale + 0.5)))
+  config["initial_layer_speed"] = fmt_num(math.max(15, cur_s * s_scale), "%.0f")
   local cur_is = tonumber(config["initial_layer_infill_speed"]) or cur_s
-  config["initial_layer_infill_speed"] = tostring(math.max(15, math.floor(cur_is * s_scale + 0.5)))
+  config["initial_layer_infill_speed"] = fmt_num(math.max(15, cur_is * s_scale), "%.0f")
   local cur_nt = tonumber(config["nozzle_temperature_initial_layer"]) or 230
-  config["nozzle_temperature_initial_layer"] = tostring(cur_nt + fl_t)
+  config["nozzle_temperature_initial_layer"] = fmt_num(cur_nt + fl_t, "%.0f")
   local cur_bt = tonumber(config["textured_plate_temp_initial_layer"]) or tonumber(config["hot_plate_temp_initial_layer"]) or 65
   config["textured_plate_temp_initial_layer"] = tostring(cur_bt + fl_t)
   config["hot_plate_temp_initial_layer"] = tostring(cur_bt + fl_t)
