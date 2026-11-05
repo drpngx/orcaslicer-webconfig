@@ -937,16 +937,17 @@ function describe(p, ctx)
   local wipe_tag = (preset == "stock_g9111") and "14× Wipe" or ((wipe_n >= 14) and "14× WIPE_NOZZLE" or string.format("%d× WIPE_NOZZLE1", wipe_n))
   local cut_tag = (cut_mode ~= "off") and " • E-14 Cut (0.65×)" or ""
   local fix_tag = unbottleneck and " • PETG 0.7mm/19mm³s" or ""
+  local probe_tag = (preheat_t > 140) and string.format("%d°C Wipe → 140°C Z-Probe → Print Temp", preheat_t) or "140°C Z-Probe → Print Temp"
   local badge = string.format(
-    "⚠️ Kobra S1 G9111: %d°C→140°C • %s • %s%s%s",
-    preheat_t,
+    "⚠️ Kobra S1 G9111: %s • %s • %s%s%s",
+    probe_tag,
     wipe_tag,
     z_tag,
     cut_tag,
     fix_tag
   )
   return {
-    title = string.format("⚠️ Startup G-Code: Kobra S1 Unpacked G9111 & Poop-Saver (%d°C Preheat, %s, %s%s)", preheat_t, wipe_tag, z_tag, cut_tag),
+    title = string.format("⚠️ Startup G-Code: Kobra S1 Unpacked G9111 & Poop-Saver (%s, %s, %s%s)", probe_tag, wipe_tag, z_tag, cut_tag),
     description = string.format(
       "⚠️ POTENTIALLY DANGEROUS: Tunes Kobra S1 start/end/toolchange G-code (%s, %s%s%s%s%s%s).",
       (preset == "stock_g9111") and "stock G9111 wrapper" or string.format("%d°C pre-wipe -> 140°C silicone-pad Z-home guard, %s", preheat_t, wipe_tag),

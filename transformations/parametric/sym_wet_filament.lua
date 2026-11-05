@@ -174,19 +174,19 @@ function apply(config, ctx, p)
     return
   end
 
-  local cur_t = tonumber(config["nozzle_temperature"]) or 250
-  local cur_init_t = tonumber(config["nozzle_temperature_initial_layer"]) or cur_t
+  local cur_t = scalar_num(config["nozzle_temperature"], 250)
+  local cur_init_t = scalar_num(config["nozzle_temperature_initial_layer"], cur_t)
   local new_upper_t = tostring(cur_t + c.temp_drop)
   -- Lower upper-layer nozzle temp to stop steam boiling, but preserve full initial layer temp for PEI adhesion!
   config["nozzle_temperature"] = new_upper_t
   config["nozzle_temperature_HS"] = new_upper_t
-  config["nozzle_temperature_BRASS"] = tostring((tonumber(config["nozzle_temperature_BRASS"]) or (cur_t - 5)) + c.temp_drop)
+  config["nozzle_temperature_BRASS"] = tostring(scalar_num(config["nozzle_temperature_BRASS"], cur_t - 5) + c.temp_drop)
   config["nozzle_temperature_initial_layer"] = tostring(cur_init_t)
 
-  local cur_f = tonumber(config["filament_flow_ratio"]) or 0.94
+  local cur_f = scalar_num(config["filament_flow_ratio"], 0.94)
   config["filament_flow_ratio"] = fmt_num(cur_f + c.flow_trim, "%.2f")
 
-  local cur_ret = tonumber(config["filament_retraction_length"]) or 1.00
+  local cur_ret = scalar_num(config["filament_retraction_length"], 1.00)
   config["filament_retraction_length"] = fmt_num(math.min(1.45, cur_ret + c.retract_add), "%.2f")
   config["filament_retract_before_wipe"] = string.format("%d%%", c.retract_before_wipe)
   config["filament_wipe"] = "1"
@@ -207,14 +207,14 @@ function apply(config, ctx, p)
     -- `hot_plate_temp_initial_layer`; that boost now survives and stacks with ours), falling back
     -- to the plate's continuous temp when no first-layer value is set.
     local boost_init_bed = function(init_key, cont_key)
-      local cur = tonumber(config[init_key]) or tonumber(config[cont_key]) or 85
+      local cur = scalar_num(config[init_key], scalar_num(config[cont_key], 85))
       config[init_key] = tostring(math.min(120, cur + c.init_bed_boost))
     end
     boost_init_bed("textured_plate_temp_initial_layer", "textured_plate_temp")
     boost_init_bed("hot_plate_temp_initial_layer", "hot_plate_temp")
     local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
     local base_iw = 0.50 * (nd / 0.40)
-    local cur_iw = tonumber(config["initial_layer_line_width"]) or base_iw
+    local cur_iw = scalar_num(config["initial_layer_line_width"], base_iw)
     local wet_iw_delta = (c.init_width - 0.50) * (nd / 0.40)
     local eff_init_w = math.min(0.65 * (nd / 0.40), cur_iw + wet_iw_delta)
     config["bottom_solid_infill_flow_ratio"] = fmt_num(c.bottom_flow, "%.2f")
