@@ -1,9 +1,15 @@
 ## What's New in This Release
 
-* **Single-File Portable Desktop App (Tauri v2):** Self-contained portable executables for Windows (`x64`), Linux (`x64`), and macOS (`Apple Silicon`) with embedded WebAssembly UI, catalog, and capability-sandboxed local filesystem scanning (`%APPDATA%\AnycubicSlicerNext` & `%APPDATA%\OrcaSlicer`).
-* **Transformation-Based Slicer Architecture (Lua 5.4):** Stackable, sandboxed Lua transformations for nozzle thermal conductivity (`Brass`, `Hardened Steel`, `Diamondback PCD`, `Ruby`, `MicroSwiss CM2/CHT`), volumetric flow ceilings, Scarf Joint seams & Arachne variable walls, multi-material ACE Pro / AMS purge matrix synthesis, and active-foaming TPU Shore A hardness tuning (`60A–92A`).
-* **Wet / Damp Filament Humidity (`% RH`) Auto-Tuner & Weather Compensation:** Single-slider drybox humidity compensation (`10%–80% RH`) that automatically trims upper-layer nozzle temperature to stop steam boiling while preserving first-layer adhesion (`+4..+6°C` first-layer bed boost, `1.04–1.06×` bottom flow to seal steam pinholes, slowed `30–35 mm/s` first layer, and anti-steam retraction/wipe).
-* **Centralized Polymer & Hardware Constants (`constants.json`):** Printer-agnostic, data-driven polymer physics, safe temperature/bed/flow bounds, Z-hop & retract-before-wipe schedules, and vendor filament catalogs.
+* **Single-File Portable Desktop App (Tauri v2):** Self-contained portable executables for Windows (`x64`), Linux (`x64`), and macOS (`Apple Silicon`) with embedded WebAssembly UI, catalog, and capability-sandboxed (`cap-std`) local filesystem scanning (`%APPDATA%\AnycubicSlicerNext` & `%APPDATA%\OrcaSlicer`).
+* **3-Phase Transformation Pipeline, PWL Nozzle Curves & Coupled Parameter Physics:**
+  * **100% Lua Domain Physics & Deferred Epilogue Quantization:** Evaluates piecewise-linear (PWL) nozzle thermal conductivity (`P10`), FlowTech viscoelastic retraction (`P12`), and DiamondBack PCD anti-stringing (`P25`) curves over an immutable `base[key]` (`x0`) snapshot at full IEEE-754 precision, quantizing once at the end of the Phase 3 Epilogue.
+  * **Telescoping Coupled Physics (`sync_coupled_physics`, `coupled_purge_factor`):** Automatically synchronizes Pressure Advance $\text{PA}(T, d, \mu)$, Graetz Max Volumetric Speed $Q_{\text{max}}(T, d, k)$, Nozzle Tip Radiant Part Cooling, and Residence-Time Multi-Color Purge Volumes $\gamma_{\text{purge}}$ across orifice diameters (`0.20mm–1.00mm`), nozzle materials, and temperature shifts.
+  * **Phase 3 Epilogue Constraint Projection (`Priority = ∞`):** Enforces rule-declared box bounds (`constrain(key, min, max, reason)`) and cross-key relational invariants (First-Layer Thermal Continuity, Prime $\le$ Pull Speed, Spiral Z-Hop Floor, Fan Max $\ge$ Min, and CoreXY Outer-Wall VFA Guard).
+* **Core Slicer Config Packs, Declarative Scoping & Provenance Inspector (`🧬`):**
+  * Built-in packs for **Nozzle-Proportional Line Widths**, **Support Detachability & Tree Tuning**, **Top Surface Ironing**, **Dimensional Tolerance**, **Bridges & Overhangs**, **Structural Strength**, **CoreXY Outer-Wall VFA Consistency**, and **Rig-Specific Fast-Start G-Code** (`Anycubic Kobra S1`, `Kobra S1 Max`, and `Bambu Lab X1/P1`).
+  * Declarative Polymer / Nozzle / Process Tier scope filters (`RuleScopeFilter`), static Lua rule linting (`lint_lua_rule`), and counterfactual shadow detection (`⚡ Overwritten` vs. `🛡️ Clamped`).
+* **Wet / Damp Filament Humidity (`% RH`) Auto-Tuner & Weather Compensation:** Single-slider drybox humidity compensation (`10%–80% RH`) and relative Tropical / Cold weather rules with MicroSwiss heat-break awareness.
+* **380+ Printers & Centralized Polymer Catalog (`constants.json`):** Printer-agnostic kinematics classes (`CoreXY` vs. `Bed-Slinger`), per-machine hotend thermal ceilings, `.3mf` ACE Pro / AMS multi-spool I/O, and checked-in Siraya Tech, SUNLU, and Polymaker catalogs.
 
 ### Installation Instructions
 

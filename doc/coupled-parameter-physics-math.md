@@ -50,18 +50,24 @@ $$\Delta T_{\text{net}}^{(s)} = \Delta T_{\text{pre}} + \left(T_{\text{eff}}^{(s
 
 ### 2.2 Telescoping Update Law
 
-For each coupled multiplicative parameter $y \in \{\text{PA}, Q_{\text{max}}\}$ with total physical coupling factor $\Phi_y(d, \text{nozzle}, \Delta T_{\text{net}}^{(s)})$:
+For each coupled multiplicative parameter $y \in \lbrace\text{PA}, Q_{\text{max}}\rbrace$ with total physical coupling factor $\Phi_y(d, \text{nozzle}, \Delta T_{\text{net}}^{(s)})$:
 
 - **Initial Synchronization ($s = 1$, when `_coupled_state` has no prior factor $\Phi_y^{(0)} = 1.0$):**
-  $$y^{(1)} = y^{(0)} \cdot \Phi_y\!\left(d, \text{nozzle}, \Delta T_{\text{net}}^{(1)}\right)$$
+
+$$y^{(1)} = y^{(0)} \cdot \Phi_y\left(d, \text{nozzle}, \Delta T_{\text{net}}^{(1)}\right)$$
+
 - **Subsequent Synchronizations ($s > 1$, after a downstream rule shifts $T_{\text{eff}}^{(s-1)} \to T_{\text{eff}}^{(s)}$):**
-  $$y^{(s)} = y^{(s-1)} \cdot \frac{\Phi_y\!\left(d, \text{nozzle}, \Delta T_{\text{net}}^{(s)}\right)}{\Phi_y\!\left(d, \text{nozzle}, \Delta T_{\text{net}}^{(s-1)}\right)}$$
+
+$$y^{(s)} = y^{(s-1)} \cdot \frac{\Phi_y\left(d, \text{nozzle}, \Delta T_{\text{net}}^{(s)}\right)}{\Phi_y\left(d, \text{nozzle}, \Delta T_{\text{net}}^{(s-1)}\right)}$$
 
 By the telescoping product identity:
+
 $$y^{(0)} \cdot \Phi_y^{(1)} \cdot \frac{\Phi_y^{(2)}}{\Phi_y^{(1)}} \cdots \frac{\Phi_y^{(k)}}{\Phi_y^{(k-1)}} = y^{(0)} \cdot \Phi_y^{(k)}$$
+
 the final value is **path-independent** while every step $s$ is a genuine relative transformation of $y^{(s-1)}$ (`config[key]`), preserving both user multipliers and counterfactual lineage attribution.
 
 Similarly, for additive fan duty-cycle offsets $\Delta\text{Fan}(d, \text{nozzle}, \Delta T_{\text{net}}^{(s)})$:
+
 $$\text{Fan}^{(s)} = \text{Fan}^{(s-1)} + \left(\Delta\text{Fan}^{(s)} - \Delta\text{Fan}^{(s-1)}\right)$$
 
 ---
@@ -78,21 +84,22 @@ The filament column between the extruder drive gears and the melt zone acts as a
 
 Factoring $\text{PA}$ around the reference calibration $\text{PA}_0$ (measured on a $d_0 = 0.40\text{ mm}$ Brass/Hardened-Steel nozzle at $\Delta T_{\text{net}} = 0$):
 
-$$\Phi_{\text{PA}}\!\left(d, \mu_{\text{nozzle}}, \Delta T_{\text{net}}\right) = c_{d,\text{PA}}(d) \cdot c_{\text{slip}}(\mu_{\text{nozzle}}) \cdot c_\eta(\Delta T_{\text{net}})$$
+$$\Phi_{\text{PA}}\left(d, \mu_{\text{nozzle}}, \Delta T_{\text{net}}\right) = c_{d,\text{PA}}(d) \cdot c_{\text{slip}}(\mu_{\text{nozzle}}) \cdot c_\eta(\Delta T_{\text{net}})$$
 
 ### 3.2 Component Factors
 
 1. **Orifice Diameter Scaling $c_{d,\text{PA}}(d)$:**
-   Across MicroSwiss FlowTech orifices ($d \in \{0.25, 0.40, 0.60, 0.80, 1.00\}\text{ mm}$) where land-to-diameter ratio $L_n / d$ scales quasi-geometrically and power-law shear thinning ($n \approx 0.38$) moderates the Newtonian $d^{-3}$ dependence:
-   $$c_{d,\text{PA}}(d) = \left(\frac{0.40}{d}\right)^{1.35}$$
+   Across MicroSwiss FlowTech orifices ($d \in \lbrace 0.25, 0.40, 0.60, 0.80, 1.00\rbrace\text{ mm}$) where land-to-diameter ratio $L_n / d$ scales quasi-geometrically and power-law shear thinning ($n \approx 0.38$) moderates the Newtonian $d^{-3}$ dependence:
+
+$$c_{d,\text{PA}}(d) = \left(\frac{0.40}{d}\right)^{1.35}$$
 
    | Orifice Diameter $d$ ($\text{mm}$) | $c_{d,\text{PA}}(d) = (0.40/d)^{1.35}$ | Physical Interpretation |
    | :---: | :---: | :--- |
-   | $0.25$ | $1.886$ | High capillary constriction $\implies +88.6\%$ higher PA |
+   | $0.25$ | $1.886$ | High capillary constriction ($\implies +88.6$% higher PA) |
    | $0.40$ | $1.000$ | Reference orifice ($1.000\times$) |
-   | $0.60$ | $0.578$ | Wider bore lowers backpressure $\implies -42.2\%$ PA |
-   | $0.80$ | $0.392$ | Low capillary resistance $\implies -60.8\%$ PA |
-   | $1.00$ | $0.290$ | Draft orifice $\implies -71.0\%$ PA |
+   | $0.60$ | $0.578$ | Wider bore lowers backpressure ($\implies -42.2$% PA) |
+   | $0.80$ | $0.392$ | Low capillary resistance ($\implies -60.8$% PA) |
+   | $1.00$ | $0.290$ | Draft orifice ($\implies -71.0$% PA) |
 
 2. **Nozzle Wall-Slip / Friction Factor $c_{\text{slip}}(\mu_{\text{nozzle}})$:**
    Polycrystalline diamond (PCD, $\mu = 0.01$ vs. $\mu \approx 0.25\text{–}0.35$ for Brass/Steel) and fluoropolymer/nanocomposite coatings induce partial wall slip and suppress exit die-swell, reducing capillary backpressure:
@@ -106,13 +113,17 @@ $$\Phi_{\text{PA}}\!\left(d, \mu_{\text{nozzle}}, \Delta T_{\text{net}}\right) =
    | **Brass / Hardened Steel / ObXidian** (`brass`, `hardened_steel`) | $0.28$ | $1.000$ |
 
 3. **Arrhenius Melt-Viscosity Shift $c_\eta(\Delta T_{\text{net}})$:**
-   Over a $\pm 15\text{ °C}$ window around $T_{\text{eq}}$, polymer melt viscosity follows $\eta(T) \approx \eta(T_{\text{eq}})\,\exp(-\alpha_\eta\,\Delta T_{\text{net}})$ with $\alpha_\eta = 0.012\text{ K}^{-1}$ ($1.2\%/\text{°C}$):
-   $$c_\eta(\Delta T_{\text{net}}) = \mathrm{clamp}\!\left(1.0 - 0.012\,\Delta T_{\text{net}},\; 0.80,\; 1.25\right)$$
-   - **Colder melt ($\Delta T_{\text{net}} < 0$):** Viscosity increases $\implies$ capillary backpressure rises $\implies \text{PA}$ increases by $+1.2\%$ per $-\text{°C}$.
-   - **Hotter melt ($\Delta T_{\text{net}} > 0$):** Viscosity decreases $\implies$ capillary backpressure drops $\implies \text{PA}$ decreases by $-1.2\%$ per $+\text{°C}$.
+   Over a $\pm 15\text{ °C}$ window around $T_{\text{eq}}$, polymer melt viscosity follows $\eta(T) \approx \eta(T_{\text{eq}})\,\exp(-\alpha_\eta\,\Delta T_{\text{net}})$ with $\alpha_\eta = 0.012\text{ K}^{-1}$ ($1.2$% per $\text{°C}$):
+
+$$c_\eta(\Delta T_{\text{net}}) = \mathrm{clamp}\left(1.0 - 0.012\,\Delta T_{\text{net}},\; 0.80,\; 1.25\right)$$
+
+   - **Colder melt ($\Delta T_{\text{net}} < 0$):** Viscosity increases $\implies$ capillary backpressure rises $\implies \text{PA}$ increases by $+1.2$% per $-\text{°C}$.
+   - **Hotter melt ($\Delta T_{\text{net}} > 0$):** Viscosity decreases $\implies$ capillary backpressure drops $\implies \text{PA}$ decreases by $-1.2$% per $+\text{°C}$.
 
 4. **Domain Bounds:**
-   $$\text{PA} = \mathrm{clamp}\!\left(\text{PA}_0 \cdot \Phi_{\text{PA}},\; \text{PA}_{\min},\; \text{PA}_{\max}\right)$$
+
+$$\text{PA} = \mathrm{clamp}\left(\text{PA}_0 \cdot \Phi_{\text{PA}},\; \text{PA}_{\min},\; \text{PA}_{\max}\right)$$
+
    with $[\text{PA}_{\min}, \text{PA}_{\max}] = [0.005, 0.120]\text{ s}$ for rigid polymers and $[0.010, 0.250]\text{ s}$ for elastomers (`TPU`, `TPE`, `PEBA`).
 
 ---
@@ -127,7 +138,7 @@ $$\text{Gz} = \frac{\rho\,c_p\,Q}{\pi\,k_{\text{eff}}\,L_{\text{melt}}}$$
 
 At the $d_0 = 0.40\text{ mm}$ reference orifice and P10 thermal equilibrium ($\Delta T_{\text{net}} = 0$), Rule P10's temperature curve already balances nozzle wall thermal conductivity $k_{\text{nozzle}}$ against the heater setpoint offset $\Delta T_{\text{P10}}$ so that single-bore nozzles deliver $1.00\times$ nominal plasticization capacity. However, when the user changes orifice diameter ($d \ne 0.40\text{ mm}$), uses a multi-bore CHT splitter, or shifts temperature away from P10 equilibrium ($\Delta T_{\text{net}} \ne 0$), $Q_{\text{max}}$ scales as:
 
-$$\Phi_{\text{MVS}}\!\left(d, \text{nozzle}, \Delta T_{\text{net}}\right) = c_{\text{bore}}(\text{nozzle}) \cdot c_{d,Q}(d, \text{nozzle}) \cdot c_T(\Delta T_{\text{net}})$$
+$$\Phi_{\text{MVS}}\left(d, \text{nozzle}, \Delta T_{\text{net}}\right) = c_{\text{bore}}(\text{nozzle}) \cdot c_{d,Q}(d, \text{nozzle}) \cdot c_T(\Delta T_{\text{net}})$$
 
 ### 4.2 Component Factors
 
@@ -137,25 +148,31 @@ $$\Phi_{\text{MVS}}\!\left(d, \text{nozzle}, \Delta T_{\text{net}}\right) = c_{\
 
 2. **Orifice Exit-Land & High-Graetz Scaling $c_{d,Q}(d, \text{nozzle})$:**
    Widening the orifice ($d > 0.40\text{ mm}$) relieves exit-land shear pressure drop ($\Delta P_{\text{land}} \propto d^{-4}$), shifting the bottleneck from stepper torque to radial heat conduction across the melt zone:
-   $$c_{d,Q}(d, \text{nozzle}) = \left(\frac{d}{0.40}\right)^{\beta_Q(\text{nozzle})}$$
+
+$$c_{d,Q}(d, \text{nozzle}) = \left(\frac{d}{0.40}\right)^{\beta_Q(\text{nozzle})}$$
+
    where the exponent $\beta_Q(\text{nozzle})$ reflects how effectively the nozzle wall sustains radial heat flux at high volumetric throughput:
    - **CHT / CHT CM2:** $\beta_Q = 0.38$
    - **Brass / CM2 / Tungsten Carbide / SiC:** $\beta_Q = 0.34$
-   - **DiamondBack PCD:** $\beta_Q = 0.30$ (PCD's $543\text{ W/m}\cdot\text{K}$ conductivity is partially counterbalanced at very high flow by P10's $-10\text{ °C}$ lower wall temperature $\Delta T_{\text{heater}}$, yielding $+13.0\%$ at $0.6\text{ mm}$, $+23.1\%$ at $0.8\text{ mm}$, $+31.6\%$ at $1.0\text{ mm}$, and $-13.2\%$ at $0.25\text{ mm}$)
+   - **DiamondBack PCD:** $\beta_Q = 0.30$ (PCD's $543\text{ W/m}\cdot\text{K}$ conductivity is partially counterbalanced at very high flow by P10's $-10\text{ °C}$ lower wall temperature $\Delta T_{\text{heater}}$, yielding $+13.0$% at $0.6\text{ mm}$, $+23.1$% at $0.8\text{ mm}$, $+31.6$% at $1.0\text{ mm}$, and $-13.2$% at $0.25\text{ mm}$)
    - **Hardened Steel:** $\beta_Q = 0.22$ (radial wall resistance $1/k_{\text{HS}}$ limits high-flow gains on large orifices)
 
 3. **Net Temperature Excursion Factor $c_T(\Delta T_{\text{net}})$:**
    Deviating from the nozzle's P10 equilibrium temperature changes both the thermal driving potential $(T_{\text{wall}} - T_{\text{melt}})$ and the capillary viscosity:
-   $$c_T(\Delta T_{\text{net}}) = \mathrm{clamp}\!\left(1.0 + 0.015\,\Delta T_{\text{net}},\; 0.82,\; 1.15\right)$$
-   - Dropping temperature by $-2\text{ °C}$ in P25 (`symptom_stringing_diamondback`) trims $Q_{\text{max}}$ by $-3.0\%$.
-   - Dropping temperature by $-8\text{ °C}$ in P55 (`sym_wet_filament`) trims $Q_{\text{max}}$ by $-12.0\%$.
-   - Boosting temperature by $+8\text{ °C}$ in P57 (`structural_strength`) increases $Q_{\text{max}}$ by $+12.0\%$.
+
+$$c_T(\Delta T_{\text{net}}) = \mathrm{clamp}\left(1.0 + 0.015\,\Delta T_{\text{net}},\; 0.82,\; 1.15\right)$$
+
+   - Dropping temperature by $-2\text{ °C}$ in P25 (`symptom_stringing_diamondback`) trims $Q_{\text{max}}$ by $-3.0$%.
+   - Dropping temperature by $-8\text{ °C}$ in P55 (`sym_wet_filament`) trims $Q_{\text{max}}$ by $-12.0$%.
+   - Boosting temperature by $+8\text{ °C}$ in P57 (`structural_strength`) increases $Q_{\text{max}}$ by $+12.0$%.
 
 4. **Euler Buckling Guard for Elastomers & Machine Flow Ceiling:**
    - For elastomers (`filament_is_elastomer == true`, e.g. `TPU 95A`, `TPU 85A`, `PEBA`) and foaming filaments, volumetric speed is limited by Euler column buckling in the extruder throat rather than melt-zone conduction. Therefore, for elastomers:
-     $$\Phi_{\text{MVS,elastomer}} = \min\!\left(1.0,\; \Phi_{\text{MVS}}\right)$$
+
+$$\Phi_{\text{MVS,elastomer}} = \min\left(1.0,\; \Phi_{\text{MVS}}\right)$$
+
      so cold-temperature excursions or $0.25\text{ mm}$ orifices safely reduce $Q_{\text{max}}$, while wide orifices or CHT splitters never push TPU above its buckling limit.
-   - Final $Q_{\text{max}}$ is clamped to $[1.5,\; Q_{\text{ceiling}}]\text{ mm}^3/\text{s}$, where $Q_{\text{ceiling}} = \min\!\big(Q_{\text{hotend\_max}},\, \max(Q_0, 22.0)\big)$.
+   - Final $Q_{\text{max}}$ is clamped to $[1.5,\; Q_{\text{ceiling}}]\text{ mm}^3/\text{s}$, where $Q_{\text{ceiling}} = \min\left(Q_{\text{hotend-max}},\, \max(Q_0, 22.0)\right)$.
 
 ---
 
@@ -165,34 +182,38 @@ $$\Phi_{\text{MVS}}\!\left(d, \text{nozzle}, \Delta T_{\text{net}}\right) = c_{\
 
 As the nozzle traverses overhangs and short-layer-time features, the flat annular face surrounding the orifice transfers heat downward into the freshly deposited polymer bead via gap conduction across the thin air film and thermal radiation:
 
-$$\dot{q}_{\text{tip}\to\text{bead}} = \frac{k_{\text{air}}}{\delta_{\text{layer}}}\,\left(T_{\text{tip\_face}}(k_{\text{nozzle}}) - T_{\text{bead}}\right) + \varepsilon\,\sigma\,\left(T_{\text{tip\_face}}^4 - T_{\text{bead}}^4\right)$$
+$$\dot{q}_{\text{tip}\to\text{bead}} = \frac{k_{\text{air}}}{\delta_{\text{layer}}}\,\left(T_{\text{tip-face}}(k_{\text{nozzle}}) - T_{\text{bead}}\right) + \varepsilon\,\sigma\,\left(T_{\text{tip-face}}^4 - T_{\text{bead}}^4\right)$$
 
-On a **Hardened Steel** nozzle ($k \approx 22\text{ W/m}\cdot\text{K}$), part-cooling airflow over the nozzle cone cools the external tip flat by $-8\text{ to }-12\text{ °C}$ below the heater block RTD. On a **DiamondBack Solid PCD** tip ($k = 543\text{ W/m}\cdot\text{K}$) brazed into a **CuCrZr** shank ($k \approx 320\text{ W/m}\cdot\text{K}$), internal conduction replenishes tip heat almost instantaneously, keeping $T_{\text{tip\_face}}$ within $1.5\text{ °C}$ of the melt core even when the heater block setpoint is $-10\text{ °C}$ lower.
+On a **Hardened Steel** nozzle ($k \approx 22\text{ W/m}\cdot\text{K}$), part-cooling airflow over the nozzle cone cools the external tip flat by $-8\text{ to }-12\text{ °C}$ below the heater block RTD. On a **DiamondBack Solid PCD** tip ($k = 543\text{ W/m}\cdot\text{K}$) brazed into a **CuCrZr** shank ($k \approx 320\text{ W/m}\cdot\text{K}$), internal conduction replenishes tip heat almost instantaneously, keeping $T_{\text{tip-face}}$ within $1.5\text{ °C}$ of the melt core even when the heater block setpoint is $-10\text{ °C}$ lower.
 
 Simultaneously, increasing orifice diameter ($d > 0.40\text{ mm}$) increases the cross-sectional area of the deposited bead $A_{\text{bead}} = w \cdot h \propto d^2$, increasing the linear enthalpy $\dot{H}' = \rho\,c_p\,A_{\text{bead}}\,(T_{\text{eff}} - T_g)$ that the part-cooling fan must extract per millimeter of travel.
 
 ### 5.2 Additive Fan Duty-Cycle Law
 
-For **fan-cooled polymers** (polymers with baseline `fan_min_speed` $\ge 15\%$ and not in the enclosed warp-sensitive family `{ABS, ASA, PA, PA-CF, PA-GF, PC, PPS, PEEK, HIPS}`):
+For **fan-cooled polymers** (polymers with baseline `fan_min_speed` $\ge 15$% and not in the enclosed warp-sensitive family $\lbrace\text{ABS}, \text{ASA}, \text{PA}, \text{PA-CF}, \text{PA-GF}, \text{PC}, \text{PPS}, \text{PEEK}, \text{HIPS}\rbrace$):
 
-$$\Delta\text{Fan}_{\min}\!\left(d, k_{\text{nozzle}}, \Delta T_{\text{net}}\right) = \Delta\text{Fan}_{k,\min}(\text{nozzle}) + \Delta\text{Fan}_d(d) + \Delta\text{Fan}_T(\Delta T_{\text{net}})$$
+$$\Delta\text{Fan}_{\min}\left(d, k_{\text{nozzle}}, \Delta T_{\text{net}}\right) = \Delta\text{Fan}_{k,\min}(\text{nozzle}) + \Delta\text{Fan}_d(d) + \Delta\text{Fan}_T(\Delta T_{\text{net}})$$
 
-$$\Delta\text{Fan}_{\max}\!\left(d, k_{\text{nozzle}}, \Delta T_{\text{net}}\right) = \Delta\text{Fan}_{k,\max}(\text{nozzle}) + \mathrm{round}\!\big(0.6\,\Delta\text{Fan}_d(d)\big) + \mathrm{round}\!\big(0.5\,\Delta\text{Fan}_T(\Delta T_{\text{net}})\big)$$
+$$\Delta\text{Fan}_{\max}\left(d, k_{\text{nozzle}}, \Delta T_{\text{net}}\right) = \Delta\text{Fan}_{k,\max}(\text{nozzle}) + \mathrm{round}\left(0.6\,\Delta\text{Fan}_d(d)\right) + \mathrm{round}\left(0.5\,\Delta\text{Fan}_T(\Delta T_{\text{net}})\right)$$
 
 where:
 1. **Nozzle Tip Conductivity Offset $\Delta\text{Fan}_k(\text{nozzle})$:**
-   - **DiamondBack PCD (`diamondback`):** $\Delta\text{Fan}_{k,\min} = +6\%$, $\Delta\text{Fan}_{k,\max} = +4\%$, $\Delta\text{Fan}_{k,\text{overhang}} = +5\%$
-   - **Tungsten Carbide / SiC (`tungsten_carbide`, `sic`):** $\Delta\text{Fan}_{k,\min} = +3\%$, $\Delta\text{Fan}_{k,\max} = +2\%$, $\Delta\text{Fan}_{k,\text{overhang}} = +3\%$
-   - **CM2 / CHT (`cm2`, `cht`, `cht_cm2`):** $\Delta\text{Fan}_{k,\min} = +2\%$, $\Delta\text{Fan}_{k,\max} = +0\%$, $\Delta\text{Fan}_{k,\text{overhang}} = +2\%$
-   - **Brass / Hardened Steel:** $+0\%$
+   - **DiamondBack PCD (`diamondback`):** $\Delta\text{Fan}_{k,\min} = +6$%, $\Delta\text{Fan}_{k,\max} = +4$%, $\Delta\text{Fan}_{k,\text{overhang}} = +5$%
+   - **Tungsten Carbide / SiC (`tungsten_carbide`, `sic`):** $\Delta\text{Fan}_{k,\min} = +3$%, $\Delta\text{Fan}_{k,\max} = +2$%, $\Delta\text{Fan}_{k,\text{overhang}} = +3$%
+   - **CM2 / CHT (`cm2`, `cht`, `cht_cm2`):** $\Delta\text{Fan}_{k,\min} = +2$%, $\Delta\text{Fan}_{k,\max} = +0$%, $\Delta\text{Fan}_{k,\text{overhang}} = +2$%
+   - **Brass / Hardened Steel:** $+0$%
 2. **Orifice Bead-Enthalpy Offset $\Delta\text{Fan}_d(d)$:**
-   $$\Delta\text{Fan}_d(d) = \mathrm{round}\!\left(12.0 \cdot \max(0.0,\; d - 0.40)\right)$$
-   giving $+0\%$ at $d \le 0.40\text{ mm}$, $+2\%$ at $0.60\text{ mm}$, $+5\%$ at $0.80\text{ mm}$, and $+7\%$ at $1.00\text{ mm}$.
+
+$$\Delta\text{Fan}_d(d) = \mathrm{round}\left(12.0 \cdot \max(0.0,\; d - 0.40)\right)$$
+
+   giving $+0$% at $d \le 0.40\text{ mm}$, $+2$% at $0.60\text{ mm}$, $+5$% at $0.80\text{ mm}$, and $+7$% at $1.00\text{ mm}$.
 3. **Net Temperature Excursion Offset $\Delta\text{Fan}_T(\Delta T_{\text{net}})$:**
-   $$\Delta\text{Fan}_T(\Delta T_{\text{net}}) = \mathrm{round}\!\left(\mathrm{clamp}(0.40\,\Delta T_{\text{net}},\; -5.0,\; +6.0)\right)$$
+
+$$\Delta\text{Fan}_T(\Delta T_{\text{net}}) = \mathrm{round}\left(\mathrm{clamp}(0.40\,\Delta T_{\text{net}},\; -5.0,\; +6.0)\right)$$
+
    *(Note: If `_structural_fan_cut_pct > 0` is active from the Structural Strength pack, positive fan boosts on `fan_max_speed` are suppressed so the user's deliberate interlayer-fusion fan cut is honored).*
 4. **Monotonicity & Bounds:**
-   `fan_max_speed` is clamped to $[0, 100]\%$, and `fan_min_speed` is clamped to $[0, \text{fan\_max\_speed}]\%$.
+   `fan_max_speed` is clamped to $[0, 100]$%, and `fan_min_speed` is clamped to $[0, \text{fan-max-speed}]$%.
 
 ---
 
@@ -206,32 +227,37 @@ In laminar pipe flow with Navier slip length $b(\mu_{\text{nozzle}})$, the asymp
 
 ### 6.2 Coupled Purge Factor (`coupled_purge_factor(config, ctx)`)
 
-$$\gamma_{\text{purge}}\!\left(L_{\text{melt}}, \mu_{\text{nozzle}}, \Delta T_{\text{net}}\right) = \mathrm{clamp}\!\Big(c_{\text{melt}}(L_{\text{melt}}) \cdot c_{\text{wall\_slip}}(\mu_{\text{nozzle}}) \cdot c_{\eta,\text{purge}}(\Delta T_{\text{net}}),\; 0.70,\; 1.65\Big)$$
+$$\gamma_{\text{purge}}\left(L_{\text{melt}}, \mu_{\text{nozzle}}, \Delta T_{\text{net}}\right) = \mathrm{clamp}\left(c_{\text{melt}}(L_{\text{melt}}) \cdot c_{\text{wall-slip}}(\mu_{\text{nozzle}}) \cdot c_{\eta,\text{purge}}(\Delta T_{\text{net}}),\; 0.70,\; 1.65\right)$$
 
 where:
 1. **Hotend Melt-Zone Volume Multiplier $c_{\text{melt}}(L_{\text{melt}})$:**
-   $$c_{\text{melt}} = \mathrm{clamp}(\text{ctx.melt\_zone\_multiplier},\; 0.75,\; 1.60)$$
+
+$$c_{\text{melt}} = \mathrm{clamp}(\text{ctx.melt-zone-multiplier},\; 0.75,\; 1.60)$$
+
    (e.g. $1.00$ for stock Kobra S1 hotend; $1.15\text{–}1.25$ for MicroSwiss FlowTech unitary hotend).
-2. **Nozzle Wall-Slip Evacuation Factor $c_{\text{wall\_slip}}(\mu_{\text{nozzle}})$:**
-   - **DiamondBack Solid PCD (`diamondback`):** $c_{\text{wall\_slip}} = 0.800$ ($-20\%$ boundary-layer pigment stagnation; on a $1.25\times$ FlowTech melt zone at $\Delta T_{\text{net}} = 0$, $1.25 \times 0.800 = 1.000$, exactly neutralizing the extra FlowTech internal volume!)
-   - **CM2 / CHT CM2 (`cm2`, `cht_cm2`):** $c_{\text{wall\_slip}} = 0.920$
-   - **Tungsten Carbide / SiC:** $c_{\text{wall\_slip}} = 0.940$
-   - **MicroSwiss CHT Brass (`cht`):** $c_{\text{wall\_slip}} = 1.060$ ($+6\%$ wetted surface area across the 3 internal splitter fins)
-   - **Brass / Hardened Steel:** $c_{\text{wall\_slip}} = 1.000$
+2. **Nozzle Wall-Slip Evacuation Factor $c_{\text{wall-slip}}(\mu_{\text{nozzle}})$:**
+   - **DiamondBack Solid PCD (`diamondback`):** $c_{\text{wall-slip}} = 0.800$ ($-20$% boundary-layer pigment stagnation; on a $1.25\times$ FlowTech melt zone at $\Delta T_{\text{net}} = 0$, $1.25 \times 0.800 = 1.000$, exactly neutralizing the extra FlowTech internal volume!)
+   - **CM2 / CHT CM2 (`cm2`, `cht_cm2`):** $c_{\text{wall-slip}} = 0.920$
+   - **Tungsten Carbide / SiC:** $c_{\text{wall-slip}} = 0.940$
+   - **MicroSwiss CHT Brass (`cht`):** $c_{\text{wall-slip}} = 1.060$ ($+6$% wetted surface area across the 3 internal splitter fins)
+   - **Brass / Hardened Steel:** $c_{\text{wall-slip}} = 1.000$
 3. **Melt-Viscosity Purge Factor $c_{\eta,\text{purge}}(\Delta T_{\text{net}})$:**
-   $$c_{\eta,\text{purge}}(\Delta T_{\text{net}}) = \mathrm{clamp}\!\left(1.0 - 0.008\,\Delta T_{\text{net}},\; 0.90,\; 1.15\right)$$
-   Printing colder ($\Delta T_{\text{net}} < 0$) increases melt viscosity and thickens the slow-moving wall boundary layer, requiring $+0.8\%$ additional purge volume per $-\text{°C}$.
+
+$$c_{\eta,\text{purge}}(\Delta T_{\text{net}}) = \mathrm{clamp}\left(1.0 - 0.008\,\Delta T_{\text{net}},\; 0.90,\; 1.15\right)$$
+
+   Printing colder ($\Delta T_{\text{net}} < 0$) increases melt viscosity and thickens the slow-moving wall boundary layer, requiring $+0.8$% additional purge volume per $-\text{°C}$.
 
 Each off-diagonal cell $V_{i \to j}$ ($i \ne j$) in `transformations/flush_volumes_matrix.lua` scales by $\gamma_{\text{purge}}$:
-$$V_{i \to j} = \mathrm{clamp}\!\left(\mathrm{round}\!\left(V_{i \to j,\text{base}} \cdot \text{flush\_mult} \cdot \gamma_{\text{purge}}\right),\; 70,\; 900\right)$$
+
+$$V_{i \to j} = \mathrm{clamp}\left(\mathrm{round}\left(V_{i \to j,\text{base}} \cdot \text{flush-mult} \cdot \gamma_{\text{purge}}\right),\; 70,\; 900\right)$$
 
 ---
 
 ## 7. Verification Matrix Across Orifice Diameters, Nozzles & Temperature Excursions
 
-Reference spool: **PETG** ($T_0 = 230\text{ °C}$ Brass, $\text{PA}_0 = 0.040\text{ s}$, $Q_0 = 15.0\text{ mm}^3/\text{s}$, $\text{Fan}_{\min,0} = 40\%$, $\text{Fan}_{\max,0} = 70\%$).
+Reference spool: **PETG** ($T_0 = 230\text{ °C}$ Brass, $\text{PA}_0 = 0.040\text{ s}$, $Q_0 = 15.0\text{ mm}^3/\text{s}$, $\text{Fan}_{\min,0} = 40$%, $\text{Fan}_{\max,0} = 70$%).
 
-| Nozzle Type | Orifice $d$ ($\text{mm}$) | Active Rule Stage | $T_{\text{eff}}$ ($\text{°C}$) | $\Delta T_{\text{net}}$ ($\text{°C}$) | Coupled $\text{PA}$ ($\text{s}$) | Coupled $Q_{\text{max}}$ ($\text{mm}^3/\text{s}$) | Coupled $\text{Fan}_{\min} / \text{Fan}_{\max}$ ($\%$) | Coupled $\gamma_{\text{purge}}$ ($L_{\text{melt}}=1.25$) |
+| Nozzle Type | Orifice $d$ ($\text{mm}$) | Active Rule Stage | $T_{\text{eff}}$ ($\text{°C}$) | $\Delta T_{\text{net}}$ ($\text{°C}$) | Coupled $\text{PA}$ ($\text{s}$) | Coupled $Q_{\text{max}}$ ($\text{mm}^3/\text{s}$) | Coupled $\text{Fan}_{\min} / \text{Fan}_{\max}$ (%) | Coupled $\gamma_{\text{purge}}$ ($L_{\text{melt}}=1.25$) |
 | :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Brass** | $0.40$ | Baseline | $230$ | $0$ | $0.040$ | $15.0$ | $40 / 70$ | $1.250$ |
 | **Hardened Steel** | $0.40$ | P10 Equilibrium | $236$ | $0$ | $0.040$ | $15.0$ | $40 / 70$ | $1.250$ |
@@ -257,29 +283,41 @@ All symptom wizards that shift `nozzle_temperature` (`sym_stringing.lua`, `sym_w
 
 ### 8.2 Group 6: Coupled Shell Thickness vs. Shell Layer Count & Layer Height
 In OrcaSlicer, effective solid shell thickness is governed by:
-$$\text{thickness}_{\text{eff}} = \max\!\left(N_{\text{shells}} \cdot h_{\text{layer}},\; \text{shell\_thickness}\right)$$
+
+$$\text{thickness}_{\text{eff}} = \max\left(N_{\text{shells}} \cdot h_{\text{layer}},\; \text{shell-thickness}\right)$$
+
 - **Optical Glass Rules (`transparent_optical_glass.lua`, `sym_transparent_glass.lua`):** Setting `top_shell_layers = "0"` and `bottom_shell_layers = "0"` without zeroing `top_shell_thickness` / `bottom_shell_thickness` leaves the stock $0.80\text{ mm}$ thickness floor active, causing the slicer to emit solid shells anyway. Both rules now couple `top_shell_thickness = "0.00"` and `bottom_shell_thickness = "0.00"` whenever shell layer count is zeroed.
 - **Structural Strength Pack (`structural_strength.lua`):** When `top_shell_thickness` or `bottom_shell_thickness` is present in `config`, it is coupled to:
-  $$\text{shell\_thickness} = N_{\text{shells}} \cdot h_{\text{layer}}$$
+
+$$\text{shell-thickness} = N_{\text{shells}} \cdot h_{\text{layer}}$$
 
 ### 8.3 Group 7: Coupled Volumetric Speed Ceiling for Solid Infill & Top Surface (`volumetric_speed_ceiling.lua`)
 In addition to `outer_wall_speed`, `inner_wall_speed`, and `sparse_infill_speed`, `volumetric_speed_ceiling.lua` now caps `internal_solid_infill_speed` and `top_surface_speed` (when present in `config`) by their feature-specific volumetric ceiling:
-$$v_{f,\max} = \left\lfloor \frac{\min(Q_{\text{hotend}}, Q_{\text{filament}})}{h_{\text{layer}} \cdot w_f} \right\rfloor, \quad f \in \{\text{internal\_solid\_infill}, \text{top\_surface}\}$$
+
+$$v_{f,\max} = \left\lfloor \frac{\min(Q_{\text{hotend}}, Q_{\text{filament}})}{h_{\text{layer}} \cdot w_f} \right\rfloor, \quad f \in \lbrace\text{internal-solid-infill}, \text{top-surface}\rbrace$$
 
 ### 8.4 Group 8: Coupled Ironing Pass Spacing vs. Nozzle Orifice Diameter (`ironing_tuning.lua`)
 During top-surface ironing, constant pass-to-pass overlap ratio across nozzle diameters $d \in [0.25, 1.00]\text{ mm}$ requires scaling the lateral pass step-over $s_{\text{iron}}$ sub-linearly with the nozzle tip flat:
-$$s_{\text{iron}}(d) = \mathrm{clamp}\!\left(\mathrm{round}_{0.01}\!\left(s_{\text{iron},0} \cdot \left(\frac{d}{0.40}\right)^{0.75}\right),\; 0.08,\; 0.30\right)$$
+
+$$s_{\text{iron}}(d) = \mathrm{clamp}\left(\mathrm{round}_{0.01}\left(s_{\text{iron},0} \cdot \left(\frac{d}{0.40}\right)^{0.75}\right),\; 0.08,\; 0.30\right)$$
+
 where $s_{\text{iron},0} = 0.15\text{ mm}$ for PLA/PETG/PCTG and $0.12\text{ mm}$ for ASA/ABS/PC/PA in `auto_polymer` mode.
 
 ### 8.5 Group 9: Coupled Support XY Clearance, Support Roof Spacing & Wet-Filament First-Layer Width vs. Nozzle Diameter
 1. **Support Tuning (`support_tuning.lua`):**
    - In `auto_polymer` mode (when $z_{\text{gap}} > 0$), support interface line spacing scales with nozzle diameter:
-     $$s_{\text{interface}}(d) = \mathrm{clamp}\!\left(\mathrm{round}_{0.01}\!\left(s_{\text{interface},0} \cdot \sqrt{\frac{d}{0.40}}\right),\; 0.10,\; 0.40\right)$$
+
+$$s_{\text{interface}}(d) = \mathrm{clamp}\left(\mathrm{round}_{0.01}\left(s_{\text{interface},0} \cdot \sqrt{\frac{d}{0.40}}\right),\; 0.10,\; 0.40\right)$$
+
    - For wide nozzles ($d > 0.42\text{ mm}$), radial die-swell requires coupling XY clearance between support columns and vertical model walls:
-     $$d_{xy,\text{support}}(d) = \max(0.35,\; 0.85\,d)$$
+
+$$d_{xy,\text{support}}(d) = \max(0.35,\; 0.85\,d)$$
+
 2. **Wet Filament First-Layer Pinhole Recovery (`sym_wet_filament.lua`):**
    - First-layer bead width scales proportionally with orifice diameter $d$:
-     $$w_{\text{init}}(d, \text{RH}) = w_{\text{init},0}(\text{RH}) \cdot \left(\frac{d}{0.40}\right)$$
+
+$$w_{\text{init}}(d, \text{RH}) = w_{\text{init},0}(\text{RH}) \cdot \left(\frac{d}{0.40}\right)$$
+
      preserving $0.56\text{–}0.60\text{ mm}$ at $d = 0.40\text{ mm}$ while preventing over-wide blowout on $0.25\text{ mm}$ nozzles ($0.35\text{–}0.38\text{ mm}$) and under-wide beads on $0.60\text{–}0.80\text{ mm}$ nozzles ($0.84\text{–}1.20\text{ mm}$).
 
 ---
@@ -303,4 +341,27 @@ Three native builtins are registered in `LuaEnv::new` (`src/lua_engine.rs`) with
    - `transformations/parametric/sym_extruder_grinding.lua`
    - `transformations/parametric/sym_clogging.lua`
 3. **`coupled_purge_factor(config, ctx) -> number`**:
-   Returns $\gamma_{\text{purge}}\!\left(L_{\text{melt}}, \mu_{\text{nozzle}}, \Delta T_{\text{net}}\right) \in [0.70, 1.65]$ for use in `transformations/flush_volumes_matrix.lua`.
+   Returns $\gamma_{\text{purge}}\left(L_{\text{melt}}, \mu_{\text{nozzle}}, \Delta T_{\text{net}}\right) \in [0.70, 1.65]$ for use in `transformations/flush_volumes_matrix.lua`.
+4. **`constrain(key, min, max, reason)`**:
+   Registers box bounds $[L, U]$ on `key` in `bounds[key]` (tightening via $L \leftarrow \max(L, \text{min})$, $U \leftarrow \min(U, \text{max})$) for projection in the Phase 3 Epilogue Pass.
+
+---
+
+## 10. Phase 3 Epilogue Constraint Projection (`Priority = ∞`) & Deferred Schema Quantization
+
+At the end of `TransformationEngine::evaluate_stack` (`src/transformations.rs`), after all enabled Lua rules (`P10 .. P98`) have executed at full IEEE-754 floating-point precision (`_defer_quantization = "1"`), Phase 3 enforces three final passes:
+
+1. **Phase 3.1 — Box-Constraint Projection & Infeasibility Detection ($L > U$):**
+   - For every key with registered `bounds[key]`, checks whether $L > U$ (logging an `Infeasible Constraint Conflict` warning if two rules declared mutually exclusive bounds) and projects the full-precision value onto $[L, U]$ (prioritizing the upper hardware safety ceiling $U$ when $L > U$).
+   - Records any active clamp in the Provenance ledger as a `🛡️ Constraint Projection (Priority ∞)` step (`RuleShadowKind::Clamped`).
+2. **Phase 3.2 — Cross-Key Relational Invariants (`Priority = ∞`):**
+   Enforces coupled multi-parameter invariants before quantization:
+   - **(a) First-Layer vs. Upper-Layer Thermal Continuity:** Enforces $T_{\text{initial-layer}} \in [T_{\text{nozzle}} - 5\text{ °C},\; T_{\text{nozzle}} + 20\text{ °C}]$ intersected with `bounds[init_key]`.
+   - **(a2) Filament First-Layer Non-Drop Invariant:** On filament presets, enforces $T_{\text{initial-layer}} \ge T_{\text{nozzle}}$ so upper-layer cooling trims never leave Layer 1 colder than upper layers.
+   - **(b) Retraction Prime Speed $\le$ Pull Speed:** Enforces `filament_deretraction_speed <= filament_retraction_speed` whenever deretraction speed $> 0$.
+   - **(c) Spiral Lift Z-Hop Floor:** When `filament_z_hop_types == "Spiral Lift"` and Z-hop $> 0$, enforces `filament_z_hop >= 0.5 * layer_height` (bounded above by `bounds["filament_z_hop"].max`).
+   - **(d) Fan Max Speed $\ge$ Fan Min Speed:** Enforces `fan_max_speed* >= fan_min_speed*`.
+   - **(e) Structural Strength Fan Cut Ceiling:** Applies `_structural_fan_cut_pct` across `fan_max_speed*` and clamps `fan_min_speed*` to the reduced ceiling.
+   - **(f) Process Preset Speed Policy, Outer-Wall VFA Guard & Seam Enum Normalization:** Projects process speeds against the VFA sub-resonance guard (`55–60 mm/s` vs. `>= 145 mm/s`) and normalizes `seam_slope_type = "contour"` to OrcaSlicer's C++ `"external"` enum.
+3. **Phase 3.3 — Single Final Schema Quantization (`format_orca_schema_scalar`):**
+   - Quantizes every modified parameter in `current_values` and every step in the Provenance ledger **once** according to OrcaSlicer's per-key schema precision (`0` decimals for temperatures/speeds/accelerations/fans, `1` decimal for `max_volumetric_speed`, `2` decimals for retractions/Z-hop/line widths/layer heights, and `3` decimals for `filament_flow_ratio`, `pressure_advance`, and XY tolerances).

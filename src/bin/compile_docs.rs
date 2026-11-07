@@ -35,13 +35,111 @@ fn extract_title_and_summary(md: &str) -> (String, String) {
   (title, summary)
 }
 
+fn html_escape_math(s: &str) -> String {
+  s.replace('&', "&amp;")
+    .replace('<', "&lt;")
+    .replace('>', "&gt;")
+}
+
+fn protect_math_segments(md: &str) -> (String, Vec<(String, String, bool)>) {
+  let bytes = md.as_bytes();
+  let len = bytes.len();
+  let mut out = String::with_capacity(len);
+  let mut replacements: Vec<(String, String, bool)> = Vec::new();
+  let mut i = 0;
+  let mut in_fence = false;
+
+  while i < len {
+    // Check for fenced code block at start of line
+    if (i == 0 || bytes[i - 1] == b'\n') && i + 3 <= len && &bytes[i..i + 3] == b"```" {
+      in_fence = !in_fence;
+      out.push_str("```");
+      i += 3;
+      continue;
+    }
+
+    if in_fence {
+      let ch = md[i..].chars().next().unwrap();
+      out.push(ch);
+      i += ch.len_utf8();
+      continue;
+    }
+
+    // Inline code span `...`
+    if bytes[i] == b'`' {
+      let mut tick_count = 0;
+      while i + tick_count < len && bytes[i + tick_count] == b'`' {
+        tick_count += 1;
+      }
+      let opener = &md[i..i + tick_count];
+      let opener_bytes = opener.as_bytes();
+      out.push_str(opener);
+      i += tick_count;
+      while i < len {
+        if i + tick_count <= len && &bytes[i..i + tick_count] == opener_bytes {
+          out.push_str(opener);
+          i += tick_count;
+          break;
+        }
+        let ch = md[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+      }
+      continue;
+    }
+
+    // Display math $$ ... $$
+    if i + 2 <= len && &bytes[i..i + 2] == b"$$" {
+      if let Some(rel_end) = md[i + 2..].find("$$") {
+        let math_body = &md[i + 2..i + 2 + rel_end];
+        let token = format!("MATHDISPLAYTOKEN{}END", replacements.len());
+        replacements.push((token.clone(), math_body.to_string(), true));
+        out.push_str(&token);
+        i += 2 + rel_end + 2;
+        continue;
+      }
+    }
+
+    // Inline math $ ... $ (single line)
+    if bytes[i] == b'$' && (i == 0 || bytes[i - 1] != b'\\') {
+      let mut j = i + 1;
+      let mut found_end = None;
+      while j < len && bytes[j] != b'\n' {
+        if bytes[j] == b'$' && bytes[j - 1] != b'\\' {
+          found_end = Some(j);
+          break;
+        }
+        let ch = md[j..].chars().next().unwrap();
+        j += ch.len_utf8();
+      }
+      if let Some(end_idx) = found_end {
+        if end_idx > i + 1 {
+          let math_body = &md[i + 1..end_idx];
+          let token = format!("MATHINLINETOKEN{}END", replacements.len());
+          replacements.push((token.clone(), math_body.to_string(), false));
+          out.push_str(&token);
+          i = end_idx + 1;
+          continue;
+        }
+      }
+    }
+
+    let ch = md[i..].chars().next().unwrap();
+    out.push(ch);
+    i += ch.len_utf8();
+  }
+
+  (out, replacements)
+}
+
 fn compile_markdown_to_html(md: &str) -> String {
+  let (protected_md, math_segments) = protect_math_segments(md);
   let mut options = Options::empty();
   options.insert(Options::ENABLE_TABLES);
   options.insert(Options::ENABLE_STRIKETHROUGH);
   options.insert(Options::ENABLE_TASKLISTS);
 
-  let parser = Parser::new_ext(md, options).map(|event| match event {
+  let parser = Parser::new_ext(&protected_md, options).map(|event| match event {
     Event::Start(Tag::Image {
       link_type,
       dest_url,
@@ -67,6 +165,15 @@ fn compile_markdown_to_html(md: &str) -> String {
 
   let mut html_output = String::new();
   html::push_html(&mut html_output, parser);
+  for (token, math_body, is_display) in math_segments {
+    let escaped = html_escape_math(&math_body);
+    let rendered = if is_display {
+      format!("<code class=\"math-display\">$${}$$</code>", escaped)
+    } else {
+      format!("<code class=\"math-inline\">${}$</code>", escaped)
+    };
+    html_output = html_output.replace(&token, &rendered);
+  }
   html_output
 }
 
@@ -86,6 +193,8 @@ fn main() {
     "hardware-and-weather.md",
     "filaments-and-brands.md",
     "lua-recipes-and-wizard.md",
+    "pwl-nozzle-compensation-math.md",
+    "coupled-parameter-physics-math.md",
     "dev.md",
   ];
 

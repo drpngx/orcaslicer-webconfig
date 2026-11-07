@@ -4,33 +4,51 @@ The **4. Wizard / Lua Changer** tab lets you diagnose print quality defects, sta
 
 ![Lua Stack & Colored Diff Preview](images/lua_stack_and_diff.png)
 
-## Built-In Lua Transformation Stack
+## Built-In Lua Transformation Stack (`P10 .. P98`)
 
-Every rule in the transformation stack runs inside our **pure-Rust WebAssembly Lua interpreter** (`src/lua_engine.rs`) with strict resource and security sandboxing (`50,000` gas limit, `10,000` token limit, zero host filesystem/OS access).
+Every rule in the transformation stack runs inside our **pure-Rust WebAssembly Lua interpreter** (`src/lua_engine.rs`) with strict resource and security sandboxing (`50,000` gas limit, `10,000` token limit, zero host filesystem/OS access). During Phase 2 (`P10 .. P98`), rules operate at full IEEE-754 floating-point precision (`_defer_quantization = "1"`), read the immutable Brass baseline via `base[key]`, synchronize coupled parameters via `sync_coupled_physics(config, ctx)`, and declare feasible intervals via `constrain(key, min, max, reason)`.
 
-Default stack rules include:
+Default stack rules and **Core Slicer Config Packs** include:
 
-1. **Thermal Conductivity & Nozzle Material Rule** (`priority: 10`) — Adjusts nozzle temperatures, retraction length, and volumetric flow for Hardened Steel, Diamondback PCD, Ruby-Brass, and MicroSwiss FlowTech nozzles.
-2. **First-Layer & Bed Adhesion Rule** (`priority: 20`) — Tunes bed temperatures and initial layer parameters for Textured PEI, Smooth PEI, and Cool Plates.
-3. **Physical Rig Add-Ons & Cooling Schedule Rule** (`priority: 30`) — Scales part cooling and chamber exhaust fans for custom toolhead ducts and covers.
-4. **Ambient Weather & Humidity Adaptation Rule** (`priority: 35`) — Stacks relative temperature, Z-hop (`Spiral Lift` vs `Slope Lift`), fan, brim, and volumetric flow adjustments for Tropical vs. Cold climates.
-5. **Volumetric Speed Ceiling Rule** (`priority: 40`) — Dynamically caps `outer_wall_speed`, `inner_wall_speed`, and `sparse_infill_speed` to `min(hotend_max_flow, filament_max_flow) / (layer_height × line_width)`.
-6. **Scarf Joint Seams & Arachne Variable Walls** (`priority: 45`) — Enables `seam_slope_type = "contour"` and Arachne perimeter generation.
-7. **PETG & PCTG Anti-Stringing & Ooze Control** (`priority: 50`) — Applies inward wipe while retracting, fast travel moves, and non-crossing walls.
-8. **Wet / Damp Filament — Humidity (% RH) Auto-Tuner** (`priority: 55`, disabled by default) — Automatically computes anti-steam upper-layer nozzle temperature trim, first-layer pinhole & bed-adhesion recovery (`+4..+6°C` 1st-layer bed, `1.04..1.06×` bottom flow, `30..35 mm/s`), and steam-pressure retraction from your drybox/ACE Pro `% RH` reading.
-9. **⚠️ Fast-Start & Unpacked `G9111` / Bambu Lab Machine G-Code** (`priority: 58`, disabled by default — **POTENTIALLY DANGEROUS**) — Unpacks Anycubic Kobra S1's monolithic `G9111` startup macro into explicit native Kobra OS sub-macros or optimizes Bambu Lab (P1S / X1C / A1) startup & end G-code with interactive safety knobs.
-10. **Upgraded Flushing Volume Matrix** (`priority: 60`) — Computes the N×N multi-material purge matrix from loaded slot colors, opacities, and polymer families.
+1. **Thermal Conductivity & Nozzle Material Rule** (`priority: 10`, enabled by default) — Evaluates piecewise-linear (PWL) temperature curves and quadratic die-swell flow trims for DiamondBack PCD (`-5..-11°C`, `nozzle_hrc = 68`), Hardened Steel (`+5°C`, `nozzle_hrc = 55`), Ruby-Brass (`0°C`, `nozzle_hrc = 60`), and MicroSwiss FlowTech CM2 / CHT nozzles.
+2. **Physical Rig Add-Ons & Cooling Schedule Rule** (`priority: 12`, enabled by default) — Shapes FlowTech all-metal viscoelastic retraction length ($r_1(r_0, d)$) and retraction speed ($s_1(s_0)$, skipping elastomers), scales part cooling for high-static-pressure ducts (`microswiss_duct`), and tunes exhaust fans for open/hollow covers (`hollow_front_back_covers`).
+3. **Nozzle-Proportional Line Width & Extrusion Geometry Optimizer** (`priority: 15`, enabled by default) — Sets every per-feature line width as a percentage of the active nozzle orifice diameter $d$: Initial Layer `125%`, Outer Wall `105%`, Top Surface `95%` (crisp tops & lettering), Inner Wall & Sparse Infill `125%` (stronger internal ribs). Automatically rescales across `0.20mm–1.00mm` nozzle swaps.
+4. **Build Plate Surface & First-Layer Thermal Rule** (`priority: 20`, enabled by default) — Tunes bed temperatures and initial layer parameters for Textured PEI (`+5°C` valley contact), Smooth High-Temp PEI, and Cool / CryoGrip Plates (`-15°C` PLA/PETG energy-saving grip).
+5. **Stringing & Oozing Mitigation — MicroSwiss / Diamondback** (`priority: 25`, enabled by default) — Composes relatively on top of `P10` and `P12`: elastomer-gated `-2°C` trim in the sticky PLA/PETG band, diminishing-returns retraction recovery ($\le +0.07\text{ mm}$), quadratic retraction speed damping to `36–38 mm/s`, orifice-scaled `filament_z_hop` (`Spiral Lift`), kinematics-aware travel acceleration boost (`12,000 mm/s²` target on CoreXY, `8,000 mm/s²` on Bed-Slingers), and `wipe_on_loops = 1`.
+6. **Multi-Material Tip Forming & Anti-Clog Rule (AMS / ACE Pro)** (`priority: 30`, enabled by default) — Prevents heat-creep softening during `PLA ↔ PETG/ABS/ASA` swaps by holding transition flush temperature at `240°C`, capping cut retraction at `12.0mm`, and scaling multi-material purge volume `1.45×`.
+7. **First-Layer Squish & Bed Adhesion Rule** (`priority: 35`, enabled by default) — Widens initial layer bead (`137.5%` of nozzle diameter $d$), slows first-layer speed to `25 mm/s`, and raises initial bed temp `+5°C`.
+8. **Non-Crossing Gyroid Infill & Z-Hop Anti-Collision Rule** (`priority: 40`, enabled by default) — Switches infill to non-crossing `gyroid`, enables `0.40mm` `Slope Lift` Z-hop, and sets `reduce_crossing_wall = 1`.
+9. **Scarf Joint Seams & Arachne Variable Walls** (`priority: 45`, enabled by default) — Enables OrcaSlicer Scarf Joint Seams (`seam_slope_type = "contour"`, normalized to `"external"` in Phase 3 Epilogue) and `arachne` variable-width perimeter generation.
+10. **PCTG Stringing & Ooze Mitigation** (`priority: 48`, enabled by default, scoped to `filament:PCTG`) — Targets PCTG's high melt elasticity with `-3°C` anti-ooze trim, `1.00mm @ 45 mm/s` retraction, `40%` retract-before-wipe over `2.0mm`, `0.10mm` `Spiral Lift`, and `10,000 mm/s²` travel acceleration.
+11. **Support Detachability & Tree Tuning Pack** (`priority: 49`, optional) — Layer-height & polymer-aware `support_top_z_distance` (`layer_height + 0.02mm` PLA vs. `layer_height + 0.06mm` sticky PETG/PCTG/TPU, or `0.00mm` dissimilar PLA↔PETG), `tree(auto)` / `normal(auto)` style, nozzle-scaled roof interface spacing, and wide-nozzle `support_object_xy_distance`.
+12. **Top Surface Ironing & Gloss Pack** (`priority: 50`, optional) — Polymer-aware `ironing_flow` (`12%` PLA, `18%` PETG/PCTG, `22%` ASA/ABS/PC), `ironing_speed` (`30–40 mm/s`), orifice-scaled `ironing_spacing` ($\propto (d/0.40)^{0.75}$), `top_surface_pattern = "monotonicline"`, and `only_one_wall_top = 1`.
+13. **Dimensional Tolerance & Mechanical Fit Pack** (`priority: 51`, optional) — Tunes mechanical tolerances for bearings, dowels, and M3/M5 hardware: `wall_sequence` (`inner-outer-inner` or `outer-inner`), `precise_outer_wall = 1`, `xy_hole_compensation` (`+0.08mm`), `xy_contour_compensation` (`-0.02mm`), and `elefant_foot_compensation` (`0.15mm`).
+14. **Transparent / Glass-Like Optical Clarity Mode (Rygar1432 / CNC Kitchen)** (`priority: 52`, optional, scoped to `filament:PETG`) — `20 mm/s` print speeds (`5.0 mm³/s` MVS ceiling), `+0.05` flow boost, `0%` cooling fan, `0.12mm` layers with `1.25×` line width, `100%` Aligned Rectilinear `0°` infill, `1` wall, and `0` top/bottom shells (`top_shell_thickness = 0.00`, `bottom_shell_thickness = 0.00`).
+15. **Active-Foaming TPU Shore Hardness & Expansion Tuner (`60A–92A`)** (`priority: 53`, optional, scoped to `filament:TPU`) — Synchronizes foaming activation temperature (`195°C–245°C`), expansion flow ratio (`0.98` down to `0.60`), MVS residence-time ceiling, and `0.00mm` Z-hop by target Shore A hardness.
+16. **Weather & Ambient Climate Adjustment** (`priority: 54`, optional) — Stacks relative temperature, Z-hop (`Spiral Lift` vs `Slope Lift`), fan, brim, and volumetric flow adjustments for Tropical, Hot & Dry, Cold & Dry, and Cold & Humid climates with MicroSwiss heat-break awareness.
+17. **Wet / Damp Filament — Humidity (`% RH`) Auto-Tuner** (`priority: 55`, optional) — Automatically computes anti-steam upper-layer nozzle temperature trim, first-layer pinhole & bed-adhesion recovery (`+4..+6°C` 1st-layer bed, `1.04..1.06×` bottom flow, orifice-scaled `0.56..0.60mm` 1st-layer width @ `30..35 mm/s`), and steam-pressure retraction from your drybox/ACE Pro `% RH` reading.
+18. **Bridges & Steep Overhangs Pack** (`priority: 56`, optional) — Anti-sag `bridge_flow` (`0.92×` strand tension), `bridge_speed` (`28 mm/s`), progressive 4-stage overhang speed curve (`50 → 35 → 22 → 15 mm/s`), `detect_overhang_wall = 1`, and `overhang_fan_speed = 100%`.
+19. **Structural Strength & Z-Axis Inter-Layer Bonding Pack** (`priority: 57`, optional) — Load-bearing part tuning: nozzle `+5–8°C` (clamped per spool to each polymer's safe max), max part-cooling fan `-20–35%` (enforced via Priority-$\infty$ Epilogue), `4–6` wall loops + `alternate_extra_wall`, `5–6` top/bottom shells coupled to `shell_thickness`, `20–25%` infill/wall overlap, and isotropic `gyroid` / `crosshatch` infill.
+20. **CoreXY Outer-Wall Speed Consistency & VFA / Gloss-Banding Guard** (`priority: 58`, enabled by default) — Eliminates CoreXY `70–130 mm/s` belt/stepper VFA ripples and Benchy hull-line gloss banding: sets `dont_slow_down_outer_wall = 1` (auto-disabled to `0` on `0.12mm Fine` high-MVS PLA for delicate miniatures & `3mm` spires) and steps `outer_wall_speed` down to `55–60 mm/s` whenever MVS or Silk finish cannot sustain `>= 145 mm/s`.
+21. **⚠️ Startup G-Code — Rig-Specific Fast-Start & Poop-Saver** (`priority: 58`, optional — **POTENTIALLY DANGEROUS**) — Automatically derives the printer firmware family from the active rig's `printer_model`: unpacks Anycubic Kobra S1's monolithic `G9111` startup macro into explicit native Kobra OS sub-macros, applies safe wrapper add-ons on Kobra S1 Max, or optimizes Bambu Lab (P1S / X1C) startup & end G-code while leaving other printers' stock G-code untouched.
+22. **Upgraded Flushing Volume Matrix** (`priority: 60`, enabled by default) — Computes the N×N multi-material purge matrix from loaded slot colors, opacities, polymer families, and the coupled residence-time purge factor $\gamma_{\text{purge}}$.
+23. **Volumetric Speed Ceiling Rule** (`priority: 98`, enabled by default) — Dynamically caps `outer_wall_speed`, `inner_wall_speed`, `sparse_infill_speed`, `internal_solid_infill_speed`, and `top_surface_speed` to $\lfloor \min(Q_{\text{hotend}}, Q_{\text{filament}}) / (h_{\text{layer}} \cdot w_f) \rfloor$.
 
 ---
 
-## ⚠️ Fast-Start & Unpacked `G9111` / Bambu Machine G-Code (`mach_fast_start_gcode.lua` — POTENTIALLY DANGEROUS)
+## ⚠️ Startup G-Code — Rig-Specific Fast-Start & Poop-Saver (`mach_fast_start_gcode.lua` — POTENTIALLY DANGEROUS)
 
 > **⚠️ POTENTIALLY DANGEROUS — READ BEFORE ENABLING:**
 > Modifying `machine_start_gcode` or `machine_end_gcode` directly controls physical toolhead homing, nozzle wiping, strain-gauge/load-cell Z-offset probing, and multi-material filament unloading. Misconfiguring these knobs can **gouge your PEI build plate**, cause **first-layer mid-air printing**, or **crash the toolhead** at the edge of the bed:
 >
-> 1. **The Golden Rule — NEVER Home Z (`G28 W` / `G28 Z`) Above `140°C`**: Both the Anycubic Kobra S1 (LeviQ 2.0 strain gauge) and Bambu Lab P1S/X1C/A1 (load-cell / eddy-current nozzle tap) physically tap the nozzle tip against the build plate to establish `Z = 0`. If the nozzle is above `140°C`, softened plastic oozes from the orifice (creating a false early trigger so Layer 1 prints in mid-air) or melts permanent dimples into Textured/Smooth PEI and CryoGrip coatings. Even when you set **Pre-Wipe Nozzle Temp** to `170°C` to soften old residue, `mach_fast_start_gcode.lua` **always enforces `M109 S140` while sealed on the silicone wiper pad (`WIPE_STOP`) before `G28 W` / `G28 Z`**.
-> 2. **Skipping `LEVIQ2_AUTO_ZOFFSET` (`run_leviq2_zoffset = 0`)**: Saves `~45–60s` per print by reusing the previously stored Z-offset. **NEVER disable `LEVIQ2_AUTO_ZOFFSET` after swapping build plates** (e.g. Textured PEI ↔ Smooth PEI ↔ CryoGrip) or changing nozzles, or the nozzle may dig directly into the spring steel sheet.
-> 3. **Adaptive KAMP-Style Prime Line (`prime_line_mode = adaptive_kamp`)**: Draws a compact `30mm` prime strip `5mm` to the left of your model (`X = first_layer_print_min[0] - 5`). Ensure your part is placed at least `5mm` inside the left bed edge (`X >= 5mm`).
+> 1. **Rig-Derived Firmware Routing (Never Manually Overridden)**: Because start/end/toolchange G-code is strictly firmware- and geometry-specific, `mach_fast_start_gcode.lua` **always derives the printer family directly from the active rig's `printer_model`**:
+>    - **Anycubic Kobra S1**: Full optimization (unpacked `G9111` sub-macros, `X44/Y270` throw position, `Y255` Layer-0 rear purge strip removal, `E-14` ACE Pro pre-cut retract, and PETG/ABS unbottleneck).
+>    - **Anycubic Kobra S1 Max**: Preserves the stock `G9111` wrapper and S1 Max bed metadata lines while adding ABS/ASA heat-soak (bed-center via slicer placeholders), plate/PETG Z-offset, and anti-ooze end retract. S1-only sub-macros and coordinates are never emitted on the S1 Max.
+>    - **Bambu Lab X1 / P1 (`X1C`, `X1E`, `P1S`, `P1P`)**: Applies Bambu fast-start, `E-18` AMS pre-cut retract, and anti-ooze end G-code.
+>    - **All Other Printers (`Kobra 3`, `Bambu A1`, `Voron`, `Ender-3`, etc.)**: Leaves the stock machine G-code completely untouched (`no-op`).
+> 2. **The Golden Rule — NEVER Home Z (`G28 W` / `G28 Z`) Above `140°C`**: Both the Anycubic Kobra S1 (LeviQ 2.0 strain gauge) and Bambu Lab P1S/X1C (load-cell / eddy-current nozzle tap) physically tap the nozzle tip against the build plate to establish `Z = 0`. If the nozzle is above `140°C`, softened plastic oozes from the orifice (creating a false early trigger so Layer 1 prints in mid-air) or melts permanent dimples into Textured/Smooth PEI and CryoGrip coatings. Even when you set **Pre-Wipe Nozzle Temp** to `170°C` to soften old residue, `mach_fast_start_gcode.lua` **always enforces `M109 S140` while sealed on the silicone wiper pad (`WIPE_STOP`) before `G28 W` / `G28 Z`**.
+> 3. **Skipping `LEVIQ2_AUTO_ZOFFSET` (`run_leviq2_zoffset = 0`)**: Saves `~45–60s` per print by reusing the previously stored Z-offset. **NEVER disable `LEVIQ2_AUTO_ZOFFSET` after swapping build plates** (e.g. Textured PEI ↔ Smooth PEI ↔ CryoGrip) or changing nozzles, or the nozzle may dig directly into the spring steel sheet.
+> 4. **Adaptive KAMP-Style Prime Line (`prime_line_mode = adaptive_kamp`)**: Draws a compact `30mm` prime strip `5mm` to the left of your model (`X = first_layer_print_min[0] - 5`). Ensure your part is placed at least `5mm` inside the left bed edge (`X >= 5mm`).
 
 ### Anycubic Kobra S1: Stock `G9111` vs. 1:1 Unpacked vs. Trimmed Safe Fast-Start
 
@@ -222,31 +240,55 @@ Community testing on the Kobra S1 (notably the **MPC561** and **Kreativling** pr
 
 ### Interactive Knobs Reference (`mach_fast_start_gcode.lua`)
 
+*(Note: The printer firmware family — `kobra_s1`, `kobra_s1_max`, `bambu_lab`, or `none` — is always derived automatically from the active rig's `printer_model` so firmware-incompatible G-code can never be emitted).*
+
 | Knob ID | Parameter Label | Default | Options / Range |
 | :--- | :--- | :--- | :--- |
-| `startup_preset` | **1. Complete Machine G-Code Preset** | `kobra_s1_trimmed_safe` | `kobra_s1_trimmed_safe`, `kobra_s1_ultra_fast_no_zoffset` (⚠️), `kobra_s1_unpacked_1to1`, `stock_g9111`, `bambu_fast_start`, `bambu_fast_same_spool` (⚠️), `custom` |
-| `printer_family` | **2. Printer Firmware Architecture** | `kobra_s1` | `auto` (detects from Rig model), `kobra_s1`, `bambu_lab` |
+| `startup_preset` | **1. Complete Machine G-Code Optimization Preset** | `kobra_s1_trimmed_safe` | `kobra_s1_trimmed_safe`, `kobra_s1_ultra_fast_no_zoffset` (⚠️), `kobra_s1_unpacked_1to1`, `stock_g9111`, `bambu_fast_start`, `bambu_fast_same_spool` (⚠️), `custom` |
 | `preheat_wipe_temp_c` | **3. Start: Initial Pre-Wipe Nozzle Temp (°C)** | `140°C` | `135°C – 170°C` (Always cools back to `140°C` on silicone pad before Z-homing!) |
 | `wipe_passes` | **4. Start: Rear Nozzle Wiper Passes** | `2` | `1 – 14` passes (`1..13` emits `WIPE_NOZZLE1` × $N$; `14` emits `WIPE_NOZZLE`) |
 | `run_leviq2_zoffset` | **5. ⚠️ Start: Strain-Gauge Auto Z-Offset (`LEVIQ2_AUTO_ZOFFSET`)** | `1` (Safe) | `1` (Run every print — Safe), `0` (⚠️ Skip to save ~50s — **same plate/nozzle only!**) |
 | `conditional_z_offset` | **6. Start: Auto Textured PEI (`-0.03mm`) & PETG (`+0.02mm`) Z-Offset** | `1` | `1` (Emit `SET_GCODE_OFFSET` / `G29.1` after probing), `0` (Off) |
 | `chamber_heat_soak_abs` | **7. Start: Auto 4–5 Min Chamber Heat-Soak for ABS / ASA** | `1` | `1` (Run 70% Aux fan heat-soak before probing on ABS/ASA only), `0` (Off) |
 | `prime_line_mode` | **8. Start: Purge / Prime Line Strategy** | `stock_front` | `stock_front` (`Y1 X20→X180`), `adaptive_kamp` (⚠️ `30mm` line at `first_layer_print_min[0]-5`) |
-| `long_retract_before_cut` | **9. Change Filament: Long Retract Before Cut (Poop-Saver)** | `auto` | `auto` (Kobra `E-14` & `0.65×` / Bambu `E-18` & `0.60×`), `kobra_14mm`, `bambu_18mm`, `off` |
+| `long_retract_before_cut` | **9. Change Filament: Long Retract Before Cut (Poop-Saver)** | `auto` | `auto` (Kobra S1 `E-14` & `0.65×` / Bambu X1·P1 `E-18` & `0.60×`), `off` |
 | `anti_ooze_end_retract` | **10. End: Anti-Ooze Retract (`E-5`/`E-6`) & Silence Fans** | `1` | `1` (Immediate `E-5`/`E-6` + `Z+2` hop + `M106 P2/P3 S0`), `0` (Stock `E-2`) |
 | `smart_end_bed_park` | **11. End: Smart `Z150` Bed Drop Height** | `1` | `1` (`Z150` comfortable reach height), `0` (Stock `max_layer_z + 2`) |
-| `keep_ams_loaded_at_end` | **12. ⚠️ End: Keep AMS / ACE Pro Filament Loaded** | `0` (Safe) | `0` (Normal cut & unload), `1` (⚠️ Keep filament loaded at print end for same-spool reprints) |
+| `keep_ams_loaded_at_end` | **12. ⚠️ End: Keep AMS Filament Loaded (Bambu X1·P1)** | `0` (Safe) | `0` (Normal cut & unload), `1` (⚠️ Keep filament loaded at print end for same-spool reprints) |
 | `remove_kobra_rear_purge_line` | **13. Before Layer: Remove Kobra S1 `Y255` Rear Purge Strip** | `1` | `1` (Remove redundant Layer-0 `Y255` purge line), `0` (Keep stock) |
 | `kobra_unbottleneck_petg_abs` | **14. Kobra S1 Fix: PETG (`0.70mm` Retract, `19 mm³/s`) & ABS (`23 mm³/s`)** | `1` | `1` (Apply MPC561/Kreativling PETG & ABS/ASA fix), `0` (Off) |
 | `bambu_skip_mech_check` | **15. Bambu Lab: Skip Resonance Buzz Sweep** | `1` | `1` (Skip `mech mode fast check`), `0` (Keep stock buzz check) |
 | `bambu_parallel_bed_heat` | **16. Bambu Lab: Parallel Bed Preheat** | `1` | `1` (`M140` during XY home/wipe + `M190` before `G28 Z`), `0` (Sequential `M190`) |
 
-## Custom Lua Rules with Pre-Populated Bootstrap Template
+---
 
-Clicking **+ Create / Add Lua Rule → Custom Lua Script** pre-populates a complete, runnable Lua template demonstrating:
-- Reading hardware and weather context (`context.nozzle_type`, `context.filament_type`, `context.climate_preset`, `context.ambient_temp_c`).
-- Applying relative numeric offsets (`tonumber(profile["nozzle_temperature"]) + 5`) and array overrides (`profile["z_hop_types"] = { "Spiral Lift" }`).
-- Logging audit messages via `log("...")`.
+## Declarative Rule Scoping (`RuleScopeFilter`)
+
+Every rule in the stack carries a declarative **Scope Filter** (`RuleScopeFilter`) editable directly from the rule card without writing `if ctx.filament_type == ...` boilerplate:
+- **Polymers**: `PLA`, `PETG`, `PCTG`, `TPU`, `ASA`, `ABS`, `PC`, `PA`, `PHA`, or `FIBER` (any `-CF` / `-GF` composite).
+- **Nozzle Orifice Diameters**: `0.2mm`, `0.25mm`, `0.4mm`, `0.6mm`, `0.8mm`, `1.0mm`.
+- **Nozzle Materials**: `Brass`, `Hardened Steel`, `Diamondback PCD`, `CHT`, `CM2`.
+- **Process Quality / Speed Tiers**: `0.12mm Fine`, `0.20mm Quality`, `0.20mm Standard`, `0.20mm Speed`, `0.28mm Draft`.
+
+When an enabled rule is excluded by its scope filter, the engine performs a dry-run (`SkippedRuleInfo`) to determine which parameters it *would* have modified and displays a non-intrusive **Skipped (Out of Scope)** badge on those parameters' Provenance chains.
+
+---
+
+## Custom Parametric Lua Rules, Immutable `base` (`x0`) & Static Rule Linter
+
+Clicking **+ Create / Add Lua Rule → Custom Parametric Lua Rule** pre-populates [`transformations/custom_parametric_template.lua`](../transformations/custom_parametric_template.lua) demonstrating:
+- **Interactive UI Knobs (`params = { ... }`)**: Declare `range`, `enum` (with optional `sets` preset bundles), and `boolean` controls plus `validate(p, ctx)` and `describe(p, ctx)`.
+- **Read-Only `base` (`x0`) Snapshot vs. Live `config`**:
+  - Read `base[key]` (e.g. `scalar_num(base["nozzle_temperature"], 220)`) to inspect the uncompensated Brass baseline $x_0$ (attempting to mutate `base` raises `[Lua Immutability Violation]`).
+  - Mutate `config[key]` relatively using `map_num(config[key], function(x) return x + delta end, "%.0f")` or `fmt_num(val, "%.2f")`. During Phase 2, `_defer_quantization = "1"` preserves full IEEE-754 precision until the single Phase 3 Epilogue quantization pass.
+- **Declarative Epilogue Constraints (`constrain(key, min, max, reason)`)**: Register lower/upper physical bounds enforced at `Priority = ∞` during Phase 3.
+- **Built-In Static Lua Rule Linter (`lint_lua_rule`)**: Automatically checks custom rules for:
+  - Absolute constant writes on numeric keys that should compose relatively over `config[key]`,
+  - Shadowed dual-scope keys (`retraction_length` vs. `filament_retraction_length`, `z_hop` vs. `filament_z_hop`),
+  - Unrecognized parameter keys (`validate_lua_rule_writes` Zero-Drop Invariant), and
+  - Missing `print(...)` audit log calls.
+
+---
 
 ## Diff & Parameter Provenance / Lineage Inspector (Lineage Pipeline, GitHub Unified & Side-by-Side)
 
@@ -254,8 +296,11 @@ At the bottom of **1. Overview & Config Sync** (and inside **4. Wizard & Lua Rul
 
 - **🧬 Provenance & Lineage Mode**:
   - Visualizes the complete, non-commutative computation chain for every parameter:
-    $$\text{Stage 0 Origin Baseline} \xrightarrow{\text{Step \#1 Rule }(\Delta_1)} \text{Intermediate Value} \xrightarrow{\text{Step \#2 Rule }(\Delta_2)} \dots = \text{Final Derived Output }(\text{Net }\Delta)$$
-  - Displays each step's **Rule Name, Icon, Category, Execution Step `#k`, Priority `#P`, Before → After values, additive & multiplicative delta summary** (e.g. `+5 °C (+2.2% • 1.02×)`), and the **Lua Audit Log** emitted by `print(...)` during rule evaluation.
+    $$\text{Stage 0 Origin Baseline} \xrightarrow{\text{Step \#1 Rule }(\Delta_1)} \text{Intermediate Value} \xrightarrow{\text{Step \#2 Rule }(\Delta_2)} \dots \xrightarrow{\text{Priority }\infty\text{ Epilogue}} \text{Final Derived Output }(\text{Net }\Delta)$$
+  - Displays each step's **Rule Name, Icon, Category, Execution Step `#k`, Priority `#P`, Before → After values, additive & multiplicative delta summary** (e.g. `+5 °C (+2.2% • 1.02×)`), and the **Lua Audit Log** emitted by `print(...)`.
+  - **Counterfactual Shadow & Constraint Badges**:
+    - **`⚡ Overwritten by Step #m`**: Flagged via counterfactual replay when a downstream rule writes an absolute value that completely discards an earlier rule's relative contribution.
+    - **`🛡️ Clamped by Constraint Projection / Coupled Invariant (Priority ∞)`**: Shown when Phase 3 Epilogue projects a parameter onto its feasible interval $[L, U]$ or enforces a cross-key relational invariant.
   - Includes instant filters for **Modified Lineage**, **Multi-Rule Chains (≥2 Steps)**, and **All Catalog Params**, plus a real-time search box and inline expandable rows in the **Re-Created Overrides vs System Base Defaults** table.
 - **GitHub / Unified Diff Mode**: Highlights removed base lines in red (`- ...`) and transformed lines in green (`+ ...`) with a toggle for **Changed Lines Only** vs. **Full JSON**.
 - **Side-by-Side Mode**: Displays the System Base JSON on the left and the Re-Created Output JSON on the right in synchronized rows.

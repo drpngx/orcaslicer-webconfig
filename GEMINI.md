@@ -5,7 +5,7 @@
 1. **Rust / WebAssembly Only**:
    - Do NOT use JavaScript for application logic, state, UI, or transformations.
    - Always prefer Rust compiled to WebAssembly (`wasm32-unknown-unknown`) using the Yew framework.
-   - Only minimal browser bindings via `wasm-bindgen` / `web-sys` (e.g., File System Access API) are permitted.
+   - Only minimal browser bindings via `wasm-bindgen` / `web-sys` (e.g., standard file input/download blobs and `localStorage`) are permitted.
 
 2. **Bazel-First Execution**:
    - Everything is Bazel-based.
@@ -28,9 +28,9 @@
    - Includes conflict/drift resolution: when an external tool modifies a value touched by a transformation, the user can accept or discard the change.
    - One-click export and import of all transformations and configuration stacks.
 
-5. **Direct File System Access**:
-   - Uses the File System Access API (`showOpenFilePicker`, `showDirectoryPicker`, `FileSystemFileHandle`) to read and edit OrcaSlicer configuration profiles directly.
-   - Supports disconnecting after saves to release file locks.
+5. **File Import/Export & Local Slicer Directory Access**:
+   - In the Static Browser Web App, uses standard `<input type="file">` uploads and `Blob` downloads (`.zip`, `.3mf`, `.json`) because browser sandboxes block access to system configuration directories (`%APPDATA%`). Do NOT use or document the Chromium File System Access API (`showOpenFilePicker`, `showDirectoryPicker`, `FileSystemFileHandle`).
+   - In the Portable Desktop App (Tauri) and local dev server, reads and writes directly to the local slicer directory using capability-based filesystem sandboxing (`cap-std`).
 
 6. **2-Space Rust Indentation**:
    - All Rust files (`*.rs`) must use **2 spaces** for indentation (`tab_spaces = 2` in `rustfmt.toml`).

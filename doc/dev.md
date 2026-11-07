@@ -7,15 +7,19 @@ This guide covers building, testing, and running **OrcaSlicer WebConfig** locall
 ## 1. Core Architecture & Development Principles
 
 1. **Rust / WebAssembly Only (`wasm32-unknown-unknown`)**:
-   * All UI components, state management, profile parsing, `.3mf` / `.zip` packaging, and Lua transformation evaluation are written in Rust using the **Yew** framework and **mlua** (Lua 5.4).
-   * Do not introduce JavaScript application logic; only minimal browser bindings via `wasm-bindgen` / `web-sys` are used.
+   * All UI components, state management, profile parsing, `.3mf` / `.zip` packaging, and Lua transformation evaluation are written in Rust using the **Yew** framework and our pure-Rust sandboxed Lua interpreter ([`src/lua_engine.rs`](../src/lua_engine.rs)).
+   * Do not introduce JavaScript application logic; only minimal browser bindings via `wasm-bindgen` / `web-sys` (e.g., standard file input/download blobs and `localStorage`) are used.
+   * Because browser sandboxes block access to system configuration directories (`%APPDATA%`), the static web app uses standard file download/upload bundles (`.zip`, `.3mf`, `.json`), while direct local slicer directory access is handled by the Tauri desktop app and local dev server via `cap-std`.
 2. **Bazel-First Execution**:
    * All builds, code generators, documentation compilers, tests, and servers run through **Bazel** (`bazel build`, `bazel test`, `bazel run`).
    * Never invoke raw `./bazel-bin/...` binaries or unmanaged `cargo` build commands directly.
-3. **Data-Driven Polymer & Hardware Physics (`constants.json`)**:
-   * Polymer families, safe nozzle/bed temperature bounds, volumetric flow ceilings, retraction & Z-hop schedules, surface finish properties, and nozzle thermal conductivity offsets live in [`constants.json`](../constants.json) and are accessed through [`src/constants.rs`](../src/constants.rs).
+3. **100% Lua Domain Physics & Deferred Epilogue Quantization**:
+   * All domain physics and parameter transformations live in [`transformations/*.lua`](../transformations/), never in Rust (`src/*.rs`).
+   * During Phase 2 (`P10 .. P98` Lua rules) and Phase 3.1/3.2 (Epilogue Box & Relational Constraint Projections), numeric values remain at full IEEE-754 floating-point precision (`_defer_quantization = "1"`) via `map_num` and `fmt_num`, and are quantized **once** at the very end of `TransformationEngine::evaluate_stack` via `format_orca_schema_scalar`.
+4. **Data-Driven Polymer & Hardware Baseline Constants (`constants.json`)**:
+   * Polymer families, safe nozzle/bed temperature bounds, volumetric flow ceilings, kinematics motion-class policies (`corexy` vs. `bedslinger`), and vendor filament catalogs live in [`constants.json`](../constants.json) and are accessed through [`src/constants.rs`](../src/constants.rs).
    * Avoid hardcoding polymer names or magic numbers in Rust code.
-4. **2-Space Rust Indentation**:
+5. **2-Space Rust Indentation**:
    * All Rust source files (`*.rs`) use **2 spaces** for indentation (`tab_spaces = 2` in [`rustfmt.toml`](../rustfmt.toml)).
 
 ---
