@@ -2682,8 +2682,9 @@ impl AnycubicSniffedPrinterState {
   pub fn infer_material_from_profile_name(profile_name: &str) -> String {
     let up = profile_name.to_uppercase();
     for mat in [
-      "PETG-CF", "PLA-CF", "ABS-CF", "PA-CF", "PET-CF", "PCTG", "PETG", "TPU", "ASA", "ABS", "PC",
-      "PHA", "PVA", "PLA+", "PLA",
+      "PCTG-CF", "PCTG-GF", "PETG-CF", "PLA-CF", "ABS-CF", "ASA-CF", "PA-CF", "PPA-CF", "PPS-CF",
+      "PC-CF", "PC-GF", "PET-CF", "PCTG", "PETG", "TPU", "ASA", "ABS", "PC", "PHA", "PVA",
+      "PLA+", "PLA",
     ] {
       if up.contains(mat) {
         return mat.to_string();

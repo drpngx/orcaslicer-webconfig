@@ -676,8 +676,9 @@ pub fn import_scanned_directory(
     // Determine actual material type from profile name or `filament_type` field via `constants.json`
     let c = crate::constants::constants();
     let disk_fil_type = extract_str(f_val, "filament_type");
-    // Undo the `anycubic_pctg_as_petg` declaration (PCTG exported as PETG for AnycubicSlicerNext)
-    // so PCTG spools keep their PCTG temperature brackets after a round-trip through disk.
+    // Undo the `anycubic_pctg_as_petg` declaration (PCTG exported as PETG, or PC-CF exported as PC
+    // for AnycubicSlicerNext / ACE Pro 2) so spools keep their true polymer temperature brackets
+    // after a round-trip through disk.
     let disk_fil_type = match disk_fil_type {
       Some(t)
         if t.to_uppercase().starts_with("PETG")
@@ -686,6 +687,14 @@ pub fn import_scanned_directory(
             .unwrap_or(false) =>
       {
         Some(format!("PCTG{}", &t["PETG".len()..]))
+      }
+      Some(t)
+        if t.eq_ignore_ascii_case("PC")
+          && extract_str(f_val, "filament_notes")
+            .map(|n| n.contains(crate::threemf::PCCF_AS_PC_NOTE_MARKER))
+            .unwrap_or(false) =>
+      {
+        Some("PC-CF".to_string())
       }
       other => other,
     };

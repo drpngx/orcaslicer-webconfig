@@ -785,8 +785,8 @@ impl TransformationEngine {
       },
       TransformationRule {
         id: "anycubic_pctg_as_petg".to_string(),
-        name: "Anycubic PCTG → PETG Filament Type Declaration".to_string(),
-        description: "AnycubicSlicerNext's hard-coded filament_type list lacks PCTG: on Anycubic rigs, PCTG-family spools are exported as filament_type = PETG. Nothing else changes — nozzle/bed temps and nozzle_temperature_range_low/high stay on PCTG limits (240–275°C), and PCTG-scoped rules still apply.".to_string(),
+        name: "Anycubic PCTG → PETG & PC-CF → PC Compatibility".to_string(),
+        description: "AnycubicSlicerNext / ACE Pro 2 lacks PCTG and PC-CF in its filament list: on Anycubic rigs, PCTG-family spools are exported as filament_type = PETG and PC-CF/PC-GF spools are exported as filament_type = PC. Nothing else changes — nozzle/bed temps, hardened-nozzle requirements, and nozzle_temperature_range_low/high stay on true PCTG (240–275°C) and PC-CF (255–295°C) limits.".to_string(),
         category: "Machine Compatibility Rule".to_string(),
         icon: "🏷️".to_string(),
         enabled: true,
@@ -7339,6 +7339,144 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       .find(|f| f.name.contains("My Clear Spool"))
       .expect("renamed PETG-declared spool imported");
     assert_eq!(back.material_type, "PCTG");
+  }
+
+  #[test]
+  fn test_anycubic_pccf_declared_as_pc_keeps_pccf_limits_and_roundtrips() {
+    use crate::threemf::{
+      export_standalone_filament_json_with_overrides, PCCF_AS_PC_NOTE_MARKER,
+      PCCF_AS_PC_SIDE_CHANNEL,
+    };
+
+    let rule = TransformationEngine::get_default_rules()
+      .into_iter()
+      .find(|r| r.id == "anycubic_pctg_as_petg")
+      .expect("anycubic_pctg_as_petg is a built-in default rule");
+
+    // 1. Rig gating inside Lua: Anycubic arms `_anycubic_pccf_as_pc`, Bambu does not (unless forced).
+    let run = |lua: &str, model: &str| {
+      let (cfg, _, _) = execute_transformation_lua(
+        lua,
+        &json!({}),
+        &json!({ "printer_model": model, "filament_type": "PC-CF", "all_filament_types": ["PC-CF", "PLA"] }),
+      )
+      .expect("anycubic_pctg_as_petg executes");
+      cfg
+        .get(PCCF_AS_PC_SIDE_CHANNEL)
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    };
+    assert_eq!(
+      run(&rule.lua_code, "Anycubic Kobra S1").as_deref(),
+      Some("1")
+    );
+    assert_eq!(run(&rule.lua_code, "Bambu Lab P1S"), None);
+    let mut force_all = HashMap::new();
+    force_all.insert("target_printers".to_string(), "all".to_string());
+    let lua_all = embed_param_defaults_in_lua(&rule.lua_code, &force_all);
+    assert_eq!(run(&lua_all, "Bambu Lab P1S").as_deref(), Some("1"));
+
+    // 2. Full default stack on the Anycubic rig produces `_anycubic_pccf_as_pc`.
+    let rig = MachineRig::kobra_s1_hardened_steel_png();
+    let mut rules = TransformationEngine::get_default_rules();
+    TransformationEngine::sync_rules_for_rig(
+      &mut rules,
+      &rig.nozzle_type,
+      &rig.nozzle_material,
+      rig.ace_pro_units,
+    );
+    TransformationEngine::sync_weather_rule_for_rig(&mut rules, &rig);
+    let ctx = json!({
+      "printer_model": rig.printer_model,
+      "nozzle_type": rig.nozzle_type,
+      "nozzle_material": rig.nozzle_material,
+      "nozzle_diameter": rig.nozzle_diameter,
+      "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "filament_type": "PC-CF",
+      "all_filament_types": ["PC-CF", "PC"],
+    });
+    let res =
+      TransformationEngine::evaluate_stack(&OrcaProfile::get_stock_kobra_s1(), &rules, &ctx);
+    let overrides = res.resulting_profile.values.clone();
+    assert_eq!(
+      overrides
+        .get(PCCF_AS_PC_SIDE_CHANNEL)
+        .and_then(|v| v.as_str()),
+      Some("1")
+    );
+
+    // 3. Export: declared `filament_type` is `PC`, notes carry the PC-CF marker, and temps/HRC stay PC-CF.
+    let catalog = crate::catalog::load_merged_catalog();
+    let pccf_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PC-CF")
+      .expect("PC-CF catalog entry");
+    let pccf = FilamentSpool::from_catalog_entry(1, pccf_entry, &rig.nozzle_type);
+    assert_eq!(pccf.material_type, "PC-CF");
+
+    let exported: serde_json::Map<String, serde_json::Value> = serde_json::from_str::<serde_json::Value>(
+      &export_standalone_filament_json_with_overrides(&pccf, &rig, &overrides),
+    )
+    .unwrap()
+    .as_object()
+    .unwrap()
+    .clone();
+    assert_eq!(exported["filament_type"], json!(["PC"]));
+    assert!(exported["filament_notes"][0]
+      .as_str()
+      .unwrap()
+      .contains(PCCF_AS_PC_NOTE_MARKER));
+    let (pccf_min, pccf_max) = FilamentSpool::polymer_safe_nozzle_bounds("PC-CF");
+    let noz: i32 = exported["nozzle_temperature"][0]
+      .as_str()
+      .unwrap()
+      .parse()
+      .unwrap();
+    assert!(
+      (pccf_min..=pccf_max).contains(&noz),
+      "PC-CF nozzle {}°C must stay in [{}..{}]",
+      noz,
+      pccf_min,
+      pccf_max
+    );
+
+    // 4. Plain PC does NOT get the PC-CF note marker.
+    let pc_entry = catalog.filaments.iter().find(|f| f.code == "PC").unwrap();
+    let pc = FilamentSpool::from_catalog_entry(2, pc_entry, &rig.nozzle_type);
+    let pc_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str::<serde_json::Value>(
+      &export_standalone_filament_json_with_overrides(&pc, &rig, &overrides),
+    )
+    .unwrap()
+    .as_object()
+    .unwrap()
+    .clone();
+    assert_eq!(pc_map["filament_type"], json!(["PC"]));
+    assert!(!pc_map["filament_notes"][0]
+      .as_str()
+      .unwrap()
+      .contains(PCCF_AS_PC_NOTE_MARKER));
+
+    // 5. Round-trip: a PC-declared PC-CF preset whose name lacks "PC-CF" re-imports as PC-CF.
+    let mut renamed = exported.clone();
+    renamed.insert("name".to_string(), json!("My Matte Black Spool"));
+    renamed.insert(
+      "filament_settings_id".to_string(),
+      json!(["My Matte Black Spool"]),
+    );
+    let mut entries = crate::dir_import::build_reference_anycubic_entries();
+    entries.push(crate::fs_access::ScannedFileEntry {
+      relative_path: "user/434139/filament/My Matte Black Spool.json".to_string(),
+      filename: "My Matte Black Spool.json".to_string(),
+      bytes: serde_json::to_vec(&serde_json::Value::Object(renamed)).unwrap(),
+    });
+    let imported = crate::dir_import::import_scanned_directory(&entries).unwrap();
+    let back = imported
+      .filaments
+      .iter()
+      .find(|f| f.name.contains("My Matte Black Spool"))
+      .expect("renamed PC-declared PC-CF spool imported");
+    assert_eq!(back.material_type, "PC-CF");
   }
 
   #[test]

@@ -141,6 +141,8 @@ pub fn resolve_filament_inherits_for_rig(
     && !spool.inherits.contains("TPU for ACE @")
     && !spool.inherits.contains("TPU 95A @")
     && !spool.inherits.contains("PCTG @")
+    && !spool.inherits.contains("PC-CF @")
+    && !spool.inherits.contains("PC-GF @")
   {
     return spool.inherits.clone();
   }
@@ -203,6 +205,36 @@ pub fn declare_pctg_family_as_petg(slicer_filament_type: &str) -> String {
   match trimmed.to_uppercase().strip_prefix("PCTG") {
     Some(rest) => format!("PETG{}", rest),
     None => trimmed.to_string(),
+  }
+}
+
+/// Side-channel key set by the `anycubic_pctg_as_petg` rule (Anycubic rigs only by default)
+/// so PC-CF / PC-GF spools record a round-trip marker when declared as `PC`.
+pub const PCCF_AS_PC_SIDE_CHANNEL: &str = "_anycubic_pccf_as_pc";
+
+/// Marker appended to `filament_notes` when a PC-CF / PC-GF spool is declared as `PC`, so a later
+/// directory import restores `material_type = PC-CF` (and its 255–295°C / hardened-nozzle limits)
+/// even if the preset name was customized.
+pub const PCCF_AS_PC_NOTE_MARKER: &str = "[PC-CF declared as PC for AnycubicSlicerNext]";
+
+/// Returns true if the material code is a reinforced PC variant (`PC-CF`, `PC-GF`, `PC-RCF`, `PC-RGF`).
+pub fn is_reinforced_pc_material(material_type: &str) -> bool {
+  let up = material_type.trim().to_uppercase();
+  matches!(up.as_str(), "PC-CF" | "PC-GF" | "PC-RCF" | "PC-RGF")
+    || up.starts_with("PC-CF")
+    || up.starts_with("PC-GF")
+    || up.starts_with("PC-RCF")
+    || up.starts_with("PC-RGF")
+}
+
+/// Anycubic ACE Pro 2 / AnycubicSlicerNext (Kobra S1) lacks `PC-CF` in its filament list:
+/// maps a reinforced PC-family material (`PC-CF`, `PC-GF`, `PC-RCF`, `PC-RGF`) to `PC`.
+pub fn declare_pccf_family_as_pc(slicer_filament_type: &str) -> String {
+  let trimmed = slicer_filament_type.trim();
+  if is_reinforced_pc_material(trimmed) {
+    "PC".to_string()
+  } else {
+    trimmed.to_string()
   }
 }
 
@@ -1072,17 +1104,25 @@ fn resolve_spool_orca_filament_map_and_provenance(
     == Some("1");
   // `anycubic_pctg_as_petg`: only the *declared* `filament_type` string changes. `orca_fil_type`
   // (base preset lookup, PETG-only Kobra tweaks) and `spool.material_type` (safe temperature
-  // bounds, `nozzle_temperature_range_low/high`) intentionally stay on PCTG.
+  // bounds, `nozzle_temperature_range_low/high`) intentionally stay on PCTG / PC-CF.
   let declare_pctg_as_petg = derived_overrides
     .and_then(|m| m.get(PCTG_AS_PETG_SIDE_CHANNEL))
     .and_then(|v| v.as_str())
     == Some("1");
-  let declared_fil_type = if declare_pctg_as_petg {
+  let declare_pccf_as_pc = derived_overrides
+    .and_then(|m| m.get(PCCF_AS_PC_SIDE_CHANNEL))
+    .and_then(|v| v.as_str())
+    == Some("1");
+  let mut declared_fil_type = if declare_pctg_as_petg {
     declare_pctg_family_as_petg(&orca_fil_type)
   } else {
     orca_fil_type.clone()
   };
   let pctg_declared_as_petg = declared_fil_type != orca_fil_type;
+  let pccf_declared_as_pc = declare_pccf_as_pc && is_reinforced_pc_material(&spool.material_type);
+  if pccf_declared_as_pc {
+    declared_fil_type = declare_pccf_family_as_pc(&declared_fil_type);
+  }
   let is_translucent_finish = spool.finish_type.eq_ignore_ascii_case("Translucent")
     || spool.material_type.to_lowercase().contains("translucent");
 
@@ -1730,6 +1770,19 @@ fn resolve_spool_orca_filament_map_and_provenance(
       PCTG_AS_PETG_NOTE_MARKER,
       declared_fil_type,
       orca_fil_type,
+      spool.material_type,
+      min_safe_noz,
+      max_safe_noz,
+      min_safe_bed,
+      max_safe_bed
+    ));
+  }
+  if pccf_declared_as_pc {
+    notes.push_str(&format!(
+      " {} filament_type={} (ACE Pro 2 / slicer lacks {}); temps follow {} limits {}–{}°C nozzle, {}–{}°C bed.",
+      PCCF_AS_PC_NOTE_MARKER,
+      declared_fil_type,
+      spool.material_type,
       spool.material_type,
       min_safe_noz,
       max_safe_noz,
