@@ -357,17 +357,25 @@ impl WebConfigConstants {
     nozzle_diameter: &str,
     material_type: &str,
   ) -> String {
+    self.resolve_filament_inherits_with_finish(
+      printer_model,
+      nozzle_diameter,
+      material_type,
+      "Basic",
+    )
+  }
+
+  /// Resolves the system filament parent preset string taking into account both `material_type`
+  /// and `finish_type` (so e.g. `PLA` + `Matte` inherits `Anycubic PLA Matte @Anycubic Kobra S1 0.4 nozzle`).
+  pub fn resolve_filament_inherits_with_finish(
+    &self,
+    printer_model: &str,
+    nozzle_diameter: &str,
+    material_type: &str,
+    finish_type: &str,
+  ) -> String {
     let mc = self.lookup_machine(printer_model);
-    let trimmed = material_type.trim();
-    let base_code = if self
-      .direct_inherits_preset_codes
-      .iter()
-      .any(|c| c.eq_ignore_ascii_case(trimmed))
-    {
-      trimmed
-    } else {
-      &self.lookup_polymer(material_type).base_preset_code
-    };
+    let base_code = self.resolve_base_preset_code(material_type, finish_type, &mc.vendor_prefix);
     let noz = if nozzle_diameter.trim().is_empty() {
       mc.default_nozzle_diameter.as_str()
     } else {
@@ -383,6 +391,46 @@ impl WebConfigConstants {
       .replace("{base_preset_code}", base_code)
       .replace("{printer_model}", model)
       .replace("{nozzle_diameter}", noz)
+  }
+
+  pub fn resolve_base_preset_code<'a>(
+    &'a self,
+    material_type: &'a str,
+    finish_type: &str,
+    vendor_prefix: &str,
+  ) -> &'a str {
+    let trimmed = material_type.trim();
+    if trimmed.eq_ignore_ascii_case("PLA") {
+      match finish_type.trim() {
+        "Matte" => return "PLA Matte",
+        "Silk" => return "PLA Silk",
+        "Glow-in-the-Dark" | "Glow" => return "PLA Glow",
+        "Wood-Filled" | "Wood" if vendor_prefix.eq_ignore_ascii_case("Anycubic") => {
+          return "PLA Wood"
+        }
+        "Metal-Filled" | "Metal" if vendor_prefix.eq_ignore_ascii_case("Anycubic") => {
+          return "PLA Metal"
+        }
+        "Marble/Stone/Terracotta" | "Marble"
+          if vendor_prefix.eq_ignore_ascii_case("Anycubic") =>
+        {
+          return "PLA Marble"
+        }
+        "Translucent" if vendor_prefix.eq_ignore_ascii_case("Anycubic") => {
+          return "PLA Translucent"
+        }
+        _ => {}
+      }
+    }
+    if self
+      .direct_inherits_preset_codes
+      .iter()
+      .any(|c| c.eq_ignore_ascii_case(trimmed))
+    {
+      trimmed
+    } else {
+      &self.lookup_polymer(material_type).base_preset_code
+    }
   }
 
   /// Normalize a brand name (or return `"Generic"` if empty/All/unknown).

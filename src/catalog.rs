@@ -780,6 +780,10 @@ mod tests {
       "Anycubic PLA Silk @Anycubic Kobra S1 0.4 nozzle",
       "Anycubic PLA Glow @Anycubic Kobra S1 0.4 nozzle",
       "Anycubic PLA High Speed @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA Wood @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA Metal @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA Marble @Anycubic Kobra S1 0.4 nozzle",
+      "Anycubic PLA Translucent @Anycubic Kobra S1 0.4 nozzle",
       "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
       "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle",
       "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle",
@@ -842,6 +846,33 @@ mod tests {
         "Exported filament '{}' has invalid Kobra S1 inherits '{}'",
         spool.name,
         inherits
+      );
+      let canon_poly = crate::models::FilamentSpool::canonical_polymer_key(&spool.material_type);
+      let expected_parent = match canon_poly {
+        "PC" | "PC-CF" | "PEEK" | "PPS" => "Anycubic PC @Anycubic Kobra S1 0.4 nozzle",
+        "PA" | "PA6-CF" | "PA12-CF" | "PAHT-CF" | "PPA-CF" => {
+          "Anycubic PA6-CF @Anycubic Kobra S1 0.4 nozzle"
+        }
+        "PET-CF" => "Anycubic PET-CF @Anycubic Kobra S1 0.4 nozzle",
+        "PEBA" => "Anycubic PEBA @Anycubic Kobra S1 0.4 nozzle",
+        "PETG-CF" | "PCTG-CF" => "Anycubic PETG-CF @Anycubic Kobra S1 0.4 nozzle",
+        "PETG" | "PCTG" => "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle",
+        "ASA" | "ASA-CF" | "PP" | "HIPS" => "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle",
+        "ABS" | "ABS-CF" => "Anycubic ABS @Anycubic Kobra S1 0.4 nozzle",
+        "PLA-CF" => "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle",
+        "PLA+" => {
+          if spool.material_type.eq_ignore_ascii_case("PLA High Speed") {
+            "Anycubic PLA High Speed @Anycubic Kobra S1 0.4 nozzle"
+          } else {
+            "Anycubic PLA+ @Anycubic Kobra S1 0.4 nozzle"
+          }
+        }
+        _ => inherits,
+      };
+      assert_eq!(
+        inherits, expected_parent,
+        "Exported filament '{}' ({} / {}) inherited wrong parent '{}'",
+        spool.name, fil.brand, fil.code, inherits
       );
 
       // Test round-trip save & re-import for all Anycubic filaments and every 15th vendor filament

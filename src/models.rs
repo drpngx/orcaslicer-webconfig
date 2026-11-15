@@ -1587,6 +1587,7 @@ impl FilamentSpool {
         active_nozzle_type,
       );
     }
+    self.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(self);
 
     let is_abrasive = Self::is_abrasive_material_or_finish(&self.material_type, &self.finish_type);
     self.required_nozzle_hrc = if is_abrasive {
@@ -1971,7 +1972,12 @@ impl FilamentSpool {
       poly_cfg.default_flow_ratio
     };
     let norm_brand = Self::normalized_brand(&mat.brand);
-    let inherits = c.resolve_filament_inherits("Anycubic Kobra S1", "0.4", &base_mat_code);
+    let inherits = c.resolve_filament_inherits_with_finish(
+      "Anycubic Kobra S1",
+      "0.4",
+      &base_mat_code,
+      &finish_type,
+    );
     let profile_name = Self::default_oc_profile_name_with_brand(
       &norm_brand,
       &base_mat_code,

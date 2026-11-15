@@ -701,24 +701,34 @@ pub fn import_scanned_directory(
     let inherited_fil_type = system_filaments
       .get(&raw_inherits)
       .and_then(|b| extract_str(b, "filament_type"));
-    let raw_mat_type = c.detect_polymer_from_profile_texts(
-      &name,
-      disk_fil_type.as_deref(),
-      inherited_fil_type.as_deref(),
-    );
+    let oc_notes_header = extract_str(f_val, "filament_notes")
+      .as_deref()
+      .and_then(|n| c.parse_oc_filament_notes_header(n));
+    let raw_mat_type = if let Some((_, ref nm, _)) = oc_notes_header {
+      nm.clone()
+    } else {
+      c.detect_polymer_from_profile_texts(
+        &name,
+        disk_fil_type.as_deref(),
+        inherited_fil_type.as_deref(),
+      )
+    };
     let mat_type = c.base_material_code(&raw_mat_type).to_string();
     let poly_cfg = c.lookup_polymer(&mat_type);
 
     // Resolve true system base matching the actual `mat_type`
+    let finish_hint = oc_notes_header
+      .as_ref()
+      .map(|(_, _, nf)| nf.as_str())
+      .unwrap_or("Basic");
     let default_inherits_candidate =
-      c.resolve_filament_inherits("Anycubic Kobra S1", "0.4", &mat_type);
-    let canonical_base_name: &str = if poly_cfg.family == "PA"
+      c.resolve_filament_inherits_with_finish("Anycubic Kobra S1", "0.4", &mat_type, finish_hint);
+    let canonical_base_name: &str = if system_filaments.contains_key(&default_inherits_candidate) {
+      &default_inherits_candidate
+    } else if poly_cfg.family == "PA"
       && system_filaments.contains_key("yxpoler PA @Anycubic Kobra S1 0.4 nozzle")
     {
       "yxpoler PA @Anycubic Kobra S1 0.4 nozzle"
-    } else if poly_cfg.family == "PA" && !system_filaments.contains_key(&default_inherits_candidate)
-    {
-      "Anycubic PA @Anycubic Kobra S1 Max 0.4 nozzle"
     } else {
       &default_inherits_candidate
     };
@@ -1106,42 +1116,39 @@ pub fn import_scanned_directory(
 
     let (mut final_brand, mut final_mat_type, mut final_finish_type) =
       (vendor, mat_type.clone(), finish_type);
-    if is_oc_managed_filament {
-      let disk_notes = extract_str(f_val, "filament_notes").unwrap_or_default();
-      if let Some((nb, nm, nf)) = c.parse_oc_filament_notes_header(&disk_notes) {
-        final_brand = nb;
-        final_mat_type = nm;
-        final_finish_type = nf;
-      } else {
-        let cat = crate::catalog::load_merged_catalog();
-        if let Some(exact_cat) = cat
-          .filaments
-          .iter()
-          .find(|f| {
+    if let Some((nb, nm, nf)) = oc_notes_header {
+      final_brand = nb;
+      final_mat_type = nm;
+      final_finish_type = nf;
+    } else if is_oc_managed_filament {
+      let cat = crate::catalog::load_merged_catalog();
+      if let Some(exact_cat) = cat
+        .filaments
+        .iter()
+        .find(|f| {
+          FilamentSpool::default_oc_profile_name_with_brand(
+            &f.brand,
+            f.base_material_code(),
+            &f.default_finish,
+            &detected_spool_noz,
+          ) == name
+        })
+        .or_else(|| {
+          cat.filaments.iter().find(|f| {
             FilamentSpool::default_oc_profile_name_with_brand(
-              &f.brand,
+              &final_brand,
               f.base_material_code(),
-              &f.default_finish,
+              &final_finish_type,
               &detected_spool_noz,
             ) == name
           })
-          .or_else(|| {
-            cat.filaments.iter().find(|f| {
-              FilamentSpool::default_oc_profile_name_with_brand(
-                &final_brand,
-                f.base_material_code(),
-                &final_finish_type,
-                &detected_spool_noz,
-              ) == name
-            })
-          })
-        {
-          if exact_cat.brand.eq_ignore_ascii_case(&final_brand) {
-            final_brand = exact_cat.brand.clone();
-            final_finish_type = exact_cat.default_finish.clone();
-          }
-          final_mat_type = exact_cat.base_material_code().to_string();
+        })
+      {
+        if exact_cat.brand.eq_ignore_ascii_case(&final_brand) {
+          final_brand = exact_cat.brand.clone();
+          final_finish_type = exact_cat.default_finish.clone();
         }
+        final_mat_type = exact_cat.base_material_code().to_string();
       }
     }
 

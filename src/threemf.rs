@@ -162,16 +162,8 @@ pub fn resolve_filament_inherits_for_rig(
     noz.trim().to_string()
   };
   let c = crate::constants::constants();
-  let trimmed_mat = spool.material_type.trim();
-  let base_code = if c
-    .direct_inherits_preset_codes
-    .iter()
-    .any(|code| code.eq_ignore_ascii_case(trimmed_mat))
-  {
-    trimmed_mat
-  } else {
-    &c.lookup_polymer(&spool.material_type).base_preset_code
-  };
+  let base_code =
+    c.resolve_base_preset_code(&spool.material_type, &spool.finish_type, &mc.vendor_prefix);
   mc.inherits_template
     .replace("{vendor_prefix}", &mc.vendor_prefix)
     .replace("{base_preset_code}", base_code)
@@ -895,9 +887,21 @@ fn resolve_spool_orca_filament_map_and_provenance(
   let poly_cfg = c.lookup_polymer(&spool.material_type);
   let is_foaming_tpu = spool.is_foaming_tpu();
   let mut base_map = serde_json::Map::new();
+  let base_lookup_key = match orca_fil_type.as_str() {
+    "PA6-CF" | "PA-CF" | "PPA-CF" => "PA-CF",
+    "PETG-CF" | "PET-CF" | "PCTG" | "PCTG-CF" => "PETG",
+    "PEBA" | "TPU for AMS" | "TPU 95A" => "TPU",
+    "ASA-CF" | "HIPS" | "PP" => "ASA",
+    "ABS-CF" => "ABS",
+    "PC-CF" | "PEEK" | "PPS" | "PPS-CF" => "PC",
+    "PLA+" | "PHA" | "PCL" | "BVOH" => "PLA",
+    other => other,
+  };
   if let Some(fil_base) = cat
     .default_filament_bases
     .get(&orca_fil_type)
+    .or_else(|| cat.default_filament_bases.get(base_lookup_key))
+    .or_else(|| cat.default_filament_bases.get(&poly_cfg.family))
     .or_else(|| cat.default_filament_bases.get("PLA"))
   {
     for (k, v) in fil_base {

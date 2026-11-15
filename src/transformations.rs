@@ -7423,6 +7423,10 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     .unwrap()
     .clone();
     assert_eq!(exported["filament_type"], json!(["PC"]));
+    assert_eq!(
+      exported["inherits"],
+      json!("Anycubic PC @Anycubic Kobra S1 0.4 nozzle")
+    );
     assert!(exported["filament_notes"][0]
       .as_str()
       .unwrap()

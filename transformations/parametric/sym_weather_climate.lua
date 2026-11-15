@@ -282,7 +282,7 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
       d.retract_delta_mm = 0.05 + extra_r
       d.zhop_type = "Slope Lift"
     elseif fam == "PA_PC" then
-      d.retract_delta_mm = 0.20 + extra_r
+      d.retract_delta_mm = 0.05 + extra_r
       d.retract_speed_scale = 0.88
       d.zhop_type = "Slope Lift"
     end
@@ -338,7 +338,7 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
       d.mvs_scale = is_ms_nozzle and 0.97 or 0.92
     elseif fam == "PA_PC" then
       d.enclosure = "Fully Closed"
-      d.nozzle_delta_c = -math.floor((4 * hc_factor) + 0.5)
+      d.nozzle_delta_c = 0
       d.bed_delta_c = 0
       d.exhaust_target = 0
       d.mvs_scale = is_ms_nozzle and 0.97 or 0.92
@@ -403,8 +403,8 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
       d.brim_width_add = 10
     end
   else
-    -- Temperate (19..25°C): only apply humidity anti-stringing trim if RH >= 60%
-    if is_humid then
+    -- Temperate (19..25°C): only apply humidity anti-stringing trim if RH >= 60% (skipped for high-temp PA/PC)
+    if is_humid and fam ~= "PA_PC" then
       d.nozzle_delta_c = -3
     end
   end
@@ -644,7 +644,9 @@ function apply(config, ctx, p)
   local is_hot_c = (temp_c >= 26) or (preset_id == "tropical") or (preset_id == "hot_dry")
   local is_cold_c = (temp_c <= 18) or (preset_id == "cold_dry") or (preset_id == "cold_humid")
   local is_humid_c = (rh_pct >= 60) or (preset_id == "tropical") or (preset_id == "cold_humid")
-  local spool_retract_delta = is_humid_c and ((fam == "PETG" or fam == "TPU") and 0.20 or 0.15) or 0.0
+  local spool_retract_delta = is_humid_c
+    and ((fam == "PETG" or fam == "TPU") and 0.20 or ((fam == "ABS_ASA" or fam == "PA_PC") and 0.05 or 0.15))
+    or 0.0
   local spool_noz_delta = 0
   local spool_bed_delta = 0
   local spool_init_bed_extra = 0
@@ -653,6 +655,8 @@ function apply(config, ctx, p)
       spool_noz_delta = is_ms and -5 or -10
     elseif fam == "TPU" then
       spool_noz_delta = is_ms and -3 or -6
+    elseif fam == "PA_PC" then
+      spool_noz_delta = 0
     else
       spool_noz_delta = is_ms and -2 or -4
     end
@@ -662,10 +666,10 @@ function apply(config, ctx, p)
       spool_bed_delta = -5
     end
   elseif is_cold_c then
-    spool_noz_delta = (is_ms and 4 or 6) - (is_humid_c and 3 or 0)
+    spool_noz_delta = (is_ms and 4 or 6) - ((is_humid_c and fam ~= "PA_PC") and 3 or 0)
     spool_bed_delta = 5
     spool_init_bed_extra = 5
-  elseif is_humid_c then
+  elseif is_humid_c and fam ~= "PA_PC" then
     spool_noz_delta = -3
   end
   config["_climate_noz_delta_c"] = tostring(spool_noz_delta)

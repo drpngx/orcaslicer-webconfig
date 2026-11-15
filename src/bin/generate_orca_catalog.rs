@@ -1269,9 +1269,9 @@ fn main() {
     ("ASA", "Anycubic ASA @Anycubic Kobra S1 0.4 nozzle"),
     ("TPU", "Anycubic TPU @Anycubic Kobra S1 0.4 nozzle"),
     ("PA", "Anycubic Generic PA"),
-    ("PA-CF", "Anycubic Generic PA-CF"),
-    ("PC", "Anycubic Generic PC"),
-    ("PLA-CF", "Anycubic Generic PLA-CF"),
+    ("PA-CF", "Anycubic PA6-CF @Anycubic Kobra S1 0.4 nozzle"),
+    ("PC", "Anycubic PC @Anycubic Kobra S1 0.4 nozzle"),
+    ("PLA-CF", "Anycubic PLA-CF @Anycubic Kobra S1 0.4 nozzle"),
     ("PVA", "Anycubic Generic PVA"),
   ] {
     let mut resolved_fil = sanitize_orca_profile_map(
