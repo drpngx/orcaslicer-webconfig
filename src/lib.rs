@@ -24,7 +24,7 @@ use crate::components::wizard_tab::WizardTab;
 use crate::dir_import::{
   build_directory_backup_zip, build_reference_anycubic_entries,
   build_user_disk_config_summary_json, extract_directory_backup_zip, import_scanned_directory,
-  sync_live_state_to_entries_with_process_overrides,
+  sync_live_state_to_entries_with_precomputed_filaments,
 };
 use crate::fs_access::{
   FsManager, LocalFsSaveRequest, LocalFsSaveResponse, LocalFsScanPayload, LocalFsScanProgress,
@@ -82,6 +82,15 @@ impl ExportEvalInputs {
       .unwrap_or_else(|| fallback_overrides.clone());
     (canonical, per_process, default_proc)
   }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExportProgress {
+  pub title: String,
+  pub stage_label: String,
+  pub current_item: String,
+  pub completed_steps: usize,
+  pub total_steps: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -257,6 +266,7 @@ pub fn App() -> Html {
   });
   let execution_logs = use_state(Vec::<String>::new);
   let import_progress = use_state(|| None::<LocalFsScanProgress>);
+  let export_progress = use_state(|| None::<ExportProgress>);
   let disk_flush_matrix = use_state(|| {
     (*saved_state)
       .as_ref()
@@ -902,6 +912,7 @@ pub fn App() -> Html {
     let scanned_entries = scanned_entries.clone();
     let machines = machines.clone();
     let active_machine_id = active_machine_id.clone();
+    let active_rig_for_zip = active_rig.clone();
     let filaments = filaments.clone();
     let processes = processes.clone();
     let active_process_id = active_process_id.clone();
@@ -912,40 +923,105 @@ pub fn App() -> Html {
     let derived_overrides = eval_result.resulting_profile.values.clone();
     let export_eval_inputs = export_eval_inputs.clone();
     let active_proc_for_zip = active_proc.clone();
+    let export_progress = export_progress.clone();
     let toast = toast_message.clone();
     Callback::from(move |_| {
       let mut entries = (*scanned_entries).clone();
-      let (canonical_overrides, per_process_overrides, _) =
-        export_eval_inputs.compute(&processes, &active_proc_for_zip, &derived_overrides);
-      let _ = sync_live_state_to_entries_with_process_overrides(
-        &mut entries,
-        &machines,
-        &active_machine_id,
-        &filaments,
-        &processes,
-        &active_process_id,
-        &flush_matrix,
-        flush_multiplier,
-        &conf_relative_path,
-        &pending_updates,
-        &canonical_overrides,
-        &per_process_overrides,
-      );
-      let zip_bytes = build_directory_backup_zip(&entries);
-      let filename = "AnycubicSlicerNext_Config_Backup.zip";
-      match FsManager::trigger_binary_download(filename, &zip_bytes, "application/zip") {
-        Ok(()) => {
-          toast.set(Some(format!(
-            "Created full directory backup '{}' ({} files archived including all OC: filaments/rigs/processes, {} bytes)!",
-            filename,
-            entries.len(),
-            zip_bytes.len()
-          )));
+      let machines_vec = (*machines).clone();
+      let active_mid = (*active_machine_id).clone();
+      let active_rig_val = active_rig_for_zip.clone();
+      let fil_vec = (*filaments).clone();
+      let proc_vec = (*processes).clone();
+      let active_pid = (*active_process_id).clone();
+      let fm_vec = flush_matrix.clone();
+      let crp = (*conf_relative_path).clone();
+      let pu_vec = (*pending_updates).clone();
+      let derived_ov = derived_overrides.clone();
+      let eval_in = export_eval_inputs.clone();
+      let fallback_proc = active_proc_for_zip.clone();
+      let ep_state = export_progress.clone();
+      let t = toast.clone();
+
+      let total_steps = fil_vec.len() + 2;
+      ep_state.set(Some(ExportProgress {
+        title: "Exporting OrcaSlicer Config (.zip)".to_string(),
+        stage_label: "Evaluating Lua transformation stack across process tiers...".to_string(),
+        current_item: format!("{} process profile(s)", proc_vec.len()),
+        completed_steps: 1,
+        total_steps,
+      }));
+
+      spawn_local(async move {
+        FsManager::sleep_ms(12).await;
+        let (canonical_overrides, per_process_overrides, _) =
+          eval_in.compute(&proc_vec, &fallback_proc, &derived_ov);
+
+        let mut precomputed_fils = std::collections::HashMap::with_capacity(fil_vec.len());
+        for (idx, spool) in fil_vec.iter().enumerate() {
+          let title = spool.format_concise_title();
+          ep_state.set(Some(ExportProgress {
+            title: "Exporting OrcaSlicer Config (.zip)".to_string(),
+            stage_label: format!(
+              "Generating filament preset {} of {}...",
+              idx + 1,
+              fil_vec.len()
+            ),
+            current_item: title,
+            completed_steps: idx + 1,
+            total_steps,
+          }));
+          FsManager::sleep_ms(12).await;
+          let fjson = export_standalone_filament_json_with_overrides(
+            spool,
+            &active_rig_val,
+            &canonical_overrides,
+          );
+          precomputed_fils.insert(spool.id.clone(), fjson);
         }
-        Err(e) => {
-          toast.set(Some(format!("Backup ZIP error: {}", e)));
+
+        ep_state.set(Some(ExportProgress {
+          title: "Exporting OrcaSlicer Config (.zip)".to_string(),
+          stage_label: "Packaging machine, process, and filament presets into ZIP archive..."
+            .to_string(),
+          current_item: "AnycubicSlicerNext_Config_Backup.zip".to_string(),
+          completed_steps: total_steps,
+          total_steps,
+        }));
+        FsManager::sleep_ms(12).await;
+
+        let _ = sync_live_state_to_entries_with_precomputed_filaments(
+          &mut entries,
+          &machines_vec,
+          &active_mid,
+          &fil_vec,
+          &proc_vec,
+          &active_pid,
+          &fm_vec,
+          flush_multiplier,
+          &crp,
+          &pu_vec,
+          &canonical_overrides,
+          &per_process_overrides,
+          Some(&precomputed_fils),
+        );
+        let zip_bytes = build_directory_backup_zip(&entries);
+        let filename = "AnycubicSlicerNext_Config_Backup.zip";
+        let res = FsManager::trigger_binary_download(filename, &zip_bytes, "application/zip");
+        ep_state.set(None);
+        match res {
+          Ok(()) => {
+            t.set(Some(format!(
+              "Created full directory backup '{}' ({} files archived including all OC: filaments/rigs/processes, {} bytes)!",
+              filename,
+              entries.len(),
+              zip_bytes.len()
+            )));
+          }
+          Err(e) => {
+            t.set(Some(format!("Backup ZIP error: {}", e)));
+          }
         }
-      }
+      });
     })
   };
 
@@ -975,6 +1051,7 @@ pub fn App() -> Html {
     let moonraker_url = moonraker_url.clone();
     let active_moonraker_spool_id = active_moonraker_spool_id.clone();
     let config_version = config_version.clone();
+    let export_progress = export_progress.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1009,27 +1086,52 @@ pub fn App() -> Html {
         moonraker_url: (*moonraker_url).clone(),
         active_moonraker_spool_id: *active_moonraker_spool_id,
       };
-      match serde_json::to_string_pretty(&snapshot) {
-        Ok(json_str) => {
-          let filename = "orcaslicer_webconfig.json";
-          match FsManager::trigger_browser_download(filename, &json_str) {
-            Ok(()) => {
-              toast.set(Some(format!(
-                "Exported OrcaSlicer WebConfig v{} (for OrcaSlicer {}) to '{}' ({} machines, {} filaments, {} processes, {} Lua rules)!",
-                next_ver,
-                snapshot.orca_slicer_version,
-                filename,
-                snapshot.machines.len(),
-                snapshot.filaments.len(),
-                snapshot.processes.len(),
-                snapshot.rules.len()
-              )));
+      let ep_state = export_progress.clone();
+      let t = toast.clone();
+      ep_state.set(Some(ExportProgress {
+        title: "Exporting Orca WebConfig (.json)".to_string(),
+        stage_label: "Serializing machine rigs, filaments, processes, and Lua rules...".to_string(),
+        current_item: "orcaslicer_webconfig.json".to_string(),
+        completed_steps: 1,
+        total_steps: 2,
+      }));
+      spawn_local(async move {
+        FsManager::sleep_ms(15).await;
+        match serde_json::to_string_pretty(&snapshot) {
+          Ok(json_str) => {
+            let filename = "orcaslicer_webconfig.json";
+            ep_state.set(Some(ExportProgress {
+              title: "Exporting Orca WebConfig (.json)".to_string(),
+              stage_label: "Downloading orcaslicer_webconfig.json...".to_string(),
+              current_item: filename.to_string(),
+              completed_steps: 2,
+              total_steps: 2,
+            }));
+            FsManager::sleep_ms(12).await;
+            let res = FsManager::trigger_browser_download(filename, &json_str);
+            ep_state.set(None);
+            match res {
+              Ok(()) => {
+                t.set(Some(format!(
+                  "Exported OrcaSlicer WebConfig v{} (for OrcaSlicer {}) to '{}' ({} machines, {} filaments, {} processes, {} Lua rules)!",
+                  next_ver,
+                  snapshot.orca_slicer_version,
+                  filename,
+                  snapshot.machines.len(),
+                  snapshot.filaments.len(),
+                  snapshot.processes.len(),
+                  snapshot.rules.len()
+                )));
+              }
+              Err(e) => t.set(Some(format!("Export JSON error: {}", e))),
             }
-            Err(e) => toast.set(Some(format!("Export JSON error: {}", e))),
+          }
+          Err(e) => {
+            ep_state.set(None);
+            t.set(Some(format!("Failed to serialize WebConfig JSON: {}", e)));
           }
         }
-        Err(e) => toast.set(Some(format!("Failed to serialize WebConfig JSON: {}", e))),
-      }
+      });
     })
   };
 
@@ -1798,6 +1900,7 @@ pub fn App() -> Html {
     let active_rig = active_rig.clone();
     let active_slots = active_slots.clone();
     let derived_overrides = eval_result.resulting_profile.values.clone();
+    let export_progress = export_progress.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1808,34 +1911,82 @@ pub fn App() -> Html {
           .filaments
           .remove(0)
       });
-      let json_content =
-        export_standalone_filament_json_with_overrides(&spool, &active_rig, &derived_overrides);
-      let safe_name = crate::models::sanitize_profile_filename(&spool.format_concise_title());
-      if let Err(e) = FsManager::trigger_browser_download(&safe_name, &json_content) {
-        toast.set(Some(format!("Download error: {}", e)));
-      } else {
-        toast.set(Some(format!(
-          "Exported standalone OrcaSlicer delta preset '{}'!",
-          safe_name
-        )));
-      }
+      let rig_val = active_rig.clone();
+      let ov_val = derived_overrides.clone();
+      let ep_state = export_progress.clone();
+      let t = toast.clone();
+      let title = spool.format_concise_title();
+      ep_state.set(Some(ExportProgress {
+        title: "Exporting Filament Preset (.json)".to_string(),
+        stage_label: "Evaluating Lua filament transformation stack...".to_string(),
+        current_item: title.clone(),
+        completed_steps: 1,
+        total_steps: 2,
+      }));
+      spawn_local(async move {
+        FsManager::sleep_ms(15).await;
+        let json_content = export_standalone_filament_json_with_overrides(&spool, &rig_val, &ov_val);
+        let safe_name = crate::models::sanitize_profile_filename(&title);
+        ep_state.set(Some(ExportProgress {
+          title: "Exporting Filament Preset (.json)".to_string(),
+          stage_label: "Downloading filament .json preset...".to_string(),
+          current_item: safe_name.clone(),
+          completed_steps: 2,
+          total_steps: 2,
+        }));
+        FsManager::sleep_ms(12).await;
+        let res = FsManager::trigger_browser_download(&safe_name, &json_content);
+        ep_state.set(None);
+        if let Err(e) = res {
+          t.set(Some(format!("Download error: {}", e)));
+        } else {
+          t.set(Some(format!(
+            "Exported standalone OrcaSlicer delta preset '{}'!",
+            safe_name
+          )));
+        }
+      });
     })
   };
 
   let on_export_spool_json = {
     let active_rig = active_rig.clone();
     let derived_overrides = eval_result.resulting_profile.values.clone();
+    let export_progress = export_progress.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |spool: FilamentSpool| {
-      let json_content =
-        export_standalone_filament_json_with_overrides(&spool, &active_rig, &derived_overrides);
-      let safe_name = crate::models::sanitize_profile_filename(&spool.format_concise_title());
-      let _ = FsManager::trigger_browser_download(&safe_name, &json_content);
-      toast.set(Some(format!(
-        "Exported standalone OrcaSlicer filament preset '{}'!",
-        safe_name
-      )));
+      let rig_val = active_rig.clone();
+      let ov_val = derived_overrides.clone();
+      let ep_state = export_progress.clone();
+      let t = toast.clone();
+      let title = spool.format_concise_title();
+      ep_state.set(Some(ExportProgress {
+        title: "Exporting Filament Preset (.json)".to_string(),
+        stage_label: "Evaluating Lua filament transformation stack...".to_string(),
+        current_item: title.clone(),
+        completed_steps: 1,
+        total_steps: 2,
+      }));
+      spawn_local(async move {
+        FsManager::sleep_ms(15).await;
+        let json_content = export_standalone_filament_json_with_overrides(&spool, &rig_val, &ov_val);
+        let safe_name = crate::models::sanitize_profile_filename(&title);
+        ep_state.set(Some(ExportProgress {
+          title: "Exporting Filament Preset (.json)".to_string(),
+          stage_label: "Downloading filament .json preset...".to_string(),
+          current_item: safe_name.clone(),
+          completed_steps: 2,
+          total_steps: 2,
+        }));
+        FsManager::sleep_ms(12).await;
+        let _ = FsManager::trigger_browser_download(&safe_name, &json_content);
+        ep_state.set(None);
+        t.set(Some(format!(
+          "Exported standalone OrcaSlicer filament preset '{}'!",
+          safe_name
+        )));
+      });
     })
   };
 
@@ -1860,6 +2011,7 @@ pub fn App() -> Html {
     let pending_updates = pending_updates.clone();
     let last_saved_time = last_saved_time.clone();
     let export_eval_inputs = export_eval_inputs.clone();
+    let export_progress = export_progress.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
@@ -1874,47 +2026,114 @@ pub fn App() -> Html {
       } else {
         active_slots.clone()
       };
-      let (canonical_overrides, per_process_overrides, default_3mf_proc) =
-        export_eval_inputs.compute(&processes, &active_proc, &derived_overrides);
-      let zip_bytes = build_3mf_project_container(
-        &active_rig,
-        &default_3mf_proc,
-        &slots,
-        &flush_matrix,
-        &canonical_overrides,
-      );
-      let filename = format!("Kobra_ACEPro_{}Slot_Loadout.3mf", slots.len());
-      let download_res = FsManager::trigger_binary_download(
-        &filename,
-        &zip_bytes,
-        "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-      );
-
+      let active_rig_val = active_rig.clone();
+      let fallback_proc = active_proc.clone();
+      let fm_vec = flush_matrix.clone();
+      let derived_ov = derived_overrides.clone();
       let mut entries_copy = (*scanned_entries).clone();
+      let machines_vec = (*machines).clone();
+      let active_mid = (*active_machine_id).clone();
+      let fil_vec = (*filaments).clone();
+      let proc_vec = (*processes).clone();
+      let active_pid = (*active_process_id).clone();
+      let crp = (*conf_relative_path).clone();
       let staged_list = (*pending_updates).clone();
-      let sync_plan = sync_live_state_to_entries_with_process_overrides(
-        &mut entries_copy,
-        &machines,
-        &active_machine_id,
-        &filaments,
-        &processes,
-        &active_process_id,
-        &flush_matrix,
-        flush_multiplier,
-        &conf_relative_path,
-        &staged_list,
-        &canonical_overrides,
-        &per_process_overrides,
-      );
-      let modified_files = sync_plan.files.clone();
-      let deletion_count = sync_plan.deletions.len();
+      let eval_in = export_eval_inputs.clone();
       let se_state = scanned_entries.clone();
       let pu_state = pending_updates.clone();
       let lst = last_saved_time.clone();
+      let ep_state = export_progress.clone();
       let t = toast.clone();
       let slots_len = slots.len();
 
+      let total_steps = fil_vec.len() + 3;
+      ep_state.set(Some(ExportProgress {
+        title: "Exporting 3MF Loadout & Syncing Configs".to_string(),
+        stage_label: "Evaluating Lua transformation stack across process tiers...".to_string(),
+        current_item: format!("{} process profile(s)", proc_vec.len()),
+        completed_steps: 1,
+        total_steps,
+      }));
+
       spawn_local(async move {
+        FsManager::sleep_ms(12).await;
+        let (canonical_overrides, per_process_overrides, default_3mf_proc) =
+          eval_in.compute(&proc_vec, &fallback_proc, &derived_ov);
+
+        let mut precomputed_fils = std::collections::HashMap::with_capacity(fil_vec.len());
+        for (idx, spool) in fil_vec.iter().enumerate() {
+          let title = spool.format_concise_title();
+          ep_state.set(Some(ExportProgress {
+            title: "Exporting 3MF Loadout & Syncing Configs".to_string(),
+            stage_label: format!(
+              "Generating filament preset {} of {}...",
+              idx + 1,
+              fil_vec.len()
+            ),
+            current_item: title,
+            completed_steps: idx + 1,
+            total_steps,
+          }));
+          FsManager::sleep_ms(12).await;
+          let fjson = export_standalone_filament_json_with_overrides(
+            spool,
+            &active_rig_val,
+            &canonical_overrides,
+          );
+          precomputed_fils.insert(spool.id.clone(), fjson);
+        }
+
+        let filename = format!("Kobra_ACEPro_{}Slot_Loadout.3mf", slots_len);
+        ep_state.set(Some(ExportProgress {
+          title: "Exporting 3MF Loadout & Syncing Configs".to_string(),
+          stage_label: "Building 3MF multi-material project container...".to_string(),
+          current_item: filename.clone(),
+          completed_steps: total_steps - 1,
+          total_steps,
+        }));
+        FsManager::sleep_ms(12).await;
+
+        let zip_bytes = build_3mf_project_container(
+          &active_rig_val,
+          &default_3mf_proc,
+          &slots,
+          &fm_vec,
+          &canonical_overrides,
+        );
+        let download_res = FsManager::trigger_binary_download(
+          &filename,
+          &zip_bytes,
+          "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+        );
+
+        ep_state.set(Some(ExportProgress {
+          title: "Exporting 3MF Loadout & Syncing Configs".to_string(),
+          stage_label: "Synchronizing machine, process, and filament presets to local disk..."
+            .to_string(),
+          current_item: crp.clone(),
+          completed_steps: total_steps,
+          total_steps,
+        }));
+        FsManager::sleep_ms(12).await;
+
+        let sync_plan = sync_live_state_to_entries_with_precomputed_filaments(
+          &mut entries_copy,
+          &machines_vec,
+          &active_mid,
+          &fil_vec,
+          &proc_vec,
+          &active_pid,
+          &fm_vec,
+          flush_multiplier,
+          &crp,
+          &staged_list,
+          &canonical_overrides,
+          &per_process_overrides,
+          Some(&precomputed_fils),
+        );
+        let modified_files = sync_plan.files.clone();
+        let deletion_count = sync_plan.deletions.len();
+
         let req_payload = LocalFsSaveRequest {
           files: modified_files.clone(),
           deletions: sync_plan.deletions.clone(),
@@ -1935,6 +2154,7 @@ pub fn App() -> Html {
         }
         se_state.set(entries_copy);
         pu_state.set(Vec::new());
+        ep_state.set(None);
         if saved_via_api {
           lst.set("Saved to Local Disk".to_string());
         }
@@ -1973,6 +2193,7 @@ pub fn App() -> Html {
     let scanned_entries = scanned_entries.clone();
     let machines = machines.clone();
     let active_machine_id = active_machine_id.clone();
+    let active_rig_for_save = active_rig.clone();
     let filaments = filaments.clone();
     let processes = processes.clone();
     let active_process_id = active_process_id.clone();
@@ -1983,36 +2204,95 @@ pub fn App() -> Html {
     let derived_overrides = eval_result.resulting_profile.values.clone();
     let export_eval_inputs = export_eval_inputs.clone();
     let active_proc_for_save = active_proc.clone();
+    let export_progress = export_progress.clone();
     let toast = toast_message.clone();
 
     Callback::from(move |_| {
       let lst = last_saved_time.clone();
       let se_state = scanned_entries.clone();
       let pu_state = pending_updates.clone();
+      let ep_state = export_progress.clone();
       let t = toast.clone();
 
       let mut entries_copy = (*scanned_entries).clone();
+      let machines_vec = (*machines).clone();
+      let active_mid = (*active_machine_id).clone();
+      let active_rig_val = active_rig_for_save.clone();
+      let fil_vec = (*filaments).clone();
+      let proc_vec = (*processes).clone();
+      let active_pid = (*active_process_id).clone();
+      let fm_vec = flush_matrix.clone();
+      let crp = (*conf_relative_path).clone();
       let staged_list = (*pending_updates).clone();
-      let (canonical_overrides, per_process_overrides, _) =
-        export_eval_inputs.compute(&processes, &active_proc_for_save, &derived_overrides);
-      let sync_plan = sync_live_state_to_entries_with_process_overrides(
-        &mut entries_copy,
-        &machines,
-        &active_machine_id,
-        &filaments,
-        &processes,
-        &active_process_id,
-        &flush_matrix,
-        flush_multiplier,
-        &conf_relative_path,
-        &staged_list,
-        &canonical_overrides,
-        &per_process_overrides,
-      );
-      let modified_files = sync_plan.files.clone();
-      let deletion_count = sync_plan.deletions.len();
+      let derived_ov = derived_overrides.clone();
+      let eval_in = export_eval_inputs.clone();
+      let fallback_proc = active_proc_for_save.clone();
+
+      let total_steps = fil_vec.len() + 2;
+      ep_state.set(Some(ExportProgress {
+        title: "Saving Configuration & Filaments to Disk".to_string(),
+        stage_label: "Evaluating Lua transformation stack across process tiers...".to_string(),
+        current_item: format!("{} process profile(s)", proc_vec.len()),
+        completed_steps: 1,
+        total_steps,
+      }));
 
       spawn_local(async move {
+        FsManager::sleep_ms(12).await;
+        let (canonical_overrides, per_process_overrides, _) =
+          eval_in.compute(&proc_vec, &fallback_proc, &derived_ov);
+
+        let mut precomputed_fils = std::collections::HashMap::with_capacity(fil_vec.len());
+        for (idx, spool) in fil_vec.iter().enumerate() {
+          let title = spool.format_concise_title();
+          ep_state.set(Some(ExportProgress {
+            title: "Saving Configuration & Filaments to Disk".to_string(),
+            stage_label: format!(
+              "Generating filament preset {} of {}...",
+              idx + 1,
+              fil_vec.len()
+            ),
+            current_item: title,
+            completed_steps: idx + 1,
+            total_steps,
+          }));
+          FsManager::sleep_ms(12).await;
+          let fjson = export_standalone_filament_json_with_overrides(
+            spool,
+            &active_rig_val,
+            &canonical_overrides,
+          );
+          precomputed_fils.insert(spool.id.clone(), fjson);
+        }
+
+        ep_state.set(Some(ExportProgress {
+          title: "Saving Configuration & Filaments to Disk".to_string(),
+          stage_label: "Writing machine, process, and filament presets to local slicer directory..."
+            .to_string(),
+          current_item: crp.clone(),
+          completed_steps: total_steps,
+          total_steps,
+        }));
+        FsManager::sleep_ms(12).await;
+
+        let sync_plan = sync_live_state_to_entries_with_precomputed_filaments(
+          &mut entries_copy,
+          &machines_vec,
+          &active_mid,
+          &fil_vec,
+          &proc_vec,
+          &active_pid,
+          &fm_vec,
+          flush_multiplier,
+          &crp,
+          &staged_list,
+          &canonical_overrides,
+          &per_process_overrides,
+          Some(&precomputed_fils),
+        );
+        let modified_files = sync_plan.files.clone();
+        let deletion_count = sync_plan.deletions.len();
+
         let req_payload = LocalFsSaveRequest {
           files: modified_files.clone(),
           deletions: sync_plan.deletions.clone(),
@@ -2034,6 +2314,7 @@ pub fn App() -> Html {
 
         se_state.set(entries_copy);
         pu_state.set(Vec::new());
+        ep_state.set(None);
         lst.set("Saved to Local Disk".to_string());
 
         if saved_via_api {
@@ -2372,6 +2653,47 @@ pub fn App() -> Html {
         pending_save_count={pending_updates.len()}
       />
 
+      // Floating Export / Save Progress Banner (shown whenever an export runs outside the Export Modal)
+      if !*show_export_modal {
+        if let Some(prog) = &*export_progress {
+          <div class="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-xl px-4 pointer-events-none">
+            <div class="bg-surface-container-highest border-2 border-primary rounded-2xl p-space-md shadow-2xl flex flex-col gap-space-sm pointer-events-auto">
+              <div class="flex items-center justify-between gap-space-sm">
+                <div class="flex items-center gap-space-xs text-primary font-mono text-xs font-bold">
+                  <span class="material-symbols-outlined text-[18px] animate-spin">{"sync"}</span>
+                  <span>{&prog.title}</span>
+                </div>
+                <span class="bg-primary text-on-primary px-2 py-0.5 rounded text-xs font-mono font-bold">
+                  {format!(
+                    "{} / {} ({}%)",
+                    prog.completed_steps,
+                    prog.total_steps.max(1),
+                    ((prog.completed_steps as f64 / prog.total_steps.max(1) as f64) * 100.0)
+                      .round()
+                      .clamp(5.0, 100.0) as usize
+                  )}
+                </span>
+              </div>
+              <div class="w-full h-3 bg-surface-container-lowest rounded-full overflow-hidden border border-outline-variant/60">
+                <div
+                  class="h-full bg-primary transition-all duration-100 rounded-full"
+                  style={format!(
+                    "width: {}%;",
+                    ((prog.completed_steps as f64 / prog.total_steps.max(1) as f64) * 100.0)
+                      .round()
+                      .clamp(5.0, 100.0) as usize
+                  )}
+                />
+              </div>
+              <div class="flex items-center justify-between gap-2 text-[11px] font-mono text-on-surface-variant">
+                <span class="truncate">{&prog.stage_label}</span>
+                <span class="text-on-surface font-bold truncate max-w-[45%]">{&prog.current_item}</span>
+              </div>
+            </div>
+          </div>
+        }
+      }
+
       // Export (Website) / Save & Export (Tauri) Popup Modal Menu
       if *show_export_modal {
         <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
@@ -2403,6 +2725,42 @@ pub fn App() -> Html {
               </button>
             </div>
 
+            if let Some(prog) = &*export_progress {
+              <div class="bg-surface-container-highest border border-primary/60 rounded-xl p-space-md flex flex-col gap-space-sm shadow-inner">
+                <div class="flex items-center justify-between gap-space-sm">
+                  <div class="flex items-center gap-space-xs text-primary font-mono text-xs font-bold">
+                    <span class="material-symbols-outlined text-[16px] animate-spin">{"sync"}</span>
+                    <span>{&prog.title}</span>
+                  </div>
+                  <span class="bg-primary text-on-primary px-2 py-0.5 rounded text-xs font-mono font-bold">
+                    {format!(
+                      "{} / {} ({}%)",
+                      prog.completed_steps,
+                      prog.total_steps.max(1),
+                      ((prog.completed_steps as f64 / prog.total_steps.max(1) as f64) * 100.0)
+                        .round()
+                        .clamp(5.0, 100.0) as usize
+                    )}
+                  </span>
+                </div>
+                <div class="w-full h-3 bg-surface-container-lowest rounded-full overflow-hidden border border-outline-variant/60">
+                  <div
+                    class="h-full bg-primary transition-all duration-100 rounded-full"
+                    style={format!(
+                      "width: {}%;",
+                      ((prog.completed_steps as f64 / prog.total_steps.max(1) as f64) * 100.0)
+                        .round()
+                        .clamp(5.0, 100.0) as usize
+                    )}
+                  />
+                </div>
+                <div class="flex items-center justify-between gap-2 text-[11px] font-mono text-on-surface-variant">
+                  <span class="truncate">{&prog.stage_label}</span>
+                  <span class="text-on-surface font-bold truncate max-w-[45%]">{&prog.current_item}</span>
+                </div>
+              </div>
+            }
+
             <div class="flex flex-col gap-space-sm">
               // Option 1: Export Orca WebConfig (.json)
               <div class="bg-surface-container p-space-md rounded-xl border border-outline-variant flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-md">
@@ -2423,7 +2781,11 @@ pub fn App() -> Html {
                   </span>
                 </div>
                 <button
-                  class="shrink-0 flex items-center gap-space-xs bg-primary-container hover:bg-primary text-on-primary-container px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                  disabled={export_progress.is_some()}
+                  class={format!(
+                    "shrink-0 flex items-center gap-space-xs bg-primary-container text-on-primary-container px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors {}",
+                    if export_progress.is_some() { "opacity-50 cursor-not-allowed" } else { "hover:bg-primary cursor-pointer" }
+                  )}
                   onclick={
                     let cb = on_export_webconfig_json_guarded.clone();
                     Callback::from(move |_| cb.emit(()))
@@ -2448,7 +2810,11 @@ pub fn App() -> Html {
                   </span>
                 </div>
                 <button
-                  class="shrink-0 flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-secondary border border-secondary/50 px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                  disabled={export_progress.is_some()}
+                  class={format!(
+                    "shrink-0 flex items-center gap-space-xs bg-surface-container-highest text-secondary border border-secondary/50 px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors {}",
+                    if export_progress.is_some() { "opacity-50 cursor-not-allowed" } else { "hover:bg-surface-bright cursor-pointer" }
+                  )}
                   onclick={
                     let cb = on_backup_zip_guarded.clone();
                     Callback::from(move |_| cb.emit(()))
@@ -2473,7 +2839,11 @@ pub fn App() -> Html {
                   </span>
                 </div>
                 <button
-                  class="shrink-0 flex items-center gap-space-xs bg-surface-container-highest hover:bg-surface-bright text-tertiary border border-tertiary/50 px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
+                  disabled={export_progress.is_some()}
+                  class={format!(
+                    "shrink-0 flex items-center gap-space-xs bg-surface-container-highest text-tertiary border border-tertiary/50 px-space-md py-2 rounded-lg text-xs font-mono font-bold transition-colors {}",
+                    if export_progress.is_some() { "opacity-50 cursor-not-allowed" } else { "hover:bg-surface-bright cursor-pointer" }
+                  )}
                   onclick={
                     let cb = on_export_3mf_guarded.clone();
                     Callback::from(move |_| cb.emit(()))
@@ -2499,7 +2869,11 @@ pub fn App() -> Html {
                     </span>
                   </div>
                   <button
-                    class="shrink-0 flex items-center gap-space-xs bg-primary hover:opacity-90 text-on-primary px-space-md py-2 rounded-lg text-xs font-mono font-bold shadow transition-opacity cursor-pointer"
+                    disabled={export_progress.is_some()}
+                    class={format!(
+                      "shrink-0 flex items-center gap-space-xs bg-primary text-on-primary px-space-md py-2 rounded-lg text-xs font-mono font-bold shadow transition-opacity {}",
+                      if export_progress.is_some() { "opacity-50 cursor-not-allowed" } else { "hover:opacity-90 cursor-pointer" }
+                    )}
                     onclick={
                       let cb = on_commit_save_guarded.clone();
                       Callback::from(move |_| cb.emit(()))

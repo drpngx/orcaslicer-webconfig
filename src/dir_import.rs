@@ -1942,6 +1942,39 @@ pub fn sync_live_state_to_entries_with_process_overrides(
   derived_overrides: &serde_json::Map<String, serde_json::Value>,
   per_process_overrides: &HashMap<String, serde_json::Map<String, serde_json::Value>>,
 ) -> crate::fs_access::LocalFsSyncPlan {
+  sync_live_state_to_entries_with_precomputed_filaments(
+    entries,
+    machines,
+    active_machine_id,
+    filaments,
+    processes,
+    active_process_id,
+    flush_matrix,
+    flush_multiplier,
+    conf_relative_path,
+    pending_updates,
+    derived_overrides,
+    per_process_overrides,
+    None,
+  )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn sync_live_state_to_entries_with_precomputed_filaments(
+  entries: &mut Vec<ScannedFileEntry>,
+  machines: &[MachineRig],
+  active_machine_id: &str,
+  filaments: &[FilamentSpool],
+  processes: &[ProcessProfile],
+  active_process_id: &str,
+  flush_matrix: &[String],
+  flush_multiplier: f64,
+  conf_relative_path: &str,
+  pending_updates: &[PendingDiskUpdate],
+  derived_overrides: &serde_json::Map<String, serde_json::Value>,
+  per_process_overrides: &HashMap<String, serde_json::Map<String, serde_json::Value>>,
+  precomputed_filament_jsons: Option<&HashMap<String, String>>,
+) -> crate::fs_access::LocalFsSyncPlan {
   let mut modified_map: HashMap<String, String> = HashMap::new();
   let mut deletions: Vec<String> = Vec::new();
 
@@ -2113,11 +2146,15 @@ pub fn sync_live_state_to_entries_with_process_overrides(
     let export_title = spool.format_concise_title();
     let fname = crate::models::sanitize_profile_filename(&export_title);
     let default_rel_path = format!("user/{}/filament/{}", user_folder_id, fname);
-    let fil_json = crate::threemf::export_standalone_filament_json_with_overrides(
-      spool,
-      &active_rig,
-      derived_overrides,
-    );
+    let fil_json = precomputed_filament_jsons
+      .and_then(|m| m.get(&spool.id).cloned())
+      .unwrap_or_else(|| {
+        crate::threemf::export_standalone_filament_json_with_overrides(
+          spool,
+          &active_rig,
+          derived_overrides,
+        )
+      });
 
     let mut matched_non_base = false;
     for existing in entries.iter_mut() {
