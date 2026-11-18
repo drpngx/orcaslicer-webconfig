@@ -127,7 +127,13 @@ function apply(config, ctx, p)
     new_flow = old_flow * (100.0 + chip_val) / 100.0
   end
   new_flow = math.max(0.75, math.min(1.25, new_flow))
-  config["filament_flow_ratio"] = fmt_num(new_flow, "%.3f")
+  local f_str = fmt_num(new_flow, "%.3f")
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  if type(config["filament_flow_ratio"]) == "table" or (config["filament_flow_ratio"] == nil and prof_arr) then
+    config["filament_flow_ratio"] = { f_str }
+  else
+    config["filament_flow_ratio"] = f_str
+  end
   local d = describe(p or {}, ctx)
   print("[Calibration:FlowRate] " .. (d.badge or ""))
 end

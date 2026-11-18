@@ -163,17 +163,16 @@ params = {
 
 local function resolve_effective_ironing(p, ctx)
   local preset = (p and p.ironing_preset) or "auto_polymer"
-  local flow = math.floor((tonumber(p and p.ironing_flow_pct) or 15) + 0.5)
-  local spd = math.floor((tonumber(p and p.ironing_speed_mms) or 35) + 0.5)
+  local flow = tonumber(p and p.ironing_flow_pct) or 15
+  local spd = tonumber(p and p.ironing_speed_mms) or 35
   local spacing = tonumber(p and p.ironing_spacing_mm) or 0.15
 
   if preset == "auto_polymer" then
     local fil = string.upper(tostring((ctx and ctx.filament_type) or "PETG"))
-    local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
+    local nd = scalar_num(ctx and ctx.nozzle_diameter, 0.40)
     local scale_sp = function(base_sp)
       local raw = base_sp * ((nd / 0.40) ^ 0.75)
-      local clamped = math.max(0.08, math.min(0.30, raw))
-      return math.floor(clamped * 100.0 + 0.5) / 100.0
+      return math.max(0.08, math.min(0.30, raw))
     end
     if string.find(fil, "PLA") then
       return { flow = 12, spd = 35, spacing = scale_sp(0.15), mode_tag = "Auto PLA (12%)" }
@@ -182,10 +181,10 @@ local function resolve_effective_ironing(p, ctx)
     elseif string.find(fil, "PETG") or string.find(fil, "PCTG") or string.find(fil, "CPE") then
       return { flow = 18, spd = 30, spacing = scale_sp(0.15), mode_tag = string.format("Auto %s (18%%)", fil) }
     else
-      return { flow = flow, spd = spd, spacing = scale_sp(spacing), mode_tag = string.format("Auto %s (%d%%)", fil, flow) }
+      return { flow = flow, spd = spd, spacing = scale_sp(spacing), mode_tag = string.format("Auto %s (%.0f%%)", fil, flow) }
     end
   end
-  return { flow = flow, spd = spd, spacing = spacing, mode_tag = string.format("%d%% Flow", flow) }
+  return { flow = flow, spd = spd, spacing = spacing, mode_tag = string.format("%.0f%% Flow", flow) }
 end
 
 function validate(p, ctx)
@@ -206,8 +205,8 @@ function describe(p, ctx)
   local itype = (p and p.ironing_type) or "topmost"
   local pat = (p and p.top_surface_pattern) or "monotonicline"
   local eff = resolve_effective_ironing(p, ctx)
-  local flow = eff.flow
-  local spd = eff.spd
+  local flow = math.floor(eff.flow + 0.5)
+  local spd = math.floor(eff.spd + 0.5)
   local spacing = eff.spacing
   local mode_tag = eff.mode_tag
   local badge = string.format("Ironing = %s • Flow = %d%% (%s) @ %d mm/s • Spacing = %.2fmm • Top = %s", itype, flow, mode_tag, spd, spacing, pat)
@@ -227,8 +226,8 @@ function apply(config, ctx, p)
   local spacing = eff.spacing
 
   config["ironing_type"] = itype
-  config["ironing_flow"] = string.format("%d%%", flow)
-  config["ironing_speed"] = tostring(spd)
+  config["ironing_flow"] = fmt_pct(flow, "%.0f")
+  config["ironing_speed"] = fmt_num(spd, "%.0f")
   config["ironing_spacing"] = fmt_num(spacing, "%.2f")
   config["top_surface_pattern"] = pat
   config["only_one_wall_top"] = "1"

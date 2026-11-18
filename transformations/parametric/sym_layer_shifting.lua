@@ -88,12 +88,32 @@ function apply(config, ctx, p)
   end
   local zh_boost = tonumber(p and p.zhop_height) or 0.10
 
-  local cur_ta = tonumber(config["travel_acceleration"]) or 10000
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local ft_raw = (ctx and ctx.filament_type) or (type(config["filament_type"]) == "table" and config["filament_type"][1] or config["filament_type"]) or ""
+  local ft_up = string.upper(tostring(ft_raw))
+  local is_elastomer = (ctx and ctx.filament_is_elastomer == true)
+    or string.find(ft_up, "TPU", 1, true) ~= nil
+    or string.find(ft_up, "PEBA", 1, true) ~= nil
+    or string.find(ft_up, "FLEX", 1, true) ~= nil
+
+  local cur_ta = scalar_num(config["travel_acceleration"], 10000)
   config["travel_acceleration"] = fmt_num(math.max(2500, cur_ta * t_scale), "%.0f")
-  local cur_tj = tonumber(config["travel_jerk"]) or 12
+  local cur_tj = scalar_num(config["travel_jerk"], 12)
   config["travel_jerk"] = fmt_num(math.max(5, cur_tj * t_scale), "%.0f")
-  local cur_zh = tonumber(config["filament_z_hop"]) or 0.15
-  config["filament_z_hop"] = fmt_num(cur_zh + zh_boost, "%.2f")
+  if not is_elastomer then
+    local cur_zh = scalar_num(config["filament_z_hop"], 0.15)
+    set_arr("filament_z_hop", fmt_num(cur_zh + zh_boost, "%.2f"))
+    local cur_zht = config["filament_z_hop_types"]
+    local zht_str = (type(cur_zht) == "table" and cur_zht[1]) or (type(cur_zht) == "string" and cur_zht) or "Spiral Lift"
+    set_arr("filament_z_hop_types", zht_str)
+  end
   config["sparse_infill_pattern"] = "gyroid"
   config["reduce_infill_retraction"] = "0"
   local d = describe(p or {}, ctx)

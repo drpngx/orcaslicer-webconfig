@@ -236,7 +236,7 @@ impl PolymerConstants {
     matches!(
       self.family.as_str(),
       "ABS" | "ASA" | "PA" | "PC" | "HIGH_TEMP" | "PP"
-    )
+    ) || matches!(self.canonical_key.as_str(), "HIPS" | "PET-CF")
   }
 
   pub fn initial_layer_temp_boost_c(&self, is_foaming_flex: bool) -> i32 {
@@ -252,6 +252,38 @@ impl PolymerConstants {
       90.max(fan_min_pct)
     } else {
       fan_min_pct
+    }
+  }
+
+  /// Resolves `(fan_min_pct, fan_max_pct)` from `spool_fan_pct`:
+  /// - Copolyesters (PETG / PCTG): `spool_fan_pct` is normal-layer fan (`40%`), short-layer max is `90%`.
+  /// - Warp-prone engineering polymers (ABS / ASA / PC / PA / PP): `spool_fan_pct` is short-layer max (`15–20%`),
+  ///   while continuous perimeter cooling (`fan_min_speed`) is halved and capped at `10%` (matching AnycubicSlicerNext
+  ///   `10% min / 20% max` on ABS/ASA so long perimeters don't warp).
+  /// - Flexible elastomers (TPU / PEBA): continuous perimeter cooling is `75%` of `spool_fan_pct` (e.g. `60% min / 80% max`).
+  /// - PLA / support families: continuous full cooling (`fan_min == fan_max`).
+  pub fn resolve_fan_min_max_pct(&self, spool_fan_pct: i32) -> (i32, i32) {
+    let clamped = spool_fan_pct.clamp(0, 100);
+    if self.is_warp_prone() {
+      let fmin = if clamped <= 1 {
+        0
+      } else {
+        (clamped / 2).clamp(1, 10.min(clamped - 1))
+      };
+      (fmin, clamped)
+    } else if self.is_copolyester() {
+      if clamped > 55 {
+        let fmin = ((clamped * 2) / 5).clamp(20, 45);
+        let fmax = clamped.clamp(60, 95);
+        (fmin, fmax)
+      } else {
+        (clamped, self.resolve_fan_max_pct(clamped))
+      }
+    } else if self.is_flexible() {
+      let fmin = ((clamped * 3) / 4).clamp(0, clamped);
+      (fmin, clamped)
+    } else {
+      (clamped, clamped)
     }
   }
 
@@ -347,50 +379,6 @@ impl WebConfigConstants {
           .find(|m| low.contains(&m.printer_model.to_lowercase()))
       })
       .unwrap_or_else(|| &self.machines[0])
-  }
-
-  /// Resolves the system filament parent preset string for a given printer model, nozzle diameter, and material type
-  /// using the per-machine `inherits_template` and the polymer's printer-agnostic `base_preset_code`.
-  pub fn resolve_filament_inherits(
-    &self,
-    printer_model: &str,
-    nozzle_diameter: &str,
-    material_type: &str,
-  ) -> String {
-    self.resolve_filament_inherits_with_finish(
-      printer_model,
-      nozzle_diameter,
-      material_type,
-      "Basic",
-    )
-  }
-
-  /// Resolves the system filament parent preset string taking into account both `material_type`
-  /// and `finish_type` (so e.g. `PLA` + `Matte` inherits `Anycubic PLA Matte @Anycubic Kobra S1 0.4 nozzle`).
-  pub fn resolve_filament_inherits_with_finish(
-    &self,
-    printer_model: &str,
-    nozzle_diameter: &str,
-    material_type: &str,
-    finish_type: &str,
-  ) -> String {
-    let mc = self.lookup_machine(printer_model);
-    let base_code = self.resolve_base_preset_code(material_type, finish_type, &mc.vendor_prefix);
-    let noz = if nozzle_diameter.trim().is_empty() {
-      mc.default_nozzle_diameter.as_str()
-    } else {
-      nozzle_diameter.trim()
-    };
-    let model = if printer_model.trim().is_empty() {
-      mc.printer_model.as_str()
-    } else {
-      printer_model.trim()
-    };
-    mc.inherits_template
-      .replace("{vendor_prefix}", &mc.vendor_prefix)
-      .replace("{base_preset_code}", base_code)
-      .replace("{printer_model}", model)
-      .replace("{nozzle_diameter}", noz)
   }
 
   pub fn resolve_base_preset_code<'a>(

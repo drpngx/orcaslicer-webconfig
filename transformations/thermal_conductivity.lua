@@ -22,15 +22,8 @@ function apply(config, ctx)
   capture_coupled_baseline(config, ctx)
   local mat = ctx.nozzle_material or "Brass"
   local ntype = ctx.nozzle_type or "orca_brass"
-  local cur_temp = 220
-  if config["nozzle_temperature"] and config["nozzle_temperature"][1] then
-    cur_temp = tonumber(config["nozzle_temperature"][1]) or 220
-  end
-
-  local cur_init_temp = cur_temp + 5
-  if config["nozzle_temperature_initial_layer"] and config["nozzle_temperature_initial_layer"][1] then
-    cur_init_temp = tonumber(config["nozzle_temperature_initial_layer"][1]) or (cur_temp + 5)
-  end
+  local cur_temp = scalar_num(config["nozzle_temperature"], 220)
+  local cur_init_temp = scalar_num(config["nozzle_temperature_initial_layer"], cur_temp + 5)
 
   if mat == "Diamondback PCD" or mat == "MicroSwiss Diamondback (PCD)" or ntype == "diamondback" or ntype == "microswiss_diamondback" then
     config["nozzle_type"] = "brass"
@@ -88,35 +81,39 @@ function apply(config, ctx)
     config["nozzle_type"] = "brass"
     config["nozzle_hrc"] = "35"
     config["filament_flow_ratio"] = { "0.99" }
-    config["filament_retraction_length"] = { "0.70" }
-    config["filament_retraction_speed"] = { "45" }
+    if scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
+      config["filament_retraction_length"] = { "0.70" }
+      config["filament_retraction_speed"] = { "45" }
+    end
     print("[ThermalConductivity] MicroSwiss Plated Brass (TwinClad XT): nozzle_type=brass + nozzle_hrc=35, Flow 0.99, Retract 0.70mm @ 45mm/s")
   elseif mat == "Ruby Tip (Brass Body)" or ntype == "ruby_brass" then
     config["nozzle_type"] = "brass"
     config["nozzle_hrc"] = "60"
-    config["nozzle_temperature_HS"] = { tostring(cur_temp) }
-    config["nozzle_temperature_initial_layer_HS"] = { tostring(cur_init_temp) }
+    config["nozzle_temperature_HS"] = { fmt_num(cur_temp, "%.0f") }
+    config["nozzle_temperature_initial_layer_HS"] = { fmt_num(cur_init_temp, "%.0f") }
     print("[ThermalConductivity] Brass-Body Ruby Tip Nozzle: nozzle_type=brass + nozzle_hrc=60 (0C Brass thermal conductivity + HRC 60 Ruby tip for -CF/-GF composites)")
-  elseif mat == "MicroSwiss CM2 Hardened" or ntype == "microswiss_cm2" then
+  elseif mat == "MicroSwiss CM2 Hardened" or ntype == "microswiss_cm2" or ntype == "cm2" or string.find(string.upper(mat), "CM2", 1, true) ~= nil then
     config["nozzle_type"] = "hardened_steel"
     config["nozzle_hrc"] = "55"
-    config["filament_retraction_length"] = { "0.60" }
-    config["filament_retraction_speed"] = { "45" }
+    if scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
+      config["filament_retraction_length"] = { "0.60" }
+      config["filament_retraction_speed"] = { "45" }
+    end
     print("[ThermalConductivity] MicroSwiss CM2 Hardened (Copper Core + M2 HSS): nozzle_type=hardened_steel + nozzle_hrc=55, 0C thermal offset, Retract -> 0.60mm @ 45mm/s")
   elseif mat == "Hardened Steel" or mat == "Stainless Steel" or ntype == "hardened_steel" or ntype == "orca_hardened_steel" or ntype == "orca_stainless_steel" then
     local new_temp = cur_temp + 5
     local new_init = cur_init_temp + 5
     config["nozzle_type"] = "hardened_steel"
     config["nozzle_hrc"] = "55"
-    config["nozzle_temperature"] = { tostring(new_temp) }
-    config["nozzle_temperature_initial_layer"] = { tostring(new_init) }
-    config["nozzle_temperature_HS"] = { tostring(new_temp) }
-    config["nozzle_temperature_initial_layer_HS"] = { tostring(new_init) }
-    print("[ThermalConductivity] " .. mat .. ": nozzle_type=hardened_steel + nozzle_hrc=55, Added +5C thermal compensation -> " .. tostring(new_temp) .. "C")
+    config["nozzle_temperature"] = { fmt_num(new_temp, "%.0f") }
+    config["nozzle_temperature_initial_layer"] = { fmt_num(new_init, "%.0f") }
+    config["nozzle_temperature_HS"] = { fmt_num(new_temp, "%.0f") }
+    config["nozzle_temperature_initial_layer_HS"] = { fmt_num(new_init, "%.0f") }
+    print("[ThermalConductivity] " .. mat .. ": nozzle_type=hardened_steel + nozzle_hrc=55, Added +5C thermal compensation -> " .. string.format("%.0f", new_temp) .. "C")
   elseif mat == "Bi-Metal CHT" or mat == "MicroSwiss FlowTech CHT" or mat == "E3D ObXidian High-Flow" or ntype == "cht" or ntype == "microswiss_cht" or ntype == "bondtech_cht_bimetal" or ntype == "e3d_obxidian" then
     config["nozzle_type"] = "brass"
     config["nozzle_hrc"] = "55"
-    if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] then
+    if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] and scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
       config["filament_retraction_length"] = { "0.60" }
     end
   else

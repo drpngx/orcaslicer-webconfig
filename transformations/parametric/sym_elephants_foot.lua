@@ -58,9 +58,40 @@ function validate(p, ctx)
   return true
 end
 
+local function is_warp_prone_polymer(config, ctx)
+  if ctx and ctx.filament_is_warp_prone == true then
+    return true
+  end
+  local ft = ""
+  if ctx and ctx.filament_type then
+    ft = tostring(ctx.filament_type)
+  elseif config and config["filament_type"] then
+    local raw = config["filament_type"]
+    ft = type(raw) == "table" and tostring(raw[1] or "") or tostring(raw)
+  end
+  local up = string.upper(ft)
+  if string.find(up, "PCTG", 1, true) ~= nil then
+    return false
+  end
+  return string.find(up, "ABS", 1, true) ~= nil
+    or string.find(up, "ASA", 1, true) ~= nil
+    or string.find(up, "HIPS", 1, true) ~= nil
+    or string.find(up, "PC", 1, true) ~= nil
+    or string.find(up, "PPA", 1, true) ~= nil
+    or string.find(up, "PAHT", 1, true) ~= nil
+    or string.find(up, "PA6", 1, true) ~= nil
+    or string.find(up, "PA12", 1, true) ~= nil
+    or up == "PA"
+    or string.find(up, "PA%-") ~= nil
+    or string.find(up, "NYLON", 1, true) ~= nil
+end
+
 function describe(p, ctx)
   local ef_boost = tonumber(p.ef_comp) or 0.10
-  local b_trim = math.floor(tonumber(p.bed_trim) or -5)
+  local b_trim = math.floor((tonumber(p.bed_trim) or -5) + 0.5)
+  if is_warp_prone_polymer(nil, ctx) then
+    b_trim = math.max(-4, b_trim)
+  end
   local scope = (ctx and ctx.scope) or "Selected Profile"
   local badge = string.format("elefant_foot_compensation %+.2fmm • Continuous Bed %+d°C", ef_boost, b_trim)
   return {
@@ -72,14 +103,28 @@ end
 
 function apply(config, ctx, p)
   local ef_boost = tonumber(p and p.ef_comp) or 0.10
-  local b_trim = math.floor(tonumber(p and p.bed_trim) or -5)
+  local b_trim = tonumber(p and p.bed_trim) or -5
+  if is_warp_prone_polymer(config, ctx) then
+    b_trim = math.max(-4, b_trim)
+  end
 
-  local cur_ef = tonumber(config["elefant_foot_compensation"]) or 0.05
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local cur_ef = scalar_num(config["elefant_foot_compensation"], 0.05)
   config["elefant_foot_compensation"] = fmt_num(cur_ef + ef_boost, "%.2f")
   config["elefant_foot_compensation_layers"] = "1"
-  local cur_b = tonumber(config["textured_plate_temp"]) or tonumber(config["hot_plate_temp"]) or 65
-  config["textured_plate_temp"] = fmt_num(cur_b + b_trim, "%.0f")
-  config["hot_plate_temp"] = fmt_num(cur_b + b_trim, "%.0f")
+  local cur_tb = scalar_num(config["textured_plate_temp"], scalar_num(config["hot_plate_temp"], 65))
+  local cur_hb = scalar_num(config["hot_plate_temp"], cur_tb)
+  set_arr("textured_plate_temp", fmt_num(cur_tb + b_trim, "%.0f"))
+  set_arr("hot_plate_temp", fmt_num(cur_hb + b_trim, "%.0f"))
+  config["_lua_bed_delta_c"] = fmt_num(scalar_num(config["_lua_bed_delta_c"], 0) + b_trim, "%.0f")
+  config["_lua_init_bed_delta_c"] = fmt_num(scalar_num(config["_lua_init_bed_delta_c"], 0), "%.0f")
   local d = describe(p or {}, ctx)
   print("[Symptom:ElephantsFoot] " .. (d.badge or ""))
 end

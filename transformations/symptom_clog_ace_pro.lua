@@ -7,9 +7,13 @@
 -- 3. Ensures flush_multiplier is at least 1.45x (or preserves the user's 1.50x multiplier).
 
 function apply(config, ctx)
-  config["retraction_distances_when_cut"] = "0"
+  if type(config["retraction_distances_when_cut"]) == "table" then
+    config["retraction_distances_when_cut"] = { "0" }
+  else
+    config["retraction_distances_when_cut"] = "0"
+  end
   config["_transition_flush_temp_hold"] = "240"
-  local cur_mult = tonumber(ctx.flush_multiplier) or tonumber(config["flush_multiplier"]) or 1.0
+  local cur_mult = scalar_num(ctx.flush_multiplier, nil) or scalar_num(config["flush_multiplier"], 1.0)
   if cur_mult < 1.45 then
     config["flush_multiplier"] = "1.45"
   else

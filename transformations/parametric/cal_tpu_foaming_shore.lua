@@ -141,49 +141,56 @@ end
 --   55A -> 250°C Brass, 0.56 flow, 10% fan
 local function compute_foaming_curve(shore_a, trim, noz_offset_c)
   local s = math.max(55, math.min(92, shore_a))
-  local brass_c = 220
+  local raw_brass_c = 220.0
   local base_flow = 0.75
-  local fan_max = 40
+  local raw_fan_max = 40.0
 
   if s >= 85 then
     local t = (92 - s) / 7.0
-    brass_c = math.floor(195 + t * 15 + 0.5)
+    raw_brass_c = 195 + t * 15
     base_flow = 0.98 - t * 0.13
-    fan_max = math.floor(70 - t * 20 + 0.5)
+    raw_fan_max = 70 - t * 20
   elseif s >= 75 then
     local t = (85 - s) / 10.0
-    brass_c = math.floor(210 + t * 10 + 0.5)
+    raw_brass_c = 210 + t * 10
     base_flow = 0.85 - t * 0.10
-    fan_max = math.floor(50 - t * 10 + 0.5)
+    raw_fan_max = 50 - t * 10
   elseif s >= 65 then
     local t = (75 - s) / 10.0
-    brass_c = math.floor(220 + t * 15 + 0.5)
+    raw_brass_c = 220 + t * 15
     base_flow = 0.75 - t * 0.10
-    fan_max = math.floor(40 - t * 15 + 0.5)
+    raw_fan_max = 40 - t * 15
   elseif s >= 60 then
     local t = (65 - s) / 5.0
-    brass_c = math.floor(235 + t * 10 + 0.5)
+    raw_brass_c = 235 + t * 10
     base_flow = 0.65 - t * 0.05
-    fan_max = math.floor(25 - t * 10 + 0.5)
+    raw_fan_max = 25 - t * 10
   else
     local t = (60 - s) / 5.0
-    brass_c = math.floor(245 + t * 5 + 0.5)
+    raw_brass_c = 245 + t * 5
     base_flow = 0.60 - t * 0.04
-    fan_max = math.floor(15 - t * 5 + 0.5)
+    raw_fan_max = 15 - t * 5
   end
 
-  local effective_nozzle_c = math.max(180, math.min(265, brass_c + noz_offset_c))
+  local raw_nozzle_c = math.max(180, math.min(265, raw_brass_c + noz_offset_c))
+  local brass_c = math.floor(raw_brass_c + 0.5)
+  local fan_max = math.floor(raw_fan_max + 0.5)
+  local effective_nozzle_c = math.floor(raw_nozzle_c + 0.5)
   local effective_flow = math.max(0.50, math.min(1.05, base_flow + trim))
   local density_pct = math.floor(effective_flow * 100 + 0.5)
   return {
     shore_a = math.floor(s + 0.5),
     brass_c = brass_c,
     nozzle_c = effective_nozzle_c,
+    raw_brass_c = raw_brass_c,
+    raw_nozzle_c = raw_nozzle_c,
     base_flow = base_flow,
     effective_flow = effective_flow,
     density_pct = density_pct,
     fan_min = math.max(0, fan_max - 15),
     fan_max = fan_max,
+    raw_fan_min = math.max(0, raw_fan_max - 15),
+    raw_fan_max = raw_fan_max,
   }
 end
 
@@ -254,8 +261,9 @@ function apply(config, ctx, p)
   local noz_off, noz_label = get_nozzle_thermal_offset_c(ctx)
   local c = compute_foaming_curve(shore, trim, noz_off)
 
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
   local function set_val(key, val_str)
-    if type(config[key]) == "table" then
+    if type(config[key]) == "table" or (config[key] == nil and prof_arr) then
       config[key] = { val_str }
     else
       config[key] = val_str
@@ -263,44 +271,45 @@ function apply(config, ctx, p)
   end
 
   -- 1. Nozzle Temperature (Shore-driven Brass baseline + Nozzle Thermal Conductivity Offset)
-  set_val("nozzle_temperature", tostring(c.nozzle_c))
-  set_val("nozzle_temperature_initial_layer", tostring(c.nozzle_c))
-  set_val("nozzle_temperature_BRASS", tostring(c.brass_c))
-  set_val("nozzle_temperature_HS", tostring(c.brass_c + 5))
+  set_val("nozzle_temperature", fmt_num(c.raw_nozzle_c, "%.0f"))
+  set_val("nozzle_temperature_initial_layer", fmt_num(c.raw_nozzle_c, "%.0f"))
+  set_val("nozzle_temperature_BRASS", fmt_num(c.raw_brass_c, "%.0f"))
+  set_val("nozzle_temperature_HS", fmt_num(c.raw_brass_c + 5, "%.0f"))
 
   -- 2. Expansion-Compensated Flow Ratio
-  set_val("filament_flow_ratio", string.format("%.3f", c.effective_flow))
+  set_val("filament_flow_ratio", fmt_num(c.effective_flow, "%.3f"))
 
   -- 3. Residence-Time Volumetric Speed Ceiling & Equalized Wall/Infill Speeds
-  set_val("filament_max_volumetric_speed", string.format("%.1f", mvs))
-  local lh = (ctx and tonumber(ctx.layer_height)) or tonumber(config["layer_height"]) or 0.20
-  local lw = (ctx and tonumber(ctx.line_width)) or tonumber(config["outer_wall_line_width"]) or 0.42
-  local eq_speed = math.max(20, math.min(55, math.floor(mvs / math.max(0.04, lh * lw) + 0.5)))
-  config["outer_wall_speed"] = tostring(eq_speed)
-  config["inner_wall_speed"] = tostring(eq_speed)
-  config["sparse_infill_speed"] = tostring(eq_speed)
-  config["internal_solid_infill_speed"] = tostring(eq_speed)
-  config["top_surface_speed"] = tostring(math.max(20, eq_speed - 5))
+  set_val("filament_max_volumetric_speed", fmt_num(mvs, "%.1f"))
+  local lh = scalar_num(ctx and ctx.layer_height, nil) or scalar_num(config["layer_height"], 0.20)
+  local lw = scalar_num(ctx and ctx.line_width, nil) or scalar_num(config["outer_wall_line_width"], 0.42)
+  local eq_speed = math.max(20, math.min(55, mvs / math.max(0.04, lh * lw)))
+  local eq_str = fmt_num(eq_speed, "%.0f")
+  config["outer_wall_speed"] = eq_str
+  config["inner_wall_speed"] = eq_str
+  config["sparse_infill_speed"] = eq_str
+  config["internal_solid_infill_speed"] = eq_str
+  config["top_surface_speed"] = fmt_num(math.max(20, eq_speed - 5), "%.0f")
 
   -- 4. Part Cooling Fan Schedule (Lower fan at higher foaming temperatures so micro-cells expand evenly)
-  set_val("fan_min_speed", tostring(c.fan_min))
-  set_val("fan_max_speed", tostring(c.fan_max))
+  set_val("fan_min_speed", fmt_num(c.raw_fan_min, "%.0f"))
+  set_val("fan_max_speed", fmt_num(c.raw_fan_max, "%.0f"))
 
   -- 5. Zero Z-Hop, Minimal/Zero Retraction, and Avoid Crossing Walls
-  set_val("filament_z_hop", "0.00")
+  set_val("filament_z_hop", fmt_num(0.0, "%.2f"))
   set_val("filament_z_hop_types", "Normal Lift")
   if ret_mode == "zero_continuous" then
-    set_val("filament_retraction_length", "0.00")
+    set_val("filament_retraction_length", fmt_num(0.0, "%.2f"))
   else
-    set_val("filament_retraction_length", "0.35")
-    set_val("filament_retraction_speed", "25")
-    set_val("filament_deretraction_speed", "20")
+    set_val("filament_retraction_length", fmt_num(0.35, "%.2f"))
+    set_val("filament_retraction_speed", fmt_num(25, "%.0f"))
+    set_val("filament_deretraction_speed", fmt_num(20, "%.0f"))
   end
   config["reduce_crossing_wall"] = "1"
   config["max_travel_detour_distance"] = "100"
 
   print(string.format(
     "[FoamingTPU:%dA] Nozzle=%d°C (%s), Flow=%.3f (%d%% density), MVS=%.1f mm³/s (~%d mm/s equalized), Retract=%s, Z-Hop=0.00mm",
-    c.shore_a, c.nozzle_c, noz_label, c.effective_flow, c.density_pct, mvs, eq_speed, ret_mode
+    c.shore_a, c.nozzle_c, noz_label, c.effective_flow, c.density_pct, mvs, math.floor(eq_speed + 0.5), ret_mode
   ))
 end

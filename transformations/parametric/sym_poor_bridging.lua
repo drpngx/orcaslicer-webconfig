@@ -104,11 +104,16 @@ function apply(config, ctx, p)
     bs_scale = math.max(0.30, math.min(1.0, (100.0 - bs_pct) / 100.0))
   end
 
-  local cur_bf = tonumber(config["bridge_flow"]) or 1.00
+  local cur_bf = scalar_num(config["bridge_flow"], 1.00)
   config["bridge_flow"] = fmt_num(cur_bf * bf_scale, "%.2f")
-  local cur_bs = tonumber(config["bridge_speed"]) or 45
+  local cur_bs = scalar_num(config["bridge_speed"], 45)
   config["bridge_speed"] = fmt_num(math.max(15, cur_bs * bs_scale), "%.0f")
-  config["overhang_fan_speed"] = "100"
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  if type(config["overhang_fan_speed"]) == "table" or (config["overhang_fan_speed"] == nil and prof_arr) then
+    config["overhang_fan_speed"] = { "100" }
+  else
+    config["overhang_fan_speed"] = "100"
+  end
   local d = describe(p or {}, ctx)
   print("[Symptom:Bridging] " .. (d.badge or ""))
 end

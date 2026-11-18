@@ -122,16 +122,33 @@ genrule(
     tools = [":compile_docs"],
 )
 
+# Anycubic maintains their entire printer lineup (`Kobra 1*`, `Kobra 2*`, `Kobra 3*`, `Kobra 4`,
+# `Kobra X`, `Kobra S1`, `Kobra S1 Max`) inside their `AnycubicSlicerNext` fork without upstreaming
+# presets back to OrcaSlicer (e.g. ABS 110°C Textured PEI / 260°C Brass vs upstream OrcaSlicer's
+# stale 90°C Cool Plate draft, plus newer Kobra 3 V2 / Kobra 4 models). We check in the fork's JSON
+# presets as a `.zip` and extract them only inside this build-time genrule to override all Anycubic
+# machines/processes/filaments so `:generate_orca_catalog` emits a single distilled plain-text
+# `orcaslicer_generated_catalog.json` embedded via `include_str!`, which `@brotli -9`
+# (`app_wasm_opt_br`) compresses tightly for static-only serving with zero WASM bloat.
 genrule(
     name = "orcaslicer_catalog_gen",
     srcs = [
         "@orcaslicer_repo//:profiles",
         "@orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json",
         "constants.json",
+        "vendor_profiles/anycubic_slicer_next/anycubic_slicer_next_profiles.zip",
     ],
     outs = ["orcaslicer_generated_catalog.json"],
-    cmd = "$(location :generate_orca_catalog) $@ $$(dirname $(location @orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json)) $(location constants.json)",
-    tools = [":generate_orca_catalog"],
+    cmd = """
+        FORK_TMP="$$(mktemp -d)"
+        trap 'rm -rf "$$FORK_TMP"' EXIT
+        $(location //scripts:unzip_archive) $(location vendor_profiles/anycubic_slicer_next/anycubic_slicer_next_profiles.zip) "$$FORK_TMP"
+        $(location :generate_orca_catalog) $@ $$(dirname $(location @orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json)) $(location constants.json) "$$FORK_TMP"
+    """,
+    tools = [
+        ":generate_orca_catalog",
+        "//scripts:unzip_archive",
+    ],
 )
 
 genrule(

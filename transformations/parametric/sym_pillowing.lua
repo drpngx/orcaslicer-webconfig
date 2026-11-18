@@ -71,17 +71,17 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local extra_layers = math.floor(tonumber(p and p.top_layers) or 2)
-  local inf_boost = math.floor(tonumber(p and p.infill_pct) or 5)
+  local extra_layers = tonumber(p and p.top_layers) or 2
+  local inf_boost = tonumber(p and p.infill_pct) or 5
 
-  local cur_tl = tonumber(config["top_shell_layers"]) or 3
-  local new_tl = math.max(3, math.floor(cur_tl + extra_layers))
-  config["top_shell_layers"] = tostring(new_tl)
-  local lh = tonumber(config["layer_height"]) or 0.20
-  local cur_tt = tonumber(config["top_shell_thickness"]) or (cur_tl * lh)
+  local cur_tl = scalar_num(config["top_shell_layers"], 3)
+  local new_tl = math.max(3, cur_tl + extra_layers)
+  config["top_shell_layers"] = fmt_num(new_tl, "%.0f")
+  local lh = scalar_num(config["layer_height"], 0.20)
+  local cur_tt = scalar_num(config["top_shell_thickness"], cur_tl * lh)
   config["top_shell_thickness"] = fmt_num(cur_tt + (extra_layers * lh), "%.2f")
-  local cur_inf = tonumber(config["sparse_infill_density"]) or 15
-  config["sparse_infill_density"] = tostring(math.min(100, math.floor(cur_inf + inf_boost))) .. "%"
+  local cur_inf = scalar_num(config["sparse_infill_density"], 15)
+  config["sparse_infill_density"] = fmt_pct(math.min(100, cur_inf + inf_boost), "%.0f")
   local d = describe(p or {}, ctx)
   print("[Symptom:Pillowing] " .. (d.badge or ""))
 end

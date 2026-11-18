@@ -115,7 +115,7 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local bed_boost = math.floor(tonumber(p and p.bed_boost) or 5)
+  local bed_boost = tonumber(p and p.bed_boost) or 5
   local spd_pct = tonumber(p and p.first_layer_spd) or -30.0
   local spd_scale = 0.70
   if spd_pct < 0 then
@@ -123,20 +123,33 @@ function apply(config, ctx, p)
   else
     spd_scale = math.max(0.35, math.min(1.0, (100.0 - spd_pct) / 100.0))
   end
-  local extra_fan_off = math.floor(tonumber(p and p.fan_off_layers) or 2)
+  local extra_fan_off = tonumber(p and p.fan_off_layers) or 2
   local brim = (p and p.brim_type) or "outer_only"
 
-  local cur_b = tonumber(config["textured_plate_temp"]) or tonumber(config["hot_plate_temp"]) or 65
-  config["textured_plate_temp"] = tostring(cur_b + bed_boost)
-  config["textured_plate_temp_initial_layer"] = tostring(cur_b + bed_boost)
-  config["hot_plate_temp"] = tostring(cur_b + bed_boost)
-  config["hot_plate_temp_initial_layer"] = tostring(cur_b + bed_boost)
-  local cur_fl_s = tonumber(config["initial_layer_speed"]) or 50
-  config["initial_layer_speed"] = tostring(math.max(15, math.floor(cur_fl_s * spd_scale + 0.5)))
-  local cur_fl_is = tonumber(config["initial_layer_infill_speed"]) or cur_fl_s
-  config["initial_layer_infill_speed"] = tostring(math.max(15, math.floor(cur_fl_is * spd_scale + 0.5)))
-  local cur_fo = tonumber(config["close_fan_the_first_x_layers"]) or 1
-  config["close_fan_the_first_x_layers"] = tostring(math.max(1, math.floor(cur_fo + extra_fan_off)))
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local cur_tb = scalar_num(config["textured_plate_temp"], scalar_num(config["hot_plate_temp"], 65))
+  local cur_tbi = scalar_num(config["textured_plate_temp_initial_layer"], scalar_num(config["hot_plate_temp_initial_layer"], cur_tb))
+  local cur_hb = scalar_num(config["hot_plate_temp"], cur_tb)
+  local cur_hbi = scalar_num(config["hot_plate_temp_initial_layer"], cur_tbi)
+  set_arr("textured_plate_temp", fmt_num(cur_tb + bed_boost, "%.0f"))
+  set_arr("textured_plate_temp_initial_layer", fmt_num(cur_tbi + bed_boost, "%.0f"))
+  set_arr("hot_plate_temp", fmt_num(cur_hb + bed_boost, "%.0f"))
+  set_arr("hot_plate_temp_initial_layer", fmt_num(cur_hbi + bed_boost, "%.0f"))
+  config["_lua_bed_delta_c"] = fmt_num(scalar_num(config["_lua_bed_delta_c"], 0) + bed_boost, "%.0f")
+  config["_lua_init_bed_delta_c"] = fmt_num(scalar_num(config["_lua_init_bed_delta_c"], 0) + bed_boost, "%.0f")
+  local cur_fl_s = scalar_num(config["initial_layer_speed"], 50)
+  config["initial_layer_speed"] = fmt_num(math.max(15, cur_fl_s * spd_scale), "%.0f")
+  local cur_fl_is = scalar_num(config["initial_layer_infill_speed"], cur_fl_s)
+  config["initial_layer_infill_speed"] = fmt_num(math.max(15, cur_fl_is * spd_scale), "%.0f")
+  local cur_fo = scalar_num(config["close_fan_the_first_x_layers"], 1)
+  set_arr("close_fan_the_first_x_layers", fmt_num(math.max(1, cur_fo + extra_fan_off), "%.0f"))
   config["brim_type"] = brim
   local d = describe(p or {}, ctx)
   print("[Symptom:Adhesion] " .. (d.badge or ""))

@@ -1739,6 +1739,13 @@ end
         | "travel_acceleration"
         | "sparse_infill_acceleration"
         | "internal_solid_infill_acceleration"
+        | "default_jerk"
+        | "outer_wall_jerk"
+        | "inner_wall_jerk"
+        | "infill_jerk"
+        | "top_surface_jerk"
+        | "initial_layer_jerk"
+        | "travel_jerk"
         | "fan_min_speed"
         | "fan_min_speed_BRASS"
         | "fan_min_speed_HS"
@@ -1844,6 +1851,7 @@ end
         base_snapshot_map.insert(k.clone(), v.clone());
       }
     }
+    let sync_initial_too = base_profile.profile_type != "filament";
     if let Some(brass_t) = context.get("brass_base_temp_c").and_then(|v| v.as_i64()) {
       let brass_t_str = brass_t.to_string();
       for tk in [
@@ -1853,6 +1861,9 @@ end
       ] {
         if base_snapshot_map.contains_key(tk) {
           base_snapshot_map.insert(tk.to_string(), serde_json::json!([brass_t_str]));
+        }
+        if sync_initial_too && initial_map.contains_key(tk) {
+          initial_map.insert(tk.to_string(), serde_json::json!([brass_t_str]));
         }
       }
       let brass_init_t = context
@@ -1868,6 +1879,35 @@ end
         if base_snapshot_map.contains_key(tk) {
           base_snapshot_map.insert(tk.to_string(), serde_json::json!([brass_init_str]));
         }
+        if sync_initial_too && initial_map.contains_key(tk) {
+          initial_map.insert(tk.to_string(), serde_json::json!([brass_init_str]));
+        }
+      }
+    }
+    if sync_initial_too {
+      if let Some(bed_t) = context.get("spool_bed_temp_c").and_then(|v| v.as_i64()) {
+        let bed_s = bed_t.to_string();
+        for bk in [
+          "textured_plate_temp",
+          "textured_plate_temp_initial_layer",
+          "hot_plate_temp",
+          "hot_plate_temp_initial_layer",
+        ] {
+          base_snapshot_map.insert(bk.to_string(), serde_json::json!([bed_s]));
+          initial_map.insert(bk.to_string(), serde_json::json!([bed_s]));
+        }
+      }
+      if let Some(fan_p) = context.get("spool_fan_pct").and_then(|v| v.as_i64()) {
+        let fan_s = fan_p.to_string();
+        for fk in ["fan_max_speed", "fan_max_speed_BRASS", "fan_max_speed_HS"] {
+          base_snapshot_map.insert(fk.to_string(), serde_json::json!([fan_s]));
+          initial_map.insert(fk.to_string(), serde_json::json!([fan_s]));
+        }
+      }
+      if let Some(flow_r) = context.get("spool_flow_ratio").and_then(|v| v.as_f64()) {
+        let flow_s = format!("{:.2}", flow_r);
+        base_snapshot_map.insert("filament_flow_ratio".to_string(), serde_json::json!([flow_s]));
+        initial_map.insert("filament_flow_ratio".to_string(), serde_json::json!([flow_s]));
       }
     }
     if let Some(brass_r) = context
@@ -2130,7 +2170,7 @@ end
                 };
                 let after_fmt = format!("{}{}", after_str, unit_suffix);
                 let delta_summary = compute_delta_summary(&before_str, &after_str, unit);
-                if !matches!(
+                let tracks_linear_speed_scale = !matches!(
                   rule.id.as_str(),
                   "volumetric_speed_ceiling"
                     | "rule_volumetric_speed_ceiling"
@@ -2138,7 +2178,6 @@ end
                     | "wizard_outer_wall_consistency"
                     | "weather_climate_adjustment"
                     | "rule_weather_climate"
-                    | "tpu_foaming_shore"
                     | "transparent_optical_glass"
                 ) && matches!(
                   k.as_str(),
@@ -2146,7 +2185,14 @@ end
                     | "inner_wall_speed"
                     | "sparse_infill_speed"
                     | "default_acceleration"
-                ) {
+                );
+                let tracks_first_layer_speed_scale = !matches!(
+                  rule.id.as_str(),
+                  "volumetric_speed_ceiling"
+                    | "rule_volumetric_speed_ceiling"
+                    | "transparent_optical_glass"
+                ) && k == "initial_layer_speed";
+                if tracks_linear_speed_scale || tracks_first_layer_speed_scale {
                   if let (Ok(b_num), Ok(a_num)) = (
                     before_str.trim().parse::<f64>(),
                     after_str.trim().parse::<f64>(),
@@ -2780,7 +2826,11 @@ end
           cont_str.trim().parse::<f64>(),
           init_str.trim().parse::<f64>(),
         ) {
-          let mut lo = t_cont - 5.0;
+          let mut lo = if cmap.contains_key("_enforce_init_ge_cont_nozzle") {
+            t_cont
+          } else {
+            t_cont - 5.0
+          };
           let mut hi = t_cont + 20.0;
           if let Some(b) = parameter_bounds.get(init_key) {
             if let Some(b_lo) = b.min {
@@ -2988,20 +3038,28 @@ end
             for min_key in ["fan_min_speed", "fan_min_speed_BRASS", "fan_min_speed_HS"] {
               if let Some(min_str) = cmap.get(min_key).map(&extract_scalar) {
                 if let Ok(cur_fmin) = min_str.trim().parse::<f64>() {
-                  if cur_fmin > cut_max + 1e-9 {
+                  let scaled_fmin =
+                    (cur_fmin * (100 - structural_cut_pct) as f64 / 100.0).floor();
+                  let max_allowed_fmin = if cut_max > 0.0 {
+                    (cut_max - 1.0).max(0.0)
+                  } else {
+                    0.0
+                  };
+                  let target_fmin = scaled_fmin.min(max_allowed_fmin);
+                  if cur_fmin > target_fmin + 1e-9 {
                     record_coupled_clamp(
                       cmap,
                       &mut rule_sources,
                       min_key,
                       &min_str,
-                      cut_max,
+                      target_fmin,
                       "coupled_constraint_structural_fan_cut",
                       &format!(
-                        "Clamped by Structural Strength Fan Cut Ceiling (≤ {:.0}%)",
-                        cut_max
+                        "Scaled by Structural Strength Fan Cut (-{}% → {:.0}%)",
+                        structural_cut_pct, target_fmin
                       ),
                       format!(
-                        "Clamped {} ≤ fan_max_speed ({:.0}%) after -{}% structural fan cut",
+                        "Scaled {} < fan_max_speed ({:.0}%) after -{}% structural fan cut",
                         min_key, cut_max, structural_cut_pct
                       ),
                     );
@@ -3142,10 +3200,15 @@ end
                 let cross_sec = (proc_lh * ow_width).max(0.01);
                 let mvs_ceiling = (eff_mvs / cross_sec).floor();
                 let actual_outer_spd = scaled_spd.min(mvs_ceiling);
+                let is_corexy_vfa = cmap
+                  .get("_outer_wall_vfa_is_corexy")
+                  .map(&extract_scalar)
+                  .as_deref()
+                  != Some("0");
                 let mut stepped_down = false;
                 if vfa_mode == "sub_resonance_gloss"
                   || (is_silk && scaled_spd > sub_spd + 5.0)
-                  || (actual_outer_spd > sub_spd + 5.0 && actual_outer_spd < clear_spd)
+                  || (is_corexy_vfa && actual_outer_spd > sub_spd + 5.0 && actual_outer_spd < clear_spd)
                 {
                   scaled_spd = (sub_spd * scale).round().max(15.0);
                   stepped_down = true;
@@ -3205,7 +3268,67 @@ end
             }
           }
 
-          if !has_wet_filament_first_layer {
+          // Enforce overhang / bridge speed ceiling relative to this process tier's `outer_wall_speed`
+          // so slow Quality / Bed-Slinger tiers (e.g. 25–40 mm/s) never accelerate on overhangs or bridges.
+          if let Some(ow_val) = cmap
+            .get("outer_wall_speed")
+            .map(&extract_scalar)
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|&v| v > 0.0)
+          {
+            let mut prev_ceil = ow_val;
+            for ov_key in [
+              "overhang_1_4_speed",
+              "overhang_2_4_speed",
+              "overhang_3_4_speed",
+              "overhang_4_4_speed",
+            ] {
+              if let Some(cur_ov_str) = cmap.get(ov_key).map(&extract_scalar) {
+                if !cur_ov_str.trim().ends_with('%') {
+                  if let Ok(ov_num) = cur_ov_str.trim().parse::<f64>() {
+                    if ov_num > prev_ceil + 1e-6 {
+                      record_coupled_clamp(
+                        cmap,
+                        &mut rule_sources,
+                        ov_key,
+                        &cur_ov_str,
+                        prev_ceil,
+                        "coupled_constraint_overhang_speed_ceiling",
+                        &format!("Clamped by Coupled Overhang ≤ Outer Wall Speed (≤ {:.0} mm/s)", prev_ceil),
+                        format!("Enforced {} ≤ {:.0} mm/s so overhangs never accelerate past outer wall speed", ov_key, prev_ceil),
+                      );
+                    } else {
+                      prev_ceil = ov_num;
+                    }
+                  }
+                }
+              }
+            }
+            if let Some(cur_br_str) = cmap.get("bridge_speed").map(&extract_scalar) {
+              if !cur_br_str.trim().ends_with('%') {
+                if let Ok(br_num) = cur_br_str.trim().parse::<f64>() {
+                  if br_num > ow_val + 1e-6 {
+                    record_coupled_clamp(
+                      cmap,
+                      &mut rule_sources,
+                      "bridge_speed",
+                      &cur_br_str,
+                      ow_val,
+                      "coupled_constraint_bridge_speed_ceiling",
+                      &format!("Clamped by Coupled Bridge ≤ Outer Wall Speed (≤ {:.0} mm/s)", ow_val),
+                      format!("Enforced bridge_speed ≤ outer_wall_speed ({:.0} mm/s)", ow_val),
+                    );
+                  }
+                }
+              }
+            }
+          }
+
+          let has_first_layer_rule_scale = user_rule_scales
+            .get("initial_layer_speed")
+            .map(|&s| (s - 1.0).abs() > 1e-4)
+            .unwrap_or(false);
+          if !has_wet_filament_first_layer && !has_first_layer_rule_scale {
             if let (Some(base_il_str), Some(cur_il_str)) = (
               base_profile.get_str("initial_layer_speed"),
               cmap.get("initial_layer_speed").map(&extract_scalar),
@@ -3316,57 +3439,64 @@ end
         } else {
           format!(" {}", unit)
         };
-        if let Some(cur_json) = cmap.get(k).cloned() {
-          let cur_str = extract_scalar(&cur_json);
-          let ref_for_fmt = if base_ref.is_empty() {
-            cur_str.as_str()
-          } else {
-            base_ref.as_str()
+          let quantize_maybe_pct = |raw_s: &str, ref_s: &str| -> Option<String> {
+            let trimmed = raw_s.trim();
+            if let Some(stem) = trimmed.strip_suffix('%') {
+              let num = stem.trim().parse::<f64>().ok()?;
+              let ref_stem = ref_s.trim().trim_end_matches('%');
+              let ref_eff = if ref_stem.is_empty() { "0" } else { ref_stem };
+              Some(format!(
+                "{}%",
+                Self::format_orca_schema_scalar(k, num, ref_eff)
+              ))
+            } else {
+              let num = trimmed.parse::<f64>().ok()?;
+              Some(Self::format_orca_schema_scalar(k, num, ref_s))
+            }
           };
-          if !cur_str.trim().ends_with('%') {
-            if let Ok(num) = cur_str.trim().parse::<f64>() {
-              let quant_str = Self::format_orca_schema_scalar(k, num, ref_for_fmt);
+          let canonical_ref_str = if !base_ref.is_empty() {
+            base_ref.clone()
+          } else {
+            cmap.get(k).map(&extract_scalar).unwrap_or_default()
+          };
+          if let Some(cur_json) = cmap.get(k).cloned() {
+            let cur_str = extract_scalar(&cur_json);
+            if let Some(quant_str) = quantize_maybe_pct(&cur_str, &canonical_ref_str) {
               if quant_str != cur_str {
                 write_clamped_value(cmap, k, &quant_str);
               }
             }
           }
-        }
-        let mut prev_after_raw: Option<String> = None;
-        for rc in rule_changes.iter_mut().filter(|c| &c.param_key == k) {
-          let strip_unit = |s: &str| -> String {
-            if !unit_suffix.is_empty() && s.ends_with(&unit_suffix) {
-              s[..s.len() - unit_suffix.len()].to_string()
+          let mut prev_after_raw: Option<String> = None;
+          for rc in rule_changes.iter_mut().filter(|c| &c.param_key == k) {
+            let strip_unit = |s: &str| -> String {
+              if !unit_suffix.is_empty() && s.ends_with(&unit_suffix) {
+                s[..s.len() - unit_suffix.len()].to_string()
+              } else {
+                s.to_string()
+              }
+            };
+            let cur_before_raw = strip_unit(&rc.before_value);
+            let cur_after_raw = strip_unit(&rc.after_value);
+            let ref_for_fmt = canonical_ref_str.as_str();
+            let quant_before_raw = if let Some(ref pa) = prev_after_raw {
+              pa.clone()
+            } else if cur_before_raw == "(unset)" {
+              cur_before_raw.clone()
+            } else if !base_ref.is_empty() {
+              base_ref.clone()
+            } else if let Some(qb) = quantize_maybe_pct(&cur_before_raw, ref_for_fmt) {
+              qb
             } else {
-              s.to_string()
-            }
-          };
-          let cur_before_raw = strip_unit(&rc.before_value);
-          let cur_after_raw = strip_unit(&rc.after_value);
-          let ref_for_fmt = if base_ref.is_empty() {
-            cur_before_raw.as_str()
-          } else {
-            base_ref.as_str()
-          };
-          let quant_before_raw = if let Some(ref pa) = prev_after_raw {
-            pa.clone()
-          } else if cur_before_raw == "(unset)" || cur_before_raw.trim().ends_with('%') {
-            cur_before_raw.clone()
-          } else if !base_ref.is_empty() {
-            base_ref.clone()
-          } else if let Ok(b_num) = cur_before_raw.trim().parse::<f64>() {
-            Self::format_orca_schema_scalar(k, b_num, ref_for_fmt)
-          } else {
-            cur_before_raw.clone()
-          };
-          let quant_after_raw = if cur_after_raw == "(unset)" || cur_after_raw.trim().ends_with('%')
-          {
-            cur_after_raw.clone()
-          } else if let Ok(a_num) = cur_after_raw.trim().parse::<f64>() {
-            Self::format_orca_schema_scalar(k, a_num, ref_for_fmt)
-          } else {
-            cur_after_raw.clone()
-          };
+              cur_before_raw.clone()
+            };
+            let quant_after_raw = if cur_after_raw == "(unset)" {
+              cur_after_raw.clone()
+            } else if let Some(qa) = quantize_maybe_pct(&cur_after_raw, ref_for_fmt) {
+              qa
+            } else {
+              cur_after_raw.clone()
+            };
           rc.before_value = if quant_before_raw == "(unset)" {
             quant_before_raw.clone()
           } else {
@@ -3519,6 +3649,58 @@ end
         "_lua_touched_keys".to_string(),
         serde_json::Value::String(touched_keys.join(";")),
       );
+      if base_profile.profile_type != "filament" && !rules.is_empty() {
+        let weather_disabled = rules.iter().any(|r| {
+          matches!(
+            r.id.as_str(),
+            "weather_climate_adjustment" | "rule_weather_climate"
+          ) && !r.enabled
+        });
+        if weather_disabled {
+          map.insert(
+            "_weather_rule_disabled".to_string(),
+            serde_json::Value::String("1".to_string()),
+          );
+        }
+        let extra_filament_rules: Vec<&TransformationRule> = rules
+          .iter()
+          .filter(|r| {
+            r.enabled
+              && !matches!(
+                r.id.as_str(),
+                "thermal_conductivity"
+                  | "rig_addons_cooling"
+                  | "anycubic_pctg_as_petg"
+                  | "symptom_stringing_diamondback"
+                  | "filament_pctg_antistringing"
+                  | "pctg_antistringing"
+                  | "line_width_geometry"
+                  | "volumetric_speed_ceiling"
+                  | "rule_volumetric_speed_ceiling"
+                  | "flush_volumes_matrix"
+                  | "symptom_spaghetti_pla"
+                  | "process_scarf_seams_arachne"
+                  | "weather_climate_adjustment"
+                  | "rule_weather_climate"
+                  | "sym_wet_filament"
+                  | "rule_wet_filament"
+                  | "support_tuning"
+                  | "ironing_tuning"
+                  | "bridge_overhang_tuning"
+                  | "outer_wall_consistency"
+                  | "wizard_outer_wall_consistency"
+              )
+          })
+          .collect();
+        if !extra_filament_rules.is_empty() {
+          if let Ok(serialized) = serde_json::to_string(&extra_filament_rules) {
+            map.insert(
+              "_active_filament_rules_json".to_string(),
+              serde_json::Value::String(serialized),
+            );
+          }
+        }
+      }
       res_profile.values = map;
     }
 
@@ -4042,12 +4224,53 @@ end
         });
       }
 
-      // Check polymer temperature bounds on the spool via centralized `constants.json`
+      // Check polymer temperature bounds AND active printer hardware thermal ratings
+      let mc = crate::catalog::machine_constants(&rig.printer_model);
       let mat = spool.material_type.as_str();
       let mat_up = mat.to_uppercase();
       let canon = FilamentSpool::canonical_polymer_key(mat);
       let (base_min_noz, base_max_noz) = FilamentSpool::polymer_safe_nozzle_bounds(mat);
-      let (_base_min_bed, base_max_bed) = FilamentSpool::polymer_safe_bed_bounds(mat);
+      let (base_min_bed, base_max_bed) = FilamentSpool::polymer_safe_bed_bounds(mat);
+      if spool.is_loaded
+        && (base_min_noz > mc.max_hotend_temp_c || spool.print_temp > mc.max_hotend_temp_c)
+      {
+        let req_noz = base_min_noz.max(spool.print_temp);
+        push_warn(SafetyWarning {
+          id: format!("spool_mach_hotend_incompat:{}", spool.id),
+          severity: SafetySeverity::Danger,
+          scope_label: format!("Filament vs Hotend: {}", spool.name),
+          param_key: "Hotend Max Temperature Rating".to_string(),
+          current_value: format!(
+            "{} ({}°C) on {} (max {}°C)",
+            mat, req_noz, rig.printer_model, mc.max_hotend_temp_c
+          ),
+          safe_range: format!("≤{}°C ({})", mc.max_hotend_temp_c, rig.printer_model),
+          explanation: format!(
+            "{} ({}) is configured at / requires {}°C, which exceeds {}'s {}°C hotend rating (risking PTFE decomposition or cold-extrusion extruder jams).",
+            spool.name, mat, req_noz, rig.printer_model, mc.max_hotend_temp_c
+          ),
+        });
+      }
+      if spool.is_loaded
+        && (base_min_bed > mc.max_bed_temp_c || spool.bed_temp > mc.max_bed_temp_c)
+      {
+        let req_bed = base_min_bed.max(spool.bed_temp);
+        push_warn(SafetyWarning {
+          id: format!("spool_mach_bed_incompat:{}", spool.id),
+          severity: SafetySeverity::Danger,
+          scope_label: format!("Filament vs Heated Bed: {}", spool.name),
+          param_key: "Heated Bed Max Temperature Rating".to_string(),
+          current_value: format!(
+            "{} ({}°C bed) on {} (max {}°C)",
+            mat, req_bed, rig.printer_model, mc.max_bed_temp_c
+          ),
+          safe_range: format!("≤{}°C ({})", mc.max_bed_temp_c, rig.printer_model),
+          explanation: format!(
+            "{} ({}) is configured at / requires {}°C bed temperature, which exceeds {}'s {}°C bed heater limit.",
+            spool.name, mat, req_bed, rig.printer_model, mc.max_bed_temp_c
+          ),
+        });
+      }
       let (min_nozzle, max_nozzle, warn_nozzle, max_bed) =
         if spool.finish_type.eq_ignore_ascii_case("Foaming")
           && (canon.starts_with("TPU") || canon == "PEBA" || mat_up.contains("AIR"))
@@ -4162,7 +4385,12 @@ end
     }
 
     if let Some(retract_len) = get_num("filament_retraction_length") {
-      if retract_len > 2.5 {
+      let max_safe_ret_len = if rig.base_retraction_length >= 2.0 {
+        rig.base_retraction_length + 2.5
+      } else {
+        2.5
+      };
+      if retract_len > max_safe_ret_len {
         push_warn(SafetyWarning {
           id: "derived:filament_retraction_length".to_string(),
           severity: SafetySeverity::Danger,
@@ -5041,6 +5269,24 @@ mod tests {
         sp.bed_temp,
         warnings
       );
+      if sp.print_temp > 300 {
+        let mut loaded_sp = sp.clone();
+        loaded_sp.is_loaded = true;
+        let loaded_warns = TransformationEngine::evaluate_safety_warnings(
+          &rig,
+          &[loaded_sp],
+          &profile,
+          &[],
+          &[],
+        );
+        assert!(
+          loaded_warns
+            .iter()
+            .any(|w| w.id.starts_with("spool_mach_hotend_incompat:")),
+          "Industrial >300°C filament '{}' MUST raise spool_mach_hotend_incompat when loaded on 300°C Kobra S1!",
+          fil_entry.code
+        );
+      }
     }
 
     // 3. Verify soft TPU (TPU 95A) in Reserve slot (#5, index 4 on a 4-slot ACE Pro) does NOT trigger AMS warning,
@@ -5567,7 +5813,12 @@ end
           ..kobra_s1.clone()
         }),
       );
-      assert_eq!(inherits, "Sovol PETG @Sovol SV06 0.4 nozzle");
+      assert!(
+        !inherits.contains("Anycubic"),
+        "Sovol SV06 filament inherits must never reference Anycubic, got {}",
+        inherits
+      );
+      assert_eq!(inherits, "Generic PETG @System");
     }
     let corexy = kobra_s1.travel_accel_policy();
     let slinger = kobra_3.travel_accel_policy();
@@ -9012,7 +9263,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
         s.name = name.to_string();
         s.is_loaded = loaded;
         s.recompute_for_nozzle(&rig.nozzle_type);
-        s.rebuild_synthetic_disk_json(&rig.nozzle_type);
+        s.refresh_thermal_deltas(&rig.nozzle_type);
         s
       };
 

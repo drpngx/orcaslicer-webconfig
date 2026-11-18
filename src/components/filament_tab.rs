@@ -379,7 +379,12 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                     id: format!("spool_custom_{}", next_idx),
                     name: format!("OC - Anycubic PETG #{}", next_idx),
                     brand: "Anycubic".to_string(),
-                    inherits: "Anycubic PETG @Anycubic Kobra S1 0.4 nozzle".to_string(),
+                    inherits: crate::catalog::load_merged_catalog().resolve_filament_inherits(
+                      "Anycubic Kobra S1",
+                      "0.4",
+                      "PETG",
+                      "Basic",
+                    ),
                     material_type: "PETG".to_string(),
                     nozzle_type: noz.clone(),
                     tuned_for_nozzle_type: noz.clone(),
@@ -1834,10 +1839,19 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
               </div>
               <div class="flex flex-col gap-1 bg-surface-container-lowest p-space-md rounded-lg border border-secondary/40">
                 <span class="text-xs font-mono uppercase text-secondary font-bold">
-                  {format!("Raw User Disk File (user/434139/filament/{}.json)", spool.name)}
+                  {if spool.raw_disk_json.is_some() {
+                    format!("Raw User Disk File (user/default/filament/{}.json)", spool.name)
+                  } else {
+                    format!("Live Resolved OrcaSlicer Filament .json ({}.json)", spool.name)
+                  }}
                 </span>
                 <pre class="text-[11px] font-mono text-on-surface overflow-x-auto max-h-52 whitespace-pre">
-                  {spool.raw_disk_json.clone().unwrap_or_else(|| "{}".to_string())}
+                  {spool.raw_disk_json.clone().unwrap_or_else(|| {
+                    serde_json::to_string_pretty(&serde_json::Value::Object(
+                      crate::threemf::resolve_spool_orca_filament_map(&spool),
+                    ))
+                    .unwrap_or_default()
+                  })}
                 </pre>
               </div>
             </div>

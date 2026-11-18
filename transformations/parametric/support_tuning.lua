@@ -267,19 +267,19 @@ end
 function apply(config, ctx, p)
   local stype = (p and p.support_type) or "tree(auto)"
   local sstyle = (p and p.support_style) or "tree_slim"
-  local top_layers = math.floor((tonumber(p and p.interface_top_layers) or 3) + 0.5)
+  local top_layers = tonumber(p and p.interface_top_layers) or 3
   local spacing = tonumber(p and p.interface_spacing_mm) or 0.15
-  local spd = math.floor((tonumber(p and p.interface_speed_mms) or 60) + 0.5)
+  local spd = tonumber(p and p.interface_speed_mms) or 60
   local eff = resolve_effective_z_offset(p, ctx)
   local z_off = eff.z_off
   local is_zero = eff.is_zero
 
-  local lh = tonumber(config["layer_height"]) or tonumber(ctx and ctx.layer_height) or 0.20
-  local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
+  local lh = scalar_num(config["layer_height"], nil) or scalar_num(ctx and ctx.layer_height, 0.20)
+  local nd = scalar_num(ctx and ctx.nozzle_diameter, 0.40)
   local preset = (p and p.support_preset) or "auto_polymer"
   local eff_spacing = spacing
   if (not is_zero) and preset == "auto_polymer" and math.abs(nd - 0.40) > 0.01 then
-    eff_spacing = math.max(0.10, math.min(0.40, math.floor(spacing * math.sqrt(nd / 0.40) * 100.0 + 0.5) / 100.0))
+    eff_spacing = math.max(0.10, math.min(0.40, spacing * math.sqrt(nd / 0.40)))
   end
 
   config["enable_support"] = "1"
@@ -299,10 +299,10 @@ function apply(config, ctx, p)
     config["support_object_xy_distance"] = fmt_num(math.max(0.35, nd * 0.85), "%.2f")
   end
 
-  config["support_interface_top_layers"] = tostring(top_layers)
+  config["support_interface_top_layers"] = fmt_num(top_layers, "%.0f")
   config["support_interface_bottom_layers"] = "2"
   config["support_interface_spacing"] = fmt_num(eff_spacing, "%.2f")
-  config["support_interface_speed"] = tostring(spd)
+  config["support_interface_speed"] = fmt_num(spd, "%.0f")
 
   local d = describe(p or {}, ctx)
   print("[Pack:SupportTuning] " .. (d.badge or ""))

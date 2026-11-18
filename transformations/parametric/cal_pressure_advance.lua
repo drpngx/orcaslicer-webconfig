@@ -82,9 +82,17 @@ end
 function apply(config, ctx, p)
   local pa_num = math.max(0.0, math.min(0.25, tonumber(p and p.pa_val) or 0.048))
   local adaptive = (p and p.adaptive_pa) or "0"
-  config["enable_pressure_advance"] = "1"
-  config["pressure_advance"] = fmt_num(pa_num, "%.3f")
-  config["adaptive_pressure_advance"] = adaptive
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  local function set_val(key, val)
+    if type(config[key]) == "table" or (config[key] == nil and prof_arr) then
+      config[key] = { val }
+    else
+      config[key] = val
+    end
+  end
+  set_val("enable_pressure_advance", "1")
+  set_val("pressure_advance", fmt_num(pa_num, "%.3f"))
+  set_val("adaptive_pressure_advance", adaptive)
   local d = describe(p or {}, ctx)
   print("[Calibration:PA] " .. (d.badge or ""))
 end

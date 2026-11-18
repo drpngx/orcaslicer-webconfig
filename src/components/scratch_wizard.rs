@@ -242,22 +242,44 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       let line_width = ((diam * 1.05 * 100.0).round() / 100.0) as f64;
       let line_width_thick = ((diam * 1.10 * 100.0).round() / 100.0) as f64;
 
+      let (spd_scale, acc_scale) = {
+        let cat = crate::catalog::load_merged_catalog();
+        if let Some(cm) = cat.find_machine(&rig.printer_model) {
+          let s = if cm.default_outer_wall_speed > 0.0 && cm.default_outer_wall_speed < 200.0 {
+            (cm.default_outer_wall_speed as f64 / 200.0).clamp(0.20, 1.0)
+          } else {
+            1.0
+          };
+          let a = if cm.default_acceleration > 0.0 && cm.default_acceleration < 10000.0 {
+            (cm.default_acceleration as f64 / 10000.0).clamp(0.05, 1.0)
+          } else {
+            1.0
+          };
+          (s, a)
+        } else {
+          (1.0, 1.0)
+        }
+      };
+      let sc_spd = |v: f64, floor: f64| (v * spd_scale).round().max(floor);
+      let sc_acc = |v: f64| (v * acc_scale).round().max(500.0);
+
       // 1. 0.20mm Standard
       let mut proc_std = ProcessProfile {
         id: format!("proc_{:.2}mm_standard", layer_std),
         name: String::new(),
-        inherits: "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        inherits: String::new(),
         layer_height: layer_std,
         line_width,
-        outer_wall_speed: 200.0,
-        inner_wall_speed: 300.0,
-        sparse_infill_speed: 270.0,
-        initial_layer_speed: 50.0,
-        default_acceleration: 10000.0,
-        print_sequence: "by object".to_string(),
+        outer_wall_speed: sc_spd(200.0, 25.0),
+        inner_wall_speed: sc_spd(300.0, 35.0),
+        sparse_infill_speed: sc_spd(270.0, 40.0),
+        initial_layer_speed: sc_spd(50.0, 20.0),
+        default_acceleration: sc_acc(10000.0),
+        print_sequence: "by layer".to_string(),
         wall_generator: "arachne".to_string(),
         notes: String::new(),
       };
+      proc_std.inherits = proc_std.resolve_inherits_for_rig(&rig);
       proc_std.name = proc_std.format_concise_title(&short_mach);
       proc_std.notes = proc_std.generate_descriptive_notes();
 
@@ -265,18 +287,19 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       let mut proc_hq = ProcessProfile {
         id: format!("proc_{:.2}mm_high_quality", layer_std),
         name: String::new(),
-        inherits: "0.20mm High Quality @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        inherits: "Quality".to_string(),
         layer_height: layer_std,
         line_width,
-        outer_wall_speed: 60.0,
-        inner_wall_speed: 150.0,
-        sparse_infill_speed: 250.0,
-        initial_layer_speed: 50.0,
-        default_acceleration: 5000.0,
-        print_sequence: "by object".to_string(),
+        outer_wall_speed: sc_spd(60.0, 25.0),
+        inner_wall_speed: sc_spd(150.0, 35.0),
+        sparse_infill_speed: sc_spd(250.0, 40.0),
+        initial_layer_speed: sc_spd(50.0, 20.0),
+        default_acceleration: sc_acc(5000.0),
+        print_sequence: "by layer".to_string(),
         wall_generator: "arachne".to_string(),
         notes: String::new(),
       };
+      proc_hq.inherits = proc_hq.resolve_inherits_for_rig(&rig);
       proc_hq.name = proc_hq.format_concise_title(&short_mach);
       proc_hq.notes = proc_hq.generate_descriptive_notes();
 
@@ -284,18 +307,19 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       let mut proc_hs = ProcessProfile {
         id: format!("proc_{:.2}mm_high_speed", layer_std),
         name: String::new(),
-        inherits: "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        inherits: String::new(),
         layer_height: layer_std,
         line_width,
-        outer_wall_speed: 300.0,
-        inner_wall_speed: 350.0,
-        sparse_infill_speed: 350.0,
-        initial_layer_speed: 60.0,
-        default_acceleration: 15000.0,
-        print_sequence: "by object".to_string(),
+        outer_wall_speed: sc_spd(300.0, 35.0),
+        inner_wall_speed: sc_spd(350.0, 45.0),
+        sparse_infill_speed: sc_spd(350.0, 50.0),
+        initial_layer_speed: sc_spd(60.0, 20.0),
+        default_acceleration: sc_acc(15000.0),
+        print_sequence: "by layer".to_string(),
         wall_generator: "arachne".to_string(),
         notes: String::new(),
       };
+      proc_hs.inherits = proc_hs.resolve_inherits_for_rig(&rig);
       proc_hs.name = proc_hs.format_concise_title(&short_mach);
       proc_hs.notes = proc_hs.generate_descriptive_notes();
 
@@ -303,18 +327,19 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       let mut proc_hq_fine = ProcessProfile {
         id: format!("proc_{:.2}mm_fine_hq", layer_hq),
         name: String::new(),
-        inherits: "0.12mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        inherits: "Quality".to_string(),
         layer_height: layer_hq,
         line_width,
-        outer_wall_speed: 60.0,
-        inner_wall_speed: 150.0,
-        sparse_infill_speed: 200.0,
-        initial_layer_speed: 50.0,
-        default_acceleration: 5000.0,
-        print_sequence: "by object".to_string(),
+        outer_wall_speed: sc_spd(60.0, 25.0),
+        inner_wall_speed: sc_spd(150.0, 35.0),
+        sparse_infill_speed: sc_spd(200.0, 40.0),
+        initial_layer_speed: sc_spd(50.0, 20.0),
+        default_acceleration: sc_acc(5000.0),
+        print_sequence: "by layer".to_string(),
         wall_generator: "arachne".to_string(),
         notes: String::new(),
       };
+      proc_hq_fine.inherits = proc_hq_fine.resolve_inherits_for_rig(&rig);
       proc_hq_fine.name = proc_hq_fine.format_concise_title(&short_mach);
       proc_hq_fine.notes = proc_hq_fine.generate_descriptive_notes();
 
@@ -322,18 +347,19 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
       let mut proc_hs_thick = ProcessProfile {
         id: format!("proc_{:.2}mm_high_speed", layer_speed_thick),
         name: String::new(),
-        inherits: "0.28mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string(),
+        inherits: String::new(),
         layer_height: layer_speed_thick,
         line_width: line_width_thick,
-        outer_wall_speed: 250.0,
-        inner_wall_speed: 320.0,
-        sparse_infill_speed: 320.0,
-        initial_layer_speed: 60.0,
-        default_acceleration: 12000.0,
-        print_sequence: "by object".to_string(),
+        outer_wall_speed: sc_spd(250.0, 30.0),
+        inner_wall_speed: sc_spd(320.0, 40.0),
+        sparse_infill_speed: sc_spd(320.0, 45.0),
+        initial_layer_speed: sc_spd(60.0, 20.0),
+        default_acceleration: sc_acc(12000.0),
+        print_sequence: "by layer".to_string(),
         wall_generator: "arachne".to_string(),
         notes: String::new(),
       };
+      proc_hs_thick.inherits = proc_hs_thick.resolve_inherits_for_rig(&rig);
       proc_hs_thick.name = proc_hs_thick.format_concise_title(&short_mach);
       proc_hs_thick.notes = proc_hs_thick.generate_descriptive_notes();
 
@@ -458,19 +484,15 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
               }
             });
 
-          let vendor_prefix = if cur_machine.vendor.eq_ignore_ascii_case("Anycubic") {
-            "Anycubic"
-          } else {
-            "Generic"
-          };
-          let base_mat_tag = match d.material_type.as_str() {
-            "PCTG" | "PCTG-CF" | "PCTG-GF" => "PETG",
-            "PLA-CF" | "PLA-GF" | "PLA Glow" => "PLA",
-            other => other,
-          };
-          let inherits = format!(
-            "{} {} @{} {:.1} nozzle",
-            vendor_prefix, base_mat_tag, cur_machine.name, diam
+          let diam_str = format!("{:.2}", diam)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string();
+          let inherits = crate::catalog::load_merged_catalog().resolve_filament_inherits(
+            &cur_machine.name,
+            &diam_str,
+            &d.material_type,
+            &d.finish_type,
           );
           let clean_draft_name = d
             .name
@@ -562,46 +584,6 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             });
           }
 
-          let (range_low, range_high) = FilamentSpool::compute_nozzle_temp_range(
-            &d.material_type,
-            effective_nozzle,
-            (effective_nozzle + 5).min(350),
-          );
-          let raw_disk_json = serde_json::to_string_pretty(&serde_json::json!({
-            "from": "User",
-            "inherits": inherits,
-            "name": profile_name,
-            "filament_settings_id": [profile_name],
-            "filament_type": [d.material_type],
-            "required_nozzle_HRC": [req_hrc.to_string()],
-            "filament_colour": [d.color_hex],
-            "default_filament_colour": [d.color_hex],
-            "nozzle_temperature": [effective_nozzle.to_string()],
-            "nozzle_temperature_BRASS": [base_nozzle.to_string()],
-            "nozzle_temperature_HS": [hs_nozzle.to_string()],
-            "nozzle_temperature_initial_layer": [(effective_nozzle + 5).min(350).to_string()],
-            "nozzle_temperature_initial_layer_BRASS": [(base_nozzle + 5).min(350).to_string()],
-            "nozzle_temperature_initial_layer_HS": [(hs_nozzle + 5).min(350).to_string()],
-            "nozzle_temperature_range_low": [range_low.to_string()],
-            "nozzle_temperature_range_high": [range_high.to_string()],
-            "hot_plate_temp": [effective_bed.to_string()],
-            "hot_plate_temp_initial_layer": [effective_bed.to_string()],
-            "textured_plate_temp": [effective_bed.to_string()],
-            "textured_plate_temp_initial_layer": [effective_bed.to_string()],
-            "filament_flow_ratio": [format!("{:.2}", default_flow)],
-            "pressure_advance": [format!("{:.3}", default_pa)],
-            "filament_max_volumetric_speed": [format!("{:.1}", max_vol)],
-            "fan_max_speed": [fan_pct.to_string()],
-            "fan_max_speed_BRASS": [fan_pct.to_string()],
-            "fan_max_speed_HS": [fan_pct.to_string()],
-            "filament_z_hop": [if is_pctg_or_petg { "0.15" } else { "0.2" }],
-            "filament_z_hop_types": [if is_pctg_or_petg { "Spiral Lift" } else { "Normal Lift" }],
-            "filament_retract_before_wipe": [if is_pctg_or_petg { "70%" } else { "0%" }],
-            "filament_deretraction_speed": [if is_pctg_or_petg { "30" } else { "0" }],
-            "version": "2.0.0.0"
-          }))
-          .unwrap_or_default();
-
           let mut spool = FilamentSpool {
             id: format!("spool_scratch_{}", idx + 1),
             name: profile_name,
@@ -651,19 +633,22 @@ pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
             drying_time_hr: dry_hr,
             is_rfid_synced: false,
             deltas_from_base,
-            raw_disk_json: Some(raw_disk_json),
+            raw_disk_json: None,
           };
+          spool.clamp_to_machine_limits(&cur_machine.name);
           if spool.is_foaming_tpu() {
             let shore = spool.effective_foaming_shore_a();
             spool.apply_foaming_shore_hardness(shore, &cur_nozzle.id);
+            spool.clamp_to_machine_limits(&cur_machine.name);
+            spool.refresh_thermal_deltas(&cur_nozzle.id);
           } else {
-            spool.rebuild_synthetic_disk_json(&cur_nozzle.id);
+            spool.refresh_thermal_deltas(&cur_nozzle.id);
           }
           spool
         })
         .collect();
 
-      let base_profile = OrcaProfile::get_stock_kobra_s1();
+      let base_profile = OrcaProfile::get_stock_for_printer_model(&cur_machine.name);
       let mut rules = TransformationEngine::get_default_rules();
       TransformationEngine::sync_rules_for_rig(
         &mut rules,

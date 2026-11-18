@@ -102,13 +102,25 @@ function apply(config, ctx, p)
   local scarf = (p and p.enable_scarf) or "external"
   if scarf == "contour" then scarf = "external" end
 
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
   config["seam_position"] = seam_pos
-  local cur_d = tonumber(config["filament_deretraction_speed"]) or 35
-  config["filament_deretraction_speed"] = tostring(math.max(15, math.floor(cur_d * d_scale + 0.5)))
+  local cur_d = scalar_num(config["filament_deretraction_speed"], 0)
+  if cur_d <= 0 then
+    cur_d = scalar_num(config["filament_retraction_speed"], 35)
+  end
+  set_arr("filament_deretraction_speed", fmt_num(math.max(15, cur_d * d_scale), "%.0f"))
+  set_arr("filament_retract_before_wipe", fmt_pct(80, "%.0f"))
   config["seam_slope_type"] = scarf
-  local cur_sl = tonumber(config["seam_slope_min_length"]) or 15
-  config["seam_slope_min_length"] = tostring(math.floor(cur_sl * 1.25 + 0.5))
-  config["seam_gap"] = "10%"
+  local cur_sl = scalar_num(config["seam_slope_min_length"], 15)
+  config["seam_slope_min_length"] = fmt_num(cur_sl * 1.25, "%.0f")
+  config["seam_gap"] = fmt_pct(10, "%.0f")
   config["wipe_on_loops"] = "1"
   local d = describe(p or {}, ctx)
   print("[Symptom:ZitsBlobs] " .. (d.badge or ""))

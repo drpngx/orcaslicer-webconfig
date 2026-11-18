@@ -105,9 +105,8 @@ end
 function apply(config, ctx, p)
   local scarf_mode = (p and p.scarf_mode) or "all"
   if scarf_mode == "contour" then scarf_mode = "external" end
-  local scarf_len = tostring(math.floor(tonumber(p and p.scarf_len) or 20))
-  local seam_gap = (p and p.seam_gap) or "10%"
-  if not string.find(seam_gap, "%%") then seam_gap = seam_gap .. "%" end
+  local scarf_len = fmt_num(tonumber(p and p.scarf_len) or 20, "%.0f")
+  local seam_gap = fmt_pct((p and p.seam_gap) or 10, "%.0f")
   local wall_gen = (p and p.wall_gen) or "arachne"
 
   config["wall_generator"] = wall_gen

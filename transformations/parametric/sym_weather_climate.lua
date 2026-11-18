@@ -280,10 +280,12 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
       d.zhop_type = "Normal Lift"
     elseif fam == "ABS_ASA" then
       d.retract_delta_mm = 0.05 + extra_r
+      d.first_layer_bed_extra_c = math.max(d.first_layer_bed_extra_c, 3)
       d.zhop_type = "Slope Lift"
     elseif fam == "PA_PC" then
       d.retract_delta_mm = 0.05 + extra_r
       d.retract_speed_scale = 0.88
+      d.first_layer_bed_extra_c = math.max(d.first_layer_bed_extra_c, 3)
       d.zhop_type = "Slope Lift"
     end
   end
@@ -332,9 +334,9 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
       d.print_speed_scale = is_ms_nozzle and 0.92 or 0.85
     elseif fam == "ABS_ASA" then
       d.enclosure = "Fully Closed (Tropical heat helps)"
-      d.nozzle_delta_c = -math.floor((4 * hc_factor) + 0.5)
+      d.nozzle_delta_c = 0
       d.bed_delta_c = 0
-      d.exhaust_target = 10
+      d.exhaust_target = 0
       d.mvs_scale = is_ms_nozzle and 0.97 or 0.92
     elseif fam == "PA_PC" then
       d.enclosure = "Fully Closed"
@@ -475,18 +477,12 @@ function describe(p, ctx)
 end
 
 function get_orca_num(config, key, fallback)
-  local v = config[key]
-  if v == nil then
-    return fallback
-  end
-  if type(v) == "table" then
-    return tonumber(v[1]) or fallback
-  end
-  return tonumber(v) or fallback
+  return scalar_num(config[key], fallback)
 end
 
 function set_orca_val(config, key, val_str)
-  if config[key] ~= nil and type(config[key]) == "table" then
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  if type(config[key]) == "table" or (config[key] == nil and prof_arr) then
     config[key] = { val_str }
   else
     config[key] = val_str
@@ -517,40 +513,40 @@ function apply(config, ctx, p)
     local cur_noz_init = get_orca_num(config, "nozzle_temperature_initial_layer", cur_noz)
     local cur_noz_init_hs = get_orca_num(config, "nozzle_temperature_initial_layer_HS", cur_noz_init)
     local cur_noz_init_brass = get_orca_num(config, "nozzle_temperature_initial_layer_BRASS", cur_noz_init)
-    local next_noz = math.max(185, math.min(320, math.floor(cur_noz + d.nozzle_delta_c + 0.5)))
-    local next_noz_hs = math.max(185, math.min(320, math.floor(cur_noz_hs + d.nozzle_delta_c + 0.5)))
-    local next_noz_brass = math.max(185, math.min(320, math.floor(cur_noz_brass + d.nozzle_delta_c + 0.5)))
-    local next_noz_init = math.max(185, math.min(320, math.floor(cur_noz_init + d.nozzle_delta_c + 0.5)))
-    local next_noz_init_hs = math.max(185, math.min(320, math.floor(cur_noz_init_hs + d.nozzle_delta_c + 0.5)))
-    local next_noz_init_brass = math.max(185, math.min(320, math.floor(cur_noz_init_brass + d.nozzle_delta_c + 0.5)))
-    set_orca_val(config, "nozzle_temperature", tostring(next_noz))
-    set_orca_val(config, "nozzle_temperature_HS", tostring(next_noz_hs))
-    set_orca_val(config, "nozzle_temperature_BRASS", tostring(next_noz_brass))
-    set_orca_val(config, "nozzle_temperature_initial_layer", tostring(next_noz_init))
-    set_orca_val(config, "nozzle_temperature_initial_layer_HS", tostring(next_noz_init_hs))
-    set_orca_val(config, "nozzle_temperature_initial_layer_BRASS", tostring(next_noz_init_brass))
+    local next_noz = math.max(185, math.min(320, cur_noz + d.nozzle_delta_c))
+    local next_noz_hs = math.max(185, math.min(320, cur_noz_hs + d.nozzle_delta_c))
+    local next_noz_brass = math.max(185, math.min(320, cur_noz_brass + d.nozzle_delta_c))
+    local next_noz_init = math.max(185, math.min(320, cur_noz_init + d.nozzle_delta_c))
+    local next_noz_init_hs = math.max(185, math.min(320, cur_noz_init_hs + d.nozzle_delta_c))
+    local next_noz_init_brass = math.max(185, math.min(320, cur_noz_init_brass + d.nozzle_delta_c))
+    set_orca_val(config, "nozzle_temperature", fmt_num(next_noz, "%.0f"))
+    set_orca_val(config, "nozzle_temperature_HS", fmt_num(next_noz_hs, "%.0f"))
+    set_orca_val(config, "nozzle_temperature_BRASS", fmt_num(next_noz_brass, "%.0f"))
+    set_orca_val(config, "nozzle_temperature_initial_layer", fmt_num(next_noz_init, "%.0f"))
+    set_orca_val(config, "nozzle_temperature_initial_layer_HS", fmt_num(next_noz_init_hs, "%.0f"))
+    set_orca_val(config, "nozzle_temperature_initial_layer_BRASS", fmt_num(next_noz_init_brass, "%.0f"))
   end
 
   -- 2. Relative Bed Temperature Offset (+ extra +5°C on first layer in Cold weather;
   -- in Hot/Tropical weather >=26°C, enforces a passive-bed ambient floor of max(45, temp_c + 15)
   -- so G9111 never hangs waiting for the bed to cool down to 35°C in a warm room!)
-  local min_bed_floor = (temp_c >= 26) and math.max(45, math.min(50, math.floor(temp_c + 15 + 0.5))) or 35
+  local min_bed_floor = (temp_c >= 26) and math.max(45, math.min(50, temp_c + 15)) or 35
   local total_init_bed_delta = d.bed_delta_c + d.first_layer_bed_extra_c
   if d.bed_delta_c ~= 0 or total_init_bed_delta ~= 0 or temp_c >= 26 or config["textured_plate_temp"] ~= nil then
     for _, pk in ipairs({ "hot_plate_temp", "textured_plate_temp", "cool_plate_temp", "eng_plate_temp", "textured_cool_plate_temp", "supertack_plate_temp" }) do
       local cur_b = get_orca_num(config, pk, base_bed)
       local init_k = pk .. "_initial_layer"
       local cur_b_init = get_orca_num(config, init_k, cur_b)
-      local next_b = math.max(min_bed_floor, math.min(115, math.floor(cur_b + d.bed_delta_c + 0.5)))
-      local next_b_init = math.max(min_bed_floor, math.min(115, math.floor(cur_b_init + total_init_bed_delta + 0.5)))
-      set_orca_val(config, pk, tostring(next_b))
-      set_orca_val(config, init_k, tostring(next_b_init))
+      local next_b = math.max(min_bed_floor, math.min(115, cur_b + d.bed_delta_c))
+      local next_b_init = math.max(min_bed_floor, math.min(115, cur_b_init + total_init_bed_delta))
+      set_orca_val(config, pk, fmt_num(next_b, "%.0f"))
+      set_orca_val(config, init_k, fmt_num(next_b_init, "%.0f"))
     end
   end
 
   -- 3. Relative Retraction Length (+Δmm) & Speed (×scale) stacked on top of nozzle retraction
-  local max_safe_retract = is_ms and 1.45 or 1.40
   local cur_ret = get_orca_num(config, "filament_retraction_length", base_retract)
+  local max_safe_retract = cur_ret >= 2.0 and (cur_ret + 0.80) or (is_ms and 1.45 or 1.40)
   local next_ret = math.max(0.30, math.min(max_safe_retract, cur_ret + d.retract_delta_mm))
   set_orca_val(config, "filament_retraction_length", fmt_num(next_ret, "%.2f"))
 
@@ -571,7 +567,7 @@ function apply(config, ctx, p)
   end
   if d.wipe then
     set_orca_val(config, "filament_wipe", "1")
-    set_orca_val(config, "filament_retract_before_wipe", fam == "PETG" and "0%" or "70%")
+    set_orca_val(config, "filament_retract_before_wipe", fam == "PETG" and fmt_pct(0, "%.0f") or fmt_pct(70, "%.0f"))
     set_orca_val(config, "filament_wipe_distance", d.wipe_dist)
     config["wipe_on_loops"] = "1"
   end
@@ -594,18 +590,18 @@ function apply(config, ctx, p)
 
   if d.no_fan_layers_delta ~= 0 or config["close_fan_the_first_x_layers"] ~= nil then
     local cur_nfl = get_orca_num(config, "close_fan_the_first_x_layers", 1)
-    local next_nfl = math.max(1, math.min(8, math.floor(cur_nfl + d.no_fan_layers_delta + 0.5)))
-    set_orca_val(config, "close_fan_the_first_x_layers", tostring(next_nfl))
+    local next_nfl = math.max(1, math.min(8, cur_nfl + d.no_fan_layers_delta))
+    set_orca_val(config, "close_fan_the_first_x_layers", fmt_num(next_nfl, "%.0f"))
   end
 
   if d.exhaust_target >= 0 then
-    set_orca_val(config, "additional_cooling_fan_speed", tostring(d.exhaust_target))
-    set_orca_val(config, "chamber_fan_speed", tostring(d.exhaust_target))
+    set_orca_val(config, "additional_cooling_fan_speed", fmt_num(d.exhaust_target, "%.0f"))
+    set_orca_val(config, "chamber_fan_speed", fmt_num(d.exhaust_target, "%.0f"))
   end
 
   -- 6. Relative Max Volumetric Speed Multiplier (×mvs_scale, stacked on CHT/nozzle flow)
   local cur_mvs = get_orca_num(config, "filament_max_volumetric_speed", base_mvs)
-  local ctx_mvs = tonumber(ctx and ctx.filament_max_flow)
+  local ctx_mvs = scalar_num(ctx and ctx.filament_max_flow, nil)
   if config["type"] == "machine" and math.abs(cur_mvs - 12.0) < 0.01 and ctx_mvs and ctx_mvs > 0 then
     cur_mvs = ctx_mvs
   end
@@ -620,7 +616,7 @@ function apply(config, ctx, p)
       for _, sk in ipairs({ "outer_wall_speed", "inner_wall_speed", "sparse_infill_speed", "internal_solid_infill_speed" }) do
         if config[sk] ~= nil then
           local cur_s = get_orca_num(config, sk, 150)
-          set_orca_val(config, sk, fmt_num(math.max(20, cur_s * d.print_speed_scale), "%.0f"))
+          config[sk] = fmt_num(math.max(20, cur_s * d.print_speed_scale), "%.0f")
         end
       end
     end
@@ -628,8 +624,8 @@ function apply(config, ctx, p)
     if math.abs(d.first_layer_speed_scale - 1.0) > 0.001 then
       local cur_fls = get_orca_num(config, "initial_layer_speed", 50)
       local cur_flis = get_orca_num(config, "initial_layer_infill_speed", 60)
-      set_orca_val(config, "initial_layer_speed", fmt_num(math.max(20, cur_fls * d.first_layer_speed_scale), "%.0f"))
-      set_orca_val(config, "initial_layer_infill_speed", fmt_num(math.max(25, cur_flis * d.first_layer_speed_scale), "%.0f"))
+      config["initial_layer_speed"] = fmt_num(math.max(20, cur_fls * d.first_layer_speed_scale), "%.0f")
+      config["initial_layer_infill_speed"] = fmt_num(math.max(25, cur_flis * d.first_layer_speed_scale), "%.0f")
     end
   end
 
@@ -649,13 +645,13 @@ function apply(config, ctx, p)
     or 0.0
   local spool_noz_delta = 0
   local spool_bed_delta = 0
-  local spool_init_bed_extra = 0
+  local spool_init_bed_extra = d.first_layer_bed_extra_c
   if is_hot_c then
     if fam == "PETG" or fam == "PLA" or fam == "PLA_SILK" then
       spool_noz_delta = is_ms and -5 or -10
     elseif fam == "TPU" then
       spool_noz_delta = is_ms and -3 or -6
-    elseif fam == "PA_PC" then
+    elseif fam == "PA_PC" or fam == "ABS_ASA" then
       spool_noz_delta = 0
     else
       spool_noz_delta = is_ms and -2 or -4
@@ -676,7 +672,7 @@ function apply(config, ctx, p)
   config["_climate_bed_delta_c"] = tostring(spool_bed_delta)
   config["_climate_init_bed_extra_c"] = tostring(spool_init_bed_extra)
   config["_climate_retract_delta_mm"] = tostring(spool_retract_delta)
-  config["_climate_min_bed_c"] = tostring(min_bed_floor)
+  config["_climate_min_bed_c"] = tostring(math.floor(min_bed_floor + 0.5))
   config["_climate_zhop_enforce"] = tostring(d.zhop_enforce)
   config["_climate_exhaust_target"] = tostring(d.exhaust_target)
 

@@ -78,7 +78,7 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local ov_boost = math.floor(tonumber(p and p.overlap_pct) or 8)
+  local ov_boost = tonumber(p and p.overlap_pct) or 8
   local spd_pct = tonumber(p and p.top_spd) or -25.0
   local spd_scale = 0.75
   if spd_pct < 0 then
@@ -87,11 +87,11 @@ function apply(config, ctx, p)
     spd_scale = math.max(0.40, math.min(1.0, (100.0 - spd_pct) / 100.0))
   end
 
-  local cur_ov = tonumber(config["infill_wall_overlap"]) or 15
-  config["infill_wall_overlap"] = tostring(math.min(50, math.floor(cur_ov + ov_boost))) .. "%"
+  local cur_ov = scalar_num(config["infill_wall_overlap"], 15)
+  config["infill_wall_overlap"] = fmt_pct(math.min(50, cur_ov + ov_boost), "%.0f")
   config["wall_generator"] = "arachne"
-  local cur_ts = tonumber(config["top_surface_speed"]) or 80
-  config["top_surface_speed"] = tostring(math.max(20, math.floor(cur_ts * spd_scale + 0.5)))
+  local cur_ts = scalar_num(config["top_surface_speed"], 80)
+  config["top_surface_speed"] = fmt_num(math.max(20, cur_ts * spd_scale), "%.0f")
   local d = describe(p or {}, ctx)
   print("[Symptom:InfillWallGaps] " .. (d.badge or ""))
 end

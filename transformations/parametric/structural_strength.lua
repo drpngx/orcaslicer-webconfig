@@ -154,10 +154,10 @@ local function resolve(p)
 end
 
 local function set_like(config, key, val)
-  if type(config[key]) == "table" then
-    config[key] = { val }
-  else
+  if type(config[key]) == "string" then
     config[key] = val
+  else
+    config[key] = { val }
   end
 end
 
@@ -187,42 +187,54 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local c = resolve(p)
+  local boost = tonumber(p and p.temp_boost_c) or 5
+  local fan_cut = tonumber(p and p.fan_cut_pct) or 20
+  local walls = tonumber(p and p.wall_loops) or 4
+  local shells = tonumber(p and p.shell_layers) or 5
+  local overlap = tonumber(p and p.wall_overlap_pct) or 20
+  local pattern = (p and p.infill_pattern) or "gyroid"
+  local alt_wall = (p and p.alternate_extra_wall) or "1"
 
   -- Filament-level side-channel (applied per spool & clamped per polymer on export)
-  config["_structural_temp_boost_c"] = tostring(c.boost)
-  config["_structural_fan_cut_pct"] = tostring(c.fan_cut)
+  config["_structural_temp_boost_c"] = fmt_num(boost, "%.0f")
+  config["_structural_fan_cut_pct"] = fmt_num(fan_cut, "%.0f")
 
   -- Live preview of the active filament (clamped to the active polymer's safe max when known)
-  local noz_max = tonumber(ctx and ctx.filament_nozzle_max_c) or 400
-  local cur_noz = tonumber(config["nozzle_temperature"])
-  if cur_noz then
-    set_like(config, "nozzle_temperature", tostring(math.min(noz_max, cur_noz + c.boost)))
+  local noz_max = scalar_num(ctx and ctx.filament_nozzle_max_c, 400)
+  for _, nk in ipairs({ "nozzle_temperature", "nozzle_temperature_HS", "nozzle_temperature_BRASS" }) do
+    local cur_noz = scalar_num(config[nk], nil)
+    if cur_noz then
+      set_like(config, nk, fmt_num(math.min(noz_max, cur_noz + boost), "%.0f"))
+    end
   end
-  local cur_init = tonumber(config["nozzle_temperature_initial_layer"])
-  if cur_init then
-    set_like(config, "nozzle_temperature_initial_layer", tostring(math.min(noz_max, cur_init + c.boost)))
+  for _, ik in ipairs({ "nozzle_temperature_initial_layer", "nozzle_temperature_initial_layer_HS", "nozzle_temperature_initial_layer_BRASS" }) do
+    local cur_init = scalar_num(config[ik], nil)
+    if cur_init then
+      set_like(config, ik, fmt_num(math.min(noz_max, cur_init + boost), "%.0f"))
+    end
   end
-  local cur_fan = tonumber(config["fan_max_speed"])
-  if cur_fan then
-    set_like(config, "fan_max_speed", tostring(math.floor(cur_fan * (100 - c.fan_cut) / 100.0 + 0.5)))
+  for _, fk in ipairs({ "fan_max_speed", "fan_max_speed_HS", "fan_max_speed_BRASS" }) do
+    local cur_fan = scalar_num(config[fk], nil)
+    if cur_fan then
+      set_like(config, fk, fmt_num(cur_fan * (100.0 - fan_cut) / 100.0, "%.0f"))
+    end
   end
 
   -- Process-level structure
-  config["wall_loops"] = tostring(c.walls)
-  config["alternate_extra_wall"] = c.alt_wall
-  config["top_shell_layers"] = tostring(c.shells)
-  config["bottom_shell_layers"] = tostring(c.shells)
-  local lh = tonumber(config["layer_height"]) or tonumber(ctx and ctx.layer_height) or 0.20
-  local shell_mm = string.format("%.2f", c.shells * lh)
+  config["wall_loops"] = fmt_num(walls, "%.0f")
+  config["alternate_extra_wall"] = alt_wall
+  config["top_shell_layers"] = fmt_num(shells, "%.0f")
+  config["bottom_shell_layers"] = fmt_num(shells, "%.0f")
+  local lh = scalar_num(config["layer_height"], nil) or scalar_num(ctx and ctx.layer_height, 0.20)
+  local shell_mm = fmt_num(shells * lh, "%.2f")
   if config["top_shell_thickness"] ~= nil then
     config["top_shell_thickness"] = shell_mm
   end
   if config["bottom_shell_thickness"] ~= nil then
     config["bottom_shell_thickness"] = shell_mm
   end
-  config["infill_wall_overlap"] = string.format("%d%%", c.overlap)
-  config["sparse_infill_pattern"] = c.pattern
+  config["infill_wall_overlap"] = fmt_pct(overlap, "%.0f")
+  config["sparse_infill_pattern"] = pattern
   sync_coupled_physics(config, ctx)
 
   local d = describe(p or {}, ctx)

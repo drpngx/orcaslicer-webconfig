@@ -1064,6 +1064,26 @@ impl FilamentSpool {
     }
   }
 
+  /// Clamps a spool's working temperatures (`print_temp`, `brass_base_temp`, `hs_base_temp`,
+  /// `base_print_temp`, `bed_temp`, `base_bed_temp`) to the active machine's rated hotend and
+  /// heated-bed ceilings whenever the polymer's safe melt/bed floor fits within the machine's
+  /// hardware limits (e.g. `Anycubic ABS` clamping from `110°C` down to `100°C` on `Anycubic Kobra 3`).
+  pub fn clamp_to_machine_limits(&mut self, printer_model: &str) {
+    let mc = crate::catalog::machine_constants(printer_model);
+    let (min_noz, _) = Self::polymer_safe_nozzle_bounds(&self.material_type);
+    let (min_bed, _) = Self::polymer_safe_bed_bounds(&self.material_type);
+    if min_noz <= mc.max_hotend_temp_c {
+      self.print_temp = self.print_temp.clamp(min_noz, mc.max_hotend_temp_c);
+      self.base_print_temp = self.base_print_temp.clamp(min_noz, mc.max_hotend_temp_c);
+      self.brass_base_temp = self.brass_base_temp.clamp(min_noz, mc.max_hotend_temp_c);
+      self.hs_base_temp = self.hs_base_temp.clamp(min_noz, mc.max_hotend_temp_c);
+    }
+    if min_bed <= mc.max_bed_temp_c {
+      self.bed_temp = self.bed_temp.clamp(min_bed, mc.max_bed_temp_c);
+      self.base_bed_temp = self.base_bed_temp.clamp(min_bed, mc.max_bed_temp_c);
+    }
+  }
+
   /// Returns a compatibility warning if:
   /// 1. The filament is abrasive (`required_nozzle_hrc > 3 && required_nozzle_hrc > rig_nozzle_hrc`, e.g. `-CF`/`-GF` on a Brass nozzle), OR
   /// 2. The filament had a disk override tuned for Hardened Steel (`_HS`) and the active rig is using a different nozzle type.
@@ -1139,33 +1159,57 @@ impl FilamentSpool {
     effective_temp: i32,
     initial_temp: i32,
   ) -> (i32, i32) {
+    Self::compute_nozzle_temp_range_for_machine(
+      material_type,
+      effective_temp,
+      initial_temp,
+      crate::constants::constants().hardware_limits.max_hotend_temp_c,
+    )
+  }
+
+  /// Computes `[nozzle_temperature_range_low, nozzle_temperature_range_high]` bounded from above
+  /// by `machine_max_hotend_c` (so a `260°C`-rated PTFE hotend never advertises `range_high = "300"`).
+  pub fn compute_nozzle_temp_range_for_machine(
+    material_type: &str,
+    effective_temp: i32,
+    initial_temp: i32,
+    machine_max_hotend_c: i32,
+  ) -> (i32, i32) {
     let c = crate::constants::constants();
     let hw = &c.hardware_limits;
+    let max_ceiling = machine_max_hotend_c.min(hw.max_hotend_temp_c);
     let p = c.lookup_polymer(material_type);
     if p.canonical_key == "PCL" {
-      return (hw.pcl_temp_range_low_c, hw.pcl_temp_range_high_c);
+      return (
+        hw.pcl_temp_range_low_c,
+        hw.pcl_temp_range_high_c.min(max_ceiling),
+      );
     }
-    let max_t = effective_temp.max(initial_temp);
-    let min_t = effective_temp.min(initial_temp);
+    let max_t = effective_temp.max(initial_temp).min(max_ceiling);
+    let min_t = effective_temp.min(initial_temp).min(max_t);
     if max_t > 265 || !p.standard_ams_compatible {
       let low = hw
         .high_temp_range_low_c
         .min(min_t)
-        .max(hw.standard_ams_range_low_c);
+        .max(hw.standard_ams_range_low_c)
+        .min(max_ceiling);
       let high = hw
         .high_temp_range_high_c
         .max(max_t)
-        .min(hw.max_hotend_temp_c);
+        .min(max_ceiling)
+        .max(low);
       (low, high)
     } else {
       let low = hw
         .standard_ams_range_low_c
         .min(min_t - 10)
-        .max(hw.min_extrusion_temp_c);
+        .max(hw.min_extrusion_temp_c)
+        .min(max_ceiling);
       let high = hw
         .standard_ams_range_high_c
         .max(max_t)
-        .min(hw.max_hotend_temp_c);
+        .min(max_ceiling)
+        .max(low);
       (low, high)
     }
   }
@@ -1234,7 +1278,7 @@ impl FilamentSpool {
         &self.finish_type,
         active_nozzle_type,
       );
-      self.rebuild_synthetic_disk_json(active_nozzle_type);
+      self.refresh_thermal_deltas(active_nozzle_type);
     } else {
       // Brand has no dedicated catalog entry for this polymer (e.g., Overture + PETG, or Siraya Tech + PETG):
       // Keep the user's selected polymer (`target_canon`) and finish (`cur_finish`) and apply the new brand!
@@ -1254,7 +1298,7 @@ impl FilamentSpool {
         &self.finish_type,
         active_nozzle_type,
       );
-      self.rebuild_synthetic_disk_json(active_nozzle_type);
+      self.refresh_thermal_deltas(active_nozzle_type);
     }
   }
 
@@ -1595,7 +1639,7 @@ impl FilamentSpool {
     } else {
       c.hardware_limits.non_abrasive_required_hrc
     };
-    self.rebuild_synthetic_disk_json(active_nozzle_type);
+    self.refresh_thermal_deltas(active_nozzle_type);
   }
 
   /// Single source of truth for whether a material code or surface finish contains abrasive particles
@@ -1820,16 +1864,13 @@ impl FilamentSpool {
         prefix_b, clean_mat, clamped_shore, right_suffix
       );
     }
-    self.rebuild_synthetic_disk_json(active_nozzle_type);
+    self.refresh_thermal_deltas(active_nozzle_type);
   }
 
-  pub fn rebuild_synthetic_disk_json(&mut self, active_nozzle_type: &str) {
-    let c = crate::constants::constants();
+  /// Updates `deltas_from_base` for UI display without synthesizing or caching fake JSON into
+  /// `raw_disk_json` (`raw_disk_json` is reserved strictly for actual files imported from disk).
+  pub fn refresh_thermal_deltas(&mut self, active_nozzle_type: &str) {
     let short_noz = MachineRig::short_nozzle_tag_for_type(active_nozzle_type);
-    let poly_cfg = c.lookup_polymer(&self.material_type);
-    let is_foaming_tpu = self.is_foaming_tpu();
-    let init_boost = poly_cfg.initial_layer_temp_boost_c(is_foaming_tpu);
-
     self.deltas_from_base.clear();
     if self.print_temp != self.brass_base_temp {
       self.deltas_from_base.push(FilamentDeltaEntry {
@@ -1844,102 +1885,9 @@ impl FilamentSpool {
         ),
       });
     }
-
-    let norm_brand = Self::normalized_brand(&self.brand);
-    let catalog = crate::catalog::load_merged_catalog();
-    let vkey = format!("{}::{}", norm_brand, self.material_type);
-    let vendor_base = catalog.vendor_filament_bases.get(&vkey);
-    let ret_len_val = if self.is_siraya_foaming_air() {
-      0.0
-    } else if is_foaming_tpu {
-      0.35
-    } else {
-      poly_cfg.default_retraction_mm as f64
-    };
-    let ret_len_str = crate::constants::PolymerConstants::format_retraction_mm(ret_len_val);
-    let ret_spd_str = if is_foaming_tpu {
-      "25".to_string()
-    } else {
-      poly_cfg.default_retraction_speed_mms.to_string()
-    };
-    let fan_max_str = poly_cfg
-      .resolve_fan_max_pct(self.fan_speed_percent)
-      .to_string();
-
-    let mut json_map = serde_json::Map::new();
-    if let Some(vb) = vendor_base {
-      for (k, v) in vb {
-        if k != "compatible_printers" {
-          json_map.insert(k.clone(), v.clone());
-        }
-      }
+    if !self.id.starts_with("disk_") {
+      self.raw_disk_json = None;
     }
-    let (range_low, range_high) = Self::compute_nozzle_temp_range(
-      &self.material_type,
-      self.print_temp.min(self.brass_base_temp),
-      (self.print_temp.max(self.hs_base_temp) + init_boost).min(420),
-    );
-    let (z_hop_str, z_hop_type_str, retract_before_wipe_str) =
-      poly_cfg.resolve_z_hop_and_retract_before_wipe(&self.finish_type, is_foaming_tpu);
-    let overrides = serde_json::json!({
-      "from": "User",
-      "inherits": self.inherits,
-      "name": self.name,
-      "filament_vendor": [norm_brand],
-      "filament_settings_id": [self.name],
-      "filament_type": [self.material_type],
-      "required_nozzle_HRC": [self.required_nozzle_hrc.to_string()],
-      "filament_colour": [self.color_hex],
-      "default_filament_colour": [self.color_hex],
-      "nozzle_temperature": [self.print_temp.to_string()],
-      "nozzle_temperature_BRASS": [self.brass_base_temp.to_string()],
-      "nozzle_temperature_HS": [self.hs_base_temp.to_string()],
-      "nozzle_temperature_initial_layer": [(self.print_temp + init_boost).min(420).to_string()],
-      "nozzle_temperature_initial_layer_BRASS": [(self.brass_base_temp + init_boost).min(420).to_string()],
-      "nozzle_temperature_initial_layer_HS": [(self.hs_base_temp + init_boost).min(420).to_string()],
-      "nozzle_temperature_range_low": [range_low.to_string()],
-      "nozzle_temperature_range_high": [range_high.to_string()],
-      "hot_plate_temp": [self.bed_temp.to_string()],
-      "hot_plate_temp_initial_layer": [self.bed_temp.to_string()],
-      "textured_plate_temp": [self.bed_temp.to_string()],
-      "textured_plate_temp_initial_layer": [self.bed_temp.to_string()],
-      "cool_plate_temp": [self.bed_temp.to_string()],
-      "cool_plate_temp_initial_layer": [self.bed_temp.to_string()],
-      "eng_plate_temp": [self.bed_temp.to_string()],
-      "eng_plate_temp_initial_layer": [self.bed_temp.to_string()],
-      "textured_cool_plate_temp": [self.bed_temp.to_string()],
-      "textured_cool_plate_temp_initial_layer": [self.bed_temp.to_string()],
-      "supertack_plate_temp": [self.bed_temp.to_string()],
-      "supertack_plate_temp_initial_layer": [self.bed_temp.to_string()],
-      "filament_flow_ratio": [format!("{:.2}", self.flow_ratio)],
-      "enable_pressure_advance": ["1"],
-      "pressure_advance": [format!("{:.3}", self.pressure_advance)],
-      "temperature_vitrification": [(self.bed_temp + 10).max(55).to_string()],
-      "filament_max_volumetric_speed": [format!("{:.1}", self.max_volumetric_speed)],
-      "fan_min_speed": [self.fan_speed_percent.to_string()],
-      "fan_min_speed_BRASS": [self.fan_speed_percent.to_string()],
-      "fan_min_speed_HS": [self.fan_speed_percent.to_string()],
-      "fan_max_speed": [fan_max_str],
-      "fan_max_speed_BRASS": [fan_max_str],
-      "fan_max_speed_HS": [fan_max_str],
-      "filament_retraction_length": [ret_len_str],
-      "filament_retraction_speed": [ret_spd_str],
-      "filament_z_hop": [z_hop_str],
-      "filament_z_hop_types": [z_hop_type_str],
-      "filament_retract_before_wipe": [retract_before_wipe_str],
-      "filament_deretraction_speed": ["0"],
-      "filament_wipe": ["1"],
-      "filament_wipe_distance": ["2"],
-      "version": WEBCONFIG_ORCA_PRESET_VERSION
-    });
-    if let serde_json::Value::Object(ov_obj) = overrides {
-      for (k, v) in ov_obj {
-        json_map.insert(k, v);
-      }
-    }
-
-    self.raw_disk_json =
-      Some(serde_json::to_string_pretty(&serde_json::Value::Object(json_map)).unwrap_or_default());
   }
 
   /// Creates a clean `FilamentSpool` from a `CatalogFilament` entry (using the active rig's nozzle type),
@@ -1972,7 +1920,7 @@ impl FilamentSpool {
       poly_cfg.default_flow_ratio
     };
     let norm_brand = Self::normalized_brand(&mat.brand);
-    let inherits = c.resolve_filament_inherits_with_finish(
+    let inherits = crate::catalog::load_merged_catalog().resolve_filament_inherits(
       "Anycubic Kobra S1",
       "0.4",
       &base_mat_code,
@@ -2476,7 +2424,7 @@ impl SpoolmanSpool {
       &spool.finish_type,
       active_nozzle_type,
     );
-    spool.rebuild_synthetic_disk_json(active_nozzle_type);
+    spool.refresh_thermal_deltas(active_nozzle_type);
     spool
   }
 
@@ -3049,11 +2997,14 @@ impl WebConfigStateSnapshot {
       .filaments
       .iter()
       .any(|f| f.name.starts_with("OC -") || f.name.starts_with("OC:"));
-    let active_noz_for_sanitize = self
+    let active_rig_for_fils = self
       .machines
       .iter()
       .find(|m| m.id == self.active_machine_id)
       .or_else(|| self.machines.first())
+      .cloned();
+    let active_noz_for_sanitize = active_rig_for_fils
+      .as_ref()
       .map(|m| m.nozzle_type.clone())
       .unwrap_or_else(|| "hardened_steel".to_string());
     for sp in &mut self.filaments {
@@ -3086,7 +3037,7 @@ impl WebConfigStateSnapshot {
           upgraded.color_hex = col_hex;
           upgraded.color_name = col_name;
           upgraded.is_loaded = is_loaded;
-          upgraded.rebuild_synthetic_disk_json(&active_noz_for_sanitize);
+          upgraded.refresh_thermal_deltas(&active_noz_for_sanitize);
           *sp = upgraded;
         }
       }
@@ -3233,18 +3184,27 @@ impl WebConfigStateSnapshot {
         if !sp.is_foaming_tpu() {
           let noz = sp.nozzle_type.clone();
           sp.recompute_for_nozzle(&noz);
-          sp.rebuild_synthetic_disk_json(&noz);
-        } else if let Some(ref raw) = sp.raw_disk_json {
-          if let Ok(serde_json::Value::Object(mut rmap)) =
-            serde_json::from_str::<serde_json::Value>(raw)
-          {
-            if rmap.remove("compatible_printers").is_some() {
-              sp.raw_disk_json =
-                serde_json::to_string_pretty(&serde_json::Value::Object(rmap)).ok();
+          if let Some(ref rig_ref) = active_rig_for_fils {
+            sp.clamp_to_machine_limits(&rig_ref.printer_model);
+          }
+          sp.refresh_thermal_deltas(&noz);
+        } else {
+          if let Some(ref rig_ref) = active_rig_for_fils {
+            sp.clamp_to_machine_limits(&rig_ref.printer_model);
+          }
+          if let Some(ref raw) = sp.raw_disk_json {
+            if let Ok(serde_json::Value::Object(mut rmap)) =
+              serde_json::from_str::<serde_json::Value>(raw)
+            {
+              if rmap.remove("compatible_printers").is_some() {
+                sp.raw_disk_json =
+                  serde_json::to_string_pretty(&serde_json::Value::Object(rmap)).ok();
+              }
             }
           }
         }
-        sp.inherits = crate::threemf::resolve_kobra_s1_filament_inherits(sp);
+        sp.inherits =
+          crate::threemf::resolve_filament_inherits_for_rig(sp, active_rig_for_fils.as_ref());
         sp.deltas_from_base.retain(|d| d.param_key != "inherits");
         for d in &mut sp.deltas_from_base {
           d.reconstructed_by_lua = true;
@@ -3312,14 +3272,20 @@ impl WebConfigStateSnapshot {
         mach.notes = mach.generate_descriptive_notes();
       }
     }
-    let short_mach = self
+    let active_rig_clone = self
       .machines
       .iter()
       .find(|m| m.id == self.active_machine_id)
       .or_else(|| self.machines.first())
+      .cloned();
+    let short_mach = active_rig_clone
+      .as_ref()
       .map(|m| m.short_model_tag())
       .unwrap_or_else(|| "Kobra S1".to_string());
-    let canonical_procs = ProcessProfile::get_default_processes();
+    let canonical_procs = match active_rig_clone.as_ref() {
+      Some(r) => ProcessProfile::get_default_processes_for_rig(r),
+      None => ProcessProfile::get_default_processes(),
+    };
     for proc in &mut self.processes {
       if proc.name.contains(':') {
         proc.name = proc.name.replace(": ", " - ").replace(':', "-");
@@ -3328,8 +3294,8 @@ impl WebConfigStateSnapshot {
         || proc.name.starts_with("OC -")
         || proc.id.starts_with("proc_")
       {
-        if proc.print_sequence.eq_ignore_ascii_case("by layer") {
-          proc.print_sequence = "by object".to_string();
+        if proc.print_sequence.trim().is_empty() {
+          proc.print_sequence = "by layer".to_string();
         }
         if let Some(canon) = canonical_procs
           .iter()
@@ -3351,7 +3317,9 @@ impl WebConfigStateSnapshot {
             proc.inherits = canon.inherits.clone();
           }
         }
-        if proc.inherits == "fdm_process_common" || proc.inherits.trim().is_empty() {
+        if let Some(ref rig_ref) = active_rig_clone {
+          proc.inherits = proc.resolve_inherits_for_rig(rig_ref);
+        } else if proc.inherits == "fdm_process_common" || proc.inherits.trim().is_empty() {
           proc.inherits = if (proc.layer_height - 0.12).abs() < 0.015 {
             "0.12mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string()
           } else if (proc.layer_height - 0.28).abs() < 0.015 {
@@ -3591,6 +3559,124 @@ impl ProcessProfile {
     )
   }
 
+  /// Resolves a guaranteed-valid system process `inherits` parent name for `rig`, preventing
+  /// `@Anycubic Kobra S1` process presets from leaking onto `Bambu Lab`, `Creality`, `Prusa`,
+  /// `Voron`, `Sovol`, or other `Anycubic` (`Kobra 3`, `Kobra 4`, `Kobra S1 Max`, `Kobra 2`) rigs.
+  pub fn resolve_inherits_for_rig(&self, rig: &MachineRig) -> String {
+    let cat = crate::catalog::load_merged_catalog();
+    let noz_str = rig.formatted_nozzle_diameter();
+    if let Some(cm) = cat.find_machine(&rig.printer_model) {
+      if !self.inherits.trim().is_empty()
+        && self.inherits != "fdm_process_common"
+        && cm.process_presets.contains(&self.inherits)
+      {
+        return self.inherits.clone();
+      }
+      if !cm.process_presets.is_empty() {
+        let lh_prefix = format!("{:.2}mm", self.layer_height);
+        let wants_hq = self.outer_wall_speed <= 95.0
+          || self.name.contains("Quality")
+          || self.id.contains("hq")
+          || self.inherits.contains("Quality")
+          || self.inherits.contains("Fine");
+        let mut best: Option<(i32, &String)> = None;
+        for cand in &cm.process_presets {
+          let mut score = 0i32;
+          if cand.starts_with(&lh_prefix) {
+            score += 200;
+          } else if let Some(mm_pos) = cand.find("mm ") {
+            if let Ok(c_lh) = cand[..mm_pos].trim().parse::<f64>() {
+              let diff = (c_lh - self.layer_height).abs();
+              score += (120.0 - (diff * 500.0)).round() as i32;
+            }
+          }
+          if cand.contains(&format!("{} nozzle", noz_str)) || cand.ends_with(&format!(" {}", noz_str))
+          {
+            score += 60;
+          } else if !cand.contains(" nozzle") {
+            score += 30;
+          }
+          let cand_up = cand.to_uppercase();
+          if wants_hq {
+            if cand_up.contains("HIGH QUALITY")
+              || cand_up.contains("QUALITY")
+              || cand_up.contains("FINE")
+              || cand_up.contains("DETAIL")
+            {
+              score += 40;
+            }
+          } else if cand_up.contains("STANDARD")
+            || cand_up.contains("OPTIMAL")
+            || cand_up.contains("SPEED")
+            || cand_up.contains("DRAFT")
+          {
+            score += 40;
+          }
+          if cand == &cm.default_print_profile {
+            score += 15;
+          }
+          match best {
+            None => best = Some((score, cand)),
+            Some((prev_s, _)) if score > prev_s => best = Some((score, cand)),
+            _ => {}
+          }
+        }
+        if let Some((_, chosen)) = best {
+          return chosen.clone();
+        }
+      }
+      if !cm.default_print_profile.is_empty() {
+        return cm.default_print_profile.clone();
+      }
+    }
+    if !self.inherits.trim().is_empty()
+      && self.inherits != "fdm_process_common"
+      && !self.inherits.contains("@Anycubic Kobra S1")
+    {
+      return self.inherits.clone();
+    }
+    format!("0.20mm Standard @{} {} nozzle", rig.printer_model, noz_str)
+  }
+
+  /// Builds the 5 canonical process tiers tailored to `rig` (scaling speeds & accelerations
+  /// down cleanly when `rig` is a Marlin / bed-slinger printer whose native `default_print_profile`
+  /// runs slower than Kobra S1 CoreXY, and resolving `inherits` against `rig`'s real presets).
+  pub fn get_default_processes_for_rig(rig: &MachineRig) -> Vec<Self> {
+    let cat = crate::catalog::load_merged_catalog();
+    let short_tag = rig.short_model_tag();
+    let (spd_scale, acc_scale) = if let Some(cm) = cat.find_machine(&rig.printer_model) {
+      let s = if cm.default_outer_wall_speed > 0.0 && cm.default_outer_wall_speed < 200.0 {
+        (cm.default_outer_wall_speed as f64 / 200.0).clamp(0.20, 1.0)
+      } else {
+        1.0
+      };
+      let a = if cm.default_acceleration > 0.0 && cm.default_acceleration < 10000.0 {
+        (cm.default_acceleration as f64 / 10000.0).clamp(0.05, 1.0)
+      } else {
+        1.0
+      };
+      (s, a)
+    } else {
+      (1.0, 1.0)
+    };
+    let mut procs = Self::get_default_processes();
+    for p in &mut procs {
+      if spd_scale < 0.999 {
+        p.outer_wall_speed = (p.outer_wall_speed * spd_scale).round().max(25.0);
+        p.inner_wall_speed = (p.inner_wall_speed * spd_scale).round().max(35.0);
+        p.sparse_infill_speed = (p.sparse_infill_speed * spd_scale).round().max(40.0);
+        p.initial_layer_speed = (p.initial_layer_speed * spd_scale.max(0.50)).round().max(20.0);
+      }
+      if acc_scale < 0.999 {
+        p.default_acceleration = (p.default_acceleration * acc_scale).round().max(500.0);
+      }
+      p.inherits = p.resolve_inherits_for_rig(rig);
+      p.name = p.format_concise_title(&short_tag);
+      p.notes = p.generate_descriptive_notes();
+    }
+    procs
+  }
+
   pub fn get_default_processes() -> Vec<Self> {
     // 1. 0.20mm Standard (Balanced structural strength & everyday speed)
     let mut std_020 = ProcessProfile {
@@ -3604,7 +3690,7 @@ impl ProcessProfile {
       sparse_infill_speed: 270.0,
       initial_layer_speed: 50.0,
       default_acceleration: 10000.0,
-      print_sequence: "by object".to_string(),
+      print_sequence: "by layer".to_string(),
       wall_generator: "arachne".to_string(),
       notes: String::new(),
     };
@@ -3623,7 +3709,7 @@ impl ProcessProfile {
       sparse_infill_speed: 250.0,
       initial_layer_speed: 50.0,
       default_acceleration: 5000.0,
-      print_sequence: "by object".to_string(),
+      print_sequence: "by layer".to_string(),
       wall_generator: "arachne".to_string(),
       notes: String::new(),
     };
@@ -3642,7 +3728,7 @@ impl ProcessProfile {
       sparse_infill_speed: 350.0,
       initial_layer_speed: 60.0,
       default_acceleration: 15000.0,
-      print_sequence: "by object".to_string(),
+      print_sequence: "by layer".to_string(),
       wall_generator: "arachne".to_string(),
       notes: String::new(),
     };
@@ -3661,7 +3747,7 @@ impl ProcessProfile {
       sparse_infill_speed: 200.0,
       initial_layer_speed: 50.0,
       default_acceleration: 5000.0,
-      print_sequence: "by object".to_string(),
+      print_sequence: "by layer".to_string(),
       wall_generator: "arachne".to_string(),
       notes: String::new(),
     };
@@ -3680,7 +3766,7 @@ impl ProcessProfile {
       sparse_infill_speed: 320.0,
       initial_layer_speed: 60.0,
       default_acceleration: 12000.0,
-      print_sequence: "by object".to_string(),
+      print_sequence: "by layer".to_string(),
       wall_generator: "arachne".to_string(),
       notes: String::new(),
     };

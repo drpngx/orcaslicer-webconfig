@@ -78,11 +78,11 @@ function apply(config, ctx, p)
 
   config["seam_slope_type"] = "all"
   config["seam_slope_conditional"] = "1"
-  local cur_sl = tonumber(config["seam_slope_min_length"]) or 16
-  config["seam_slope_min_length"] = tostring(math.max(10, math.floor(cur_sl * s_scale + 0.5)))
+  local cur_sl = scalar_num(config["seam_slope_min_length"], 16)
+  config["seam_slope_min_length"] = fmt_num(math.max(10, cur_sl * s_scale), "%.0f")
   config["seam_slope_steps"] = "15"
-  local cur_gap = tonumber(config["seam_gap"]) or 8
-  config["seam_gap"] = tostring(math.max(2, math.min(20, math.floor(cur_gap + gap_delta)))) .. "%"
+  local cur_gap = scalar_num(config["seam_gap"], 8)
+  config["seam_gap"] = fmt_pct(math.max(2, math.min(20, cur_gap + gap_delta)), "%.0f")
   config["wipe_on_loops"] = "1"
   local d = describe(p or {}, ctx)
   print("[Symptom:VisibleSeam] " .. (d.badge or ""))

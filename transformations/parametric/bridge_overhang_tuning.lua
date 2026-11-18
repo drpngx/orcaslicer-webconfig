@@ -227,22 +227,40 @@ end
 
 function apply(config, ctx, p)
   local bf = tonumber(p and p.bridge_flow) or 0.92
-  local bs = math.floor((tonumber(p and p.bridge_speed) or 28) + 0.5)
-  local s1 = math.floor((tonumber(p and p.overhang_1_4_speed) or 50) + 0.5)
-  local s2 = math.floor((tonumber(p and p.overhang_2_4_speed) or 35) + 0.5)
-  local s3 = math.floor((tonumber(p and p.overhang_3_4_speed) or 22) + 0.5)
-  local s4 = math.floor((tonumber(p and p.overhang_4_4_speed) or 15) + 0.5)
-  local fan = math.floor((tonumber(p and p.overhang_fan_speed) or 100) + 0.5)
+  local bs = tonumber(p and p.bridge_speed) or 28
+  local s1 = tonumber(p and p.overhang_1_4_speed) or 50
+  local s2 = tonumber(p and p.overhang_2_4_speed) or 35
+  local s3 = tonumber(p and p.overhang_3_4_speed) or 22
+  local s4 = tonumber(p and p.overhang_4_4_speed) or 15
+  local fan = tonumber(p and p.overhang_fan_speed) or 100
+
+  local cur_ow = scalar_num(config["outer_wall_speed"], nil)
+  if cur_ow ~= nil and cur_ow > 0 then
+    s1 = math.min(s1, cur_ow)
+    s2 = math.min(s2, s1)
+    s3 = math.min(s3, s2)
+    s4 = math.min(s4, s3)
+    bs = math.min(bs, cur_ow)
+  end
+  if ctx and ctx.filament_is_warp_prone == true then
+    fan = math.min(fan, 35)
+  end
 
   config["bridge_flow"] = fmt_num(bf, "%.2f")
-  config["bridge_speed"] = tostring(bs)
+  config["bridge_speed"] = fmt_num(bs, "%.0f")
   config["enable_overhang_speed"] = "1"
   config["detect_overhang_wall"] = "1"
-  config["overhang_1_4_speed"] = tostring(s1)
-  config["overhang_2_4_speed"] = tostring(s2)
-  config["overhang_3_4_speed"] = tostring(s3)
-  config["overhang_4_4_speed"] = tostring(s4)
-  config["overhang_fan_speed"] = tostring(fan)
+  config["overhang_1_4_speed"] = fmt_num(s1, "%.0f")
+  config["overhang_2_4_speed"] = fmt_num(s2, "%.0f")
+  config["overhang_3_4_speed"] = fmt_num(s3, "%.0f")
+  config["overhang_4_4_speed"] = fmt_num(s4, "%.0f")
+  local fan_str = fmt_num(fan, "%.0f")
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  if type(config["overhang_fan_speed"]) == "table" or (config["overhang_fan_speed"] == nil and prof_arr) then
+    config["overhang_fan_speed"] = { fan_str }
+  else
+    config["overhang_fan_speed"] = fan_str
+  end
 
   local d = describe(p or {}, ctx)
   print("[Pack:BridgeOverhangTuning] " .. (d.badge or ""))

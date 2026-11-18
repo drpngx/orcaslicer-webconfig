@@ -119,7 +119,7 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local temp_drop = math.floor(tonumber(p and p.temp_drop) or -3)
+  local temp_drop = tonumber(p and p.temp_drop) or -3
   local retract_boost = tonumber(p and p.retract_boost) or 0.15
   local z_hop = (p and p.z_hop_style) or "Spiral Lift"
   if z_hop == "Spiral" then z_hop = "Spiral Lift" end
@@ -130,19 +130,35 @@ function apply(config, ctx, p)
   if z_hop == "Slope Lift" then zh_mult = 0.90 end
   if z_hop == "Normal Lift" then zh_mult = 1.00 end
 
-  local cur_t = tonumber(config["nozzle_temperature"]) or 255
-  config["nozzle_temperature"] = fmt_num(cur_t + temp_drop, "%.0f")
-  local cur_r = tonumber(config["filament_retraction_length"]) or 0.80
-  config["filament_retraction_length"] = fmt_num(cur_r + retract_boost, "%.2f")
-  local cur_d = tonumber(config["filament_deretraction_speed"]) or 40
-  config["filament_deretraction_speed"] = fmt_num(math.max(15, cur_d * 0.75), "%.0f")
-  local cur_lh = tonumber(config["layer_height"]) or 0.20
-  config["filament_z_hop"] = fmt_num(cur_lh * zh_mult, "%.2f")
-  config["filament_z_hop_types"] = z_hop
-  config["filament_wipe"] = "1"
-  local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.40
-  config["filament_wipe_distance"] = fmt_num(noz * 5.0, "%.1f")
-  config["filament_retract_before_wipe"] = pre_wipe
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local cur_t = scalar_num(config["nozzle_temperature"], 255)
+  set_arr("nozzle_temperature", fmt_num(cur_t + temp_drop, "%.0f"))
+  for _, k in ipairs({ "nozzle_temperature_HS", "nozzle_temperature_BRASS" }) do
+    if config[k] ~= nil then
+      set_arr(k, fmt_num(scalar_num(config[k], cur_t) + temp_drop, "%.0f"))
+    end
+  end
+  local cur_r = scalar_num(config["filament_retraction_length"], 0.80)
+  set_arr("filament_retraction_length", fmt_num(cur_r + retract_boost, "%.2f"))
+  local cur_d = scalar_num(config["filament_deretraction_speed"], 0)
+  if cur_d <= 0 then
+    cur_d = scalar_num(config["filament_retraction_speed"], 40)
+  end
+  set_arr("filament_deretraction_speed", fmt_num(math.max(15, cur_d * 0.75), "%.0f"))
+  local cur_lh = scalar_num(config["layer_height"], 0.20)
+  set_arr("filament_z_hop", fmt_num(cur_lh * zh_mult, "%.2f"))
+  set_arr("filament_z_hop_types", z_hop)
+  set_arr("filament_wipe", "1")
+  local noz = scalar_num(ctx and ctx.nozzle_diameter, 0.40)
+  set_arr("filament_wipe_distance", fmt_num(noz * 5.0, "%.1f"))
+  set_arr("filament_retract_before_wipe", fmt_pct(pre_wipe, "%.0f"))
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:Stringing] " .. (d.badge or ""))

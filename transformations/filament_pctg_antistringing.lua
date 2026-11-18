@@ -62,43 +62,69 @@ function validate(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local r_len = fmt_num(tonumber(p and p.retract_len) or 1.00, "%.2f")
-  local r_spd = fmt_num(tonumber(p and p.retract_speed) or 45, "%.0f")
+  local r_len_num = tonumber(p and p.retract_len) or 1.00
+  local r_spd_num = tonumber(p and p.retract_speed) or 45
+  local r_spd = fmt_num(r_spd_num, "%.0f")
   local z_type = (p and p.zhop_type) or "Spiral Lift"
+  local ptype = (config and config["type"]) or ""
 
-  if ctx.filament_type == "PCTG" then
-    if config["nozzle_temperature"] and config["nozzle_temperature"][1] then
-      local t = tonumber(config["nozzle_temperature"][1]) or 260
-      local t0 = scalar_num(base["nozzle_temperature"], t)
-      if t0 >= 258 or t >= 258 then
-        local trimmed = tostring(t - 3)
-        config["nozzle_temperature"] = { trimmed }
-        config["nozzle_temperature_HS"] = { trimmed }
-        config["nozzle_temperature_BRASS"] = { trimmed }
-        config["nozzle_temperature_initial_layer"] = { trimmed }
-        config["nozzle_temperature_initial_layer_HS"] = { trimmed }
-        config["nozzle_temperature_initial_layer_BRASS"] = { trimmed }
+  if ptype ~= "process" then
+    if ctx.filament_type == "PCTG" then
+      if config["nozzle_temperature"] ~= nil then
+        local t = scalar_num(config["nozzle_temperature"], 260)
+        local t0 = scalar_num(base["nozzle_temperature"], t)
+        if t0 >= 258 or t >= 258 then
+          local trimmed = fmt_num(t - 3, "%.0f")
+          config["nozzle_temperature"] = { trimmed }
+          config["nozzle_temperature_HS"] = { trimmed }
+          config["nozzle_temperature_BRASS"] = { trimmed }
+          config["nozzle_temperature_initial_layer"] = { trimmed }
+          config["nozzle_temperature_initial_layer_HS"] = { trimmed }
+          config["nozzle_temperature_initial_layer_BRASS"] = { trimmed }
+        end
       end
     end
+
+    local cur_ret = scalar_num(config["filament_retraction_length"], r_len_num)
+    local base_ret = scalar_num(base["filament_retraction_length"], cur_ret)
+    local target_ret = r_len_num
+    if cur_ret >= 2.0 then
+      -- Bowden extruder (>= 2.0mm): preserve Bowden tube pullback and add only relative PCTG anti-stringing delta
+      local bowden_delta = math.max(0.0, r_len_num - 0.80)
+      target_ret = math.min(cur_ret + 0.80, math.max(cur_ret, base_ret + bowden_delta))
+    elseif cur_ret < base_ret and base_ret > 0.40 then
+      -- Earlier hardware rule (e.g. FlowTech 0.85x or CM2 0.60mm) shortened retraction for an all-metal throat:
+      -- scale proportionally instead of clobbering the throat heat-creep protection
+      target_ret = math.min(1.10, cur_ret * (r_len_num / base_ret))
+    else
+      target_ret = r_len_num
+    end
+    local r_len = fmt_num(target_ret, "%.2f")
+    config["filament_retraction_length"] = { r_len }
+    config["filament_retraction_speed"] = { r_spd }
+    config["filament_deretraction_speed"] = { "0" }
+    config["filament_retract_before_wipe"] = { "40%" }
+    config["filament_wipe"] = { "1" }
+    config["filament_wipe_distance"] = { "2.0" }
+    local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
+    if cur_zhop < 0.10 then
+      config["filament_z_hop"] = { "0.1" }
+    end
+    config["filament_z_hop_types"] = { z_type }
   end
 
-  config["filament_retraction_length"] = { r_len }
-  config["filament_retraction_speed"] = { r_spd }
-  config["filament_deretraction_speed"] = { "0" }
-  config["filament_retract_before_wipe"] = { "40%" }
-  config["filament_wipe"] = { "1" }
-  config["filament_wipe_distance"] = { "2.0" }
-  local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
-  if cur_zhop < 0.10 then
-    config["filament_z_hop"] = { "0.1" }
+  if ptype ~= "filament" then
+    local kin = string.lower((ctx and ctx.kinematics) or "")
+    if kin == "corexy" or kin == "" then
+      local cur_ta = scalar_num(config["travel_acceleration"], 10000)
+      if cur_ta < 10000 then
+        config["travel_acceleration"] = "10000"
+      end
+    end
+    config["wipe_on_loops"] = "1"
   end
-  config["filament_z_hop_types"] = { z_type }
-  local cur_ta = scalar_num(config["travel_acceleration"], 10000)
-  if cur_ta < 10000 then
-    config["travel_acceleration"] = "10000"
-  end
-  config["wipe_on_loops"] = "1"
   sync_coupled_physics(config, ctx)
 
-  print(string.format("[Filament:PCTG-AntiStringing] Retract -> %smm @ %smm/s (40%% retract-before-wipe, 2.0mm wipe), 0.10mm %s, 10000 mm/s2 travel accel", r_len, r_spd, z_type))
+  local logged_ret = scalar_num(config["filament_retraction_length"], r_len_num)
+  print(string.format("[Filament:PCTG-AntiStringing] Retract -> %.2fmm @ %smm/s (40%% retract-before-wipe, 2.0mm wipe), 0.10mm %s", logged_ret, r_spd, z_type))
 end

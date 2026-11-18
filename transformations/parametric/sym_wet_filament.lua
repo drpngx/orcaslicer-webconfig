@@ -174,30 +174,44 @@ function apply(config, ctx, p)
     return
   end
 
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  local function set_val(key, val)
+    if type(config[key]) == "table" or (config[key] == nil and prof_arr) then
+      config[key] = { val }
+    else
+      config[key] = val
+    end
+  end
+
   local cur_t = scalar_num(config["nozzle_temperature"], 250)
   local cur_init_t = scalar_num(config["nozzle_temperature_initial_layer"], cur_t)
-  local new_upper_t = tostring(cur_t + c.temp_drop)
+  local new_upper_t = fmt_num(cur_t + c.temp_drop, "%.0f")
   -- Lower upper-layer nozzle temp to stop steam boiling, but preserve full initial layer temp for PEI adhesion!
-  config["nozzle_temperature"] = new_upper_t
-  config["nozzle_temperature_HS"] = new_upper_t
-  config["nozzle_temperature_BRASS"] = tostring(scalar_num(config["nozzle_temperature_BRASS"], cur_t - 5) + c.temp_drop)
-  config["nozzle_temperature_initial_layer"] = tostring(cur_init_t)
+  set_val("nozzle_temperature", new_upper_t)
+  set_val("nozzle_temperature_HS", new_upper_t)
+  set_val("nozzle_temperature_BRASS", fmt_num(scalar_num(config["nozzle_temperature_BRASS"], cur_t - 5) + c.temp_drop, "%.0f"))
+  set_val("nozzle_temperature_initial_layer", fmt_num(cur_init_t, "%.0f"))
 
   local cur_f = scalar_num(config["filament_flow_ratio"], 0.94)
-  config["filament_flow_ratio"] = fmt_num(cur_f + c.flow_trim, "%.2f")
+  set_val("filament_flow_ratio", fmt_num(cur_f + c.flow_trim, "%.2f"))
 
   local cur_ret = scalar_num(config["filament_retraction_length"], 1.00)
-  config["filament_retraction_length"] = fmt_num(math.min(1.45, cur_ret + c.retract_add), "%.2f")
-  config["filament_retract_before_wipe"] = string.format("%d%%", c.retract_before_wipe)
-  config["filament_wipe"] = "1"
-  config["filament_wipe_distance"] = "2"
-  local is_elastomer = ctx and ctx.filament_is_elastomer == true
+  local max_wet_ret = cur_ret >= 2.0 and (cur_ret + 0.80) or 1.45
+  set_val("filament_retraction_length", fmt_num(math.min(max_wet_ret, cur_ret + c.retract_add), "%.2f"))
+  set_val("filament_retract_before_wipe", fmt_pct(c.retract_before_wipe, "%.0f"))
+  set_val("filament_wipe", "1")
+  set_val("filament_wipe_distance", "2")
+  local ft_raw = (ctx and ctx.filament_type) or (type(config["filament_type"]) == "table" and config["filament_type"][1] or config["filament_type"]) or ""
+  local ft_up = string.upper(tostring(ft_raw))
+  local is_elastomer = (ctx and ctx.filament_is_elastomer == true)
+    or string.find(ft_up, "TPU", 1, true) ~= nil
+    or string.find(ft_up, "PEBA", 1, true) ~= nil
   if not is_elastomer then
     local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
     if cur_zhop < 0.10 then
-      config["filament_z_hop"] = "0.1"
+      set_val("filament_z_hop", fmt_num(0.1, "%.1f"))
     end
-    config["filament_z_hop_types"] = "Spiral Lift"
+    set_val("filament_z_hop_types", "Spiral Lift")
   end
   config["reduce_crossing_wall"] = "1"
 
@@ -208,11 +222,11 @@ function apply(config, ctx, p)
     -- to the plate's continuous temp when no first-layer value is set.
     local boost_init_bed = function(init_key, cont_key)
       local cur = scalar_num(config[init_key], scalar_num(config[cont_key], 85))
-      config[init_key] = tostring(math.min(120, cur + c.init_bed_boost))
+      set_val(init_key, fmt_num(math.min(120, cur + c.init_bed_boost), "%.0f"))
     end
     boost_init_bed("textured_plate_temp_initial_layer", "textured_plate_temp")
     boost_init_bed("hot_plate_temp_initial_layer", "hot_plate_temp")
-    local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.40
+    local nd = scalar_num(ctx and ctx.nozzle_diameter, 0.40)
     local base_iw = 0.50 * (nd / 0.40)
     local cur_iw = scalar_num(config["initial_layer_line_width"], base_iw)
     local wet_iw_delta = (c.init_width - 0.50) * (nd / 0.40)
@@ -220,8 +234,8 @@ function apply(config, ctx, p)
     config["bottom_solid_infill_flow_ratio"] = fmt_num(c.bottom_flow, "%.2f")
     config["initial_layer_line_width"] = fmt_num(eff_init_w, "%.2f")
     if not (ctx and ctx._process_seeded) then
-      config["initial_layer_speed"] = tostring(c.init_speed)
-      config["initial_layer_infill_speed"] = tostring(c.init_infill_speed)
+      config["initial_layer_speed"] = fmt_num(c.init_speed, "%.0f")
+      config["initial_layer_infill_speed"] = fmt_num(c.init_infill_speed, "%.0f")
     end
   end
 

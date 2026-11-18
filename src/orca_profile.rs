@@ -335,13 +335,106 @@ impl OrcaProfile {
   }
 
   pub fn get_stock_kobra_s1() -> Self {
+    Self::get_stock_for_printer_model("Anycubic Kobra S1")
+  }
+
+  pub fn get_stock_for_printer_model(printer_model: &str) -> Self {
     let cat = crate::catalog::load_merged_catalog();
+    let mach_base = cat.machine_base_for_model(printer_model);
+    let proc_base = cat.process_base_for_model(printer_model);
+    let cm_opt = cat.find_machine(printer_model);
+    let effective_model = cm_opt
+      .map(|cm| cm.name.as_str())
+      .or_else(|| {
+        let trimmed = printer_model.trim();
+        if !trimmed.is_empty() {
+          Some(trimmed)
+        } else {
+          None
+        }
+      })
+      .unwrap_or("Anycubic Kobra S1");
+    let full_mach_name = cm_opt
+      .and_then(|cm| {
+        let cand = format!("{} 0.4 nozzle", cm.name);
+        if cm.machine_presets.contains(&cand) {
+          Some(cand)
+        } else {
+          cm.machine_presets.first().cloned()
+        }
+      })
+      .unwrap_or_else(|| format!("{} 0.4 nozzle", effective_model));
     let mut values = serde_json::Map::new();
-    for (k, v) in &cat.default_machine_base {
+    for (k, v) in mach_base {
       values.insert(k.clone(), v.clone());
     }
-    for (k, v) in &cat.default_process_base {
+    for (k, v) in proc_base {
       values.insert(k.clone(), v.clone());
+    }
+    if let Some(cm) = cm_opt {
+      if !cm.printable_area.is_empty() {
+        values.insert(
+          "printable_area".to_string(),
+          serde_json::json!(cm.printable_area),
+        );
+      }
+      if !cm.printable_height.is_empty() {
+        values.insert(
+          "printable_height".to_string(),
+          serde_json::json!(cm.printable_height),
+        );
+      }
+      if !cm.default_print_profile.is_empty() {
+        values.insert(
+          "default_print_profile".to_string(),
+          serde_json::json!(cm.default_print_profile),
+        );
+      }
+      if !cat.anycubic_machine_bases.contains_key(effective_model) {
+        if cm.default_retraction_mm > 0.0 {
+          let r_str =
+            crate::constants::PolymerConstants::format_retraction_mm(cm.default_retraction_mm as f64);
+          values.insert("retraction_length".to_string(), serde_json::json!([r_str]));
+        }
+        if cm.default_retraction_speed_mms > 0.0 {
+          values.insert(
+            "retraction_speed".to_string(),
+            serde_json::json!([format!("{:.0}", cm.default_retraction_speed_mms)]),
+          );
+        }
+      }
+      if !cat.anycubic_process_bases.contains_key(effective_model) {
+        if cm.default_outer_wall_speed > 0.0 {
+          values.insert(
+            "outer_wall_speed".to_string(),
+            serde_json::json!(format!("{:.0}", cm.default_outer_wall_speed)),
+          );
+        }
+        if cm.default_inner_wall_speed > 0.0 {
+          values.insert(
+            "inner_wall_speed".to_string(),
+            serde_json::json!(format!("{:.0}", cm.default_inner_wall_speed)),
+          );
+        }
+        if cm.default_sparse_infill_speed > 0.0 {
+          values.insert(
+            "sparse_infill_speed".to_string(),
+            serde_json::json!(format!("{:.0}", cm.default_sparse_infill_speed)),
+          );
+        }
+        if cm.default_initial_layer_speed > 0.0 {
+          values.insert(
+            "initial_layer_speed".to_string(),
+            serde_json::json!(format!("{:.0}", cm.default_initial_layer_speed)),
+          );
+        }
+        if cm.default_acceleration > 0.0 {
+          values.insert(
+            "default_acceleration".to_string(),
+            serde_json::json!(format!("{:.0}", cm.default_acceleration)),
+          );
+        }
+      }
     }
     if let Some(petg_base) = cat.default_filament_bases.get("PETG") {
       for (k, v) in petg_base {
@@ -361,8 +454,7 @@ impl OrcaProfile {
       ("filament_retract_lift_enforce", "retract_lift_enforce", "All Surfaces"),
     ] {
       if !values.contains_key(fil_key) {
-        let fallback = cat
-          .default_machine_base
+        let fallback = mach_base
           .get(mach_key)
           .cloned()
           .unwrap_or_else(|| serde_json::json!([default_val]));
@@ -371,7 +463,7 @@ impl OrcaProfile {
     }
     values.insert(
       "name".to_string(),
-      serde_json::Value::String("Anycubic Kobra S1 0.4 nozzle".to_string()),
+      serde_json::Value::String(full_mach_name.clone()),
     );
     values.insert(
       "type".to_string(),
@@ -383,13 +475,13 @@ impl OrcaProfile {
     );
     values.insert(
       "inherits".to_string(),
-      serde_json::Value::String("Anycubic Kobra S1 0.4 nozzle".to_string()),
+      serde_json::Value::String(full_mach_name.clone()),
     );
 
     Self {
-      name: "Anycubic Kobra S1 0.4 nozzle".to_string(),
+      name: full_mach_name.clone(),
       profile_type: "machine".to_string(),
-      inherits: Some("Anycubic Kobra S1 0.4 nozzle".to_string()),
+      inherits: Some(full_mach_name),
       from: Some("User".to_string()),
       values,
     }

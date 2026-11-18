@@ -52,7 +52,185 @@ pub struct CombinedCatalog {
   #[serde(default)]
   pub vendor_filament_bases: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
   #[serde(default)]
+  pub anycubic_machine_bases: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+  #[serde(default)]
+  pub anycubic_process_bases: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+  #[serde(default)]
   pub default_voron_base: BTreeMap<String, serde_json::Value>,
+  #[serde(default)]
+  pub instantiated_system_filaments: Vec<String>,
+  #[serde(default)]
+  pub instantiated_filament_plates: BTreeMap<String, [i16; 6]>,
+}
+
+impl CombinedCatalog {
+  /// Finds the `CatalogMachine` matching `printer_model` (exact match first, then case-insensitive
+  /// substring match).
+  pub fn find_machine(&self, printer_model: &str) -> Option<&CatalogMachine> {
+    let m = printer_model.trim();
+    if m.is_empty() {
+      return None;
+    }
+    self
+      .machines
+      .iter()
+      .find(|cm| cm.name.eq_ignore_ascii_case(m))
+      .or_else(|| {
+        let low = m.to_lowercase();
+        self
+          .machines
+          .iter()
+          .filter(|cm| !cm.name.is_empty() && low.contains(&cm.name.to_lowercase()))
+          .max_by_key(|cm| cm.name.len())
+      })
+  }
+
+  /// Resolves the sanitized base machine profile map for `printer_model` (using the
+  /// `AnycubicSlicerNext` system override for any Anycubic printer, `default_voron_base`
+  /// for Voron rigs, or falling back to `default_machine_base`).
+  pub fn machine_base_for_model(
+    &self,
+    printer_model: &str,
+  ) -> &BTreeMap<String, serde_json::Value> {
+    let m = printer_model.trim();
+    if m.to_lowercase().contains("voron") && !self.default_voron_base.is_empty() {
+      return &self.default_voron_base;
+    }
+    self
+      .anycubic_machine_bases
+      .get(m)
+      .or_else(|| {
+        self
+          .anycubic_machine_bases
+          .iter()
+          .find(|(k, _)| k.eq_ignore_ascii_case(m))
+          .map(|(_, v)| v)
+      })
+      .unwrap_or(&self.default_machine_base)
+  }
+
+  /// Resolves the sanitized `0.20mm Standard` base process profile map for `printer_model`
+  /// (using the `AnycubicSlicerNext` system override for any Anycubic printer, or falling
+  /// back to `default_process_base`).
+  pub fn process_base_for_model(
+    &self,
+    printer_model: &str,
+  ) -> &BTreeMap<String, serde_json::Value> {
+    let m = printer_model.trim();
+    self
+      .anycubic_process_bases
+      .get(m)
+      .or_else(|| {
+        self
+          .anycubic_process_bases
+          .iter()
+          .find(|(k, _)| k.eq_ignore_ascii_case(m))
+          .map(|(_, v)| v)
+      })
+      .unwrap_or(&self.default_process_base)
+  }
+
+  /// Resolves an instantiated system machine preset name for `(printer_model, nozzle_diameter)`
+  /// strictly from `CatalogMachine.machine_presets` (never fabricating non-existent names).
+  pub fn resolve_machine_inherits(&self, printer_model: &str, nozzle_diameter: &str) -> String {
+    let mc = machine_constants(printer_model);
+    let noz = if nozzle_diameter.trim().is_empty() {
+      mc.default_nozzle_diameter.as_str()
+    } else {
+      nozzle_diameter.trim()
+    };
+    if let Some(cm) = self.find_machine(printer_model) {
+      let exact = format!("{} {} nozzle", cm.name, noz);
+      if cm.machine_presets.contains(&exact) {
+        return exact;
+      }
+      if let Some(m) = cm
+        .machine_presets
+        .iter()
+        .find(|p| p.contains(&format!("{} nozzle", noz)) || p.ends_with(noz))
+        .or_else(|| {
+          cm.machine_presets
+            .iter()
+            .find(|p| p.contains("0.4 nozzle"))
+        })
+        .or_else(|| cm.machine_presets.first())
+      {
+        return m.clone();
+      }
+      return exact;
+    }
+    format!("{} {} nozzle", mc.printer_model, noz)
+  }
+
+  /// Resolves an instantiated system filament preset name for `(printer_model, nozzle_diameter,
+  /// material_type, finish_type)` strictly by foreign-key lookup against `CatalogMachine.filament_presets`
+  /// and `instantiated_system_filaments` (never fabricating string-template preset names).
+  pub fn resolve_filament_inherits(
+    &self,
+    printer_model: &str,
+    nozzle_diameter: &str,
+    material_type: &str,
+    finish_type: &str,
+  ) -> String {
+    let c = crate::constants::constants();
+    let model = if printer_model.trim().is_empty() {
+      c.machines[0].printer_model.as_str()
+    } else {
+      printer_model.trim()
+    };
+    let mc = machine_constants(model);
+    let noz = if nozzle_diameter.trim().is_empty() {
+      mc.default_nozzle_diameter.clone()
+    } else {
+      nozzle_diameter.trim().to_string()
+    };
+    let poly = c.lookup_polymer(material_type);
+    let base_code = c.resolve_base_preset_code(material_type, finish_type, &mc.vendor_prefix);
+    if let Some(cm) = self.find_machine(model) {
+      let lookup_keys = [
+        base_code,
+        material_type,
+        poly.canonical_key.as_str(),
+        poly.slicer_filament_type.as_str(),
+        poly.family.as_str(),
+        "PLA",
+      ];
+      for lk in lookup_keys {
+        if let Some(found) = cm.filament_presets.get(lk) {
+          if noz != "0.4" && found.contains("0.4 nozzle") {
+            let swapped = found.replace("0.4 nozzle", &format!("{} nozzle", noz));
+            if self.instantiated_system_filaments.contains(&swapped) {
+              return swapped;
+            }
+            for sys_cand in [
+              format!("Generic {} @System", poly.slicer_filament_type),
+              format!("Generic {} @System", poly.family),
+              "Generic PLA @System".to_string(),
+            ] {
+              if self.instantiated_system_filaments.contains(&sys_cand) {
+                return sys_cand;
+              }
+            }
+          }
+          return found.clone();
+        }
+      }
+      if let Some(first_p) = cm.filament_presets.values().next() {
+        return first_p.clone();
+      }
+    }
+    for sys_cand in [
+      format!("Generic {} @System", poly.slicer_filament_type),
+      format!("Generic {} @System", base_code),
+      format!("Generic {} @System", poly.family),
+      "Generic PLA @System".to_string(),
+    ] {
+      if self.instantiated_system_filaments.contains(&sys_cand) {
+        return sys_cand;
+      }
+    }
+    "Generic PLA @System".to_string()
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -70,6 +248,32 @@ pub struct CatalogMachine {
   pub default_ams_id: String,
   #[serde(default)]
   pub supported_ams_ids: Vec<String>,
+  #[serde(default)]
+  pub printable_area: Vec<String>,
+  #[serde(default)]
+  pub printable_height: String,
+  #[serde(default)]
+  pub default_retraction_mm: f32,
+  #[serde(default)]
+  pub default_retraction_speed_mms: f32,
+  #[serde(default)]
+  pub default_print_profile: String,
+  #[serde(default)]
+  pub default_outer_wall_speed: f32,
+  #[serde(default)]
+  pub default_inner_wall_speed: f32,
+  #[serde(default)]
+  pub default_sparse_infill_speed: f32,
+  #[serde(default)]
+  pub default_initial_layer_speed: f32,
+  #[serde(default)]
+  pub default_acceleration: f32,
+  #[serde(default)]
+  pub machine_presets: Vec<String>,
+  #[serde(default)]
+  pub process_presets: Vec<String>,
+  #[serde(default)]
+  pub filament_presets: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -289,13 +493,53 @@ fn build_merged_catalog() -> CombinedCatalog {
   let imported_vendor: CombinedCatalog = serde_json::from_str(IMPORTED_VENDOR_CATALOG_JSON)
     .expect("Invalid vendor_profiles/imported_vendor_catalog.json");
 
-  // 1. Merge machines (generated from @orcaslicer_repo + any additional)
+  // 1. Merge machines (generated from @orcaslicer_repo + any additional), preserving generated
+  // preset lists and hardware geometry when an `additional_catalog.json` entry omits them.
   let mut machines = generated.machines;
-  for m in additional.machines {
+  for mut m in additional.machines {
     if let Some(existing) = machines
       .iter_mut()
       .find(|x| x.id == m.id || x.name == m.name)
     {
+      if m.printable_area.is_empty() {
+        m.printable_area = existing.printable_area.clone();
+      }
+      if m.printable_height.is_empty() {
+        m.printable_height = existing.printable_height.clone();
+      }
+      if m.default_retraction_mm <= 0.0 {
+        m.default_retraction_mm = existing.default_retraction_mm;
+      }
+      if m.default_retraction_speed_mms <= 0.0 {
+        m.default_retraction_speed_mms = existing.default_retraction_speed_mms;
+      }
+      if m.default_print_profile.is_empty() {
+        m.default_print_profile = existing.default_print_profile.clone();
+      }
+      if m.default_outer_wall_speed <= 0.0 {
+        m.default_outer_wall_speed = existing.default_outer_wall_speed;
+      }
+      if m.default_inner_wall_speed <= 0.0 {
+        m.default_inner_wall_speed = existing.default_inner_wall_speed;
+      }
+      if m.default_sparse_infill_speed <= 0.0 {
+        m.default_sparse_infill_speed = existing.default_sparse_infill_speed;
+      }
+      if m.default_initial_layer_speed <= 0.0 {
+        m.default_initial_layer_speed = existing.default_initial_layer_speed;
+      }
+      if m.default_acceleration <= 0.0 {
+        m.default_acceleration = existing.default_acceleration;
+      }
+      if m.machine_presets.is_empty() {
+        m.machine_presets = existing.machine_presets.clone();
+      }
+      if m.process_presets.is_empty() {
+        m.process_presets = existing.process_presets.clone();
+      }
+      if m.filament_presets.is_empty() {
+        m.filament_presets = existing.filament_presets.clone();
+      }
       *existing = m;
     } else {
       machines.push(m);
@@ -437,7 +681,11 @@ fn build_merged_catalog() -> CombinedCatalog {
     default_process_base: generated.default_process_base,
     default_filament_bases,
     vendor_filament_bases,
+    anycubic_machine_bases: generated.anycubic_machine_bases,
+    anycubic_process_bases: generated.anycubic_process_bases,
     default_voron_base: generated.default_voron_base,
+    instantiated_system_filaments: generated.instantiated_system_filaments,
+    instantiated_filament_plates: generated.instantiated_filament_plates,
   }
 }
 
@@ -913,5 +1161,109 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn test_anycubic_slicer_next_fork_overrides_all_anycubic_machines_and_filaments() {
+    let cat = load_merged_catalog();
+    let expected_anycubic_models = [
+      "Anycubic Kobra 1",
+      "Anycubic Kobra 1 Plus",
+      "Anycubic Kobra 1 Max",
+      "Anycubic Kobra 2",
+      "Anycubic Kobra 2 Neo",
+      "Anycubic Kobra 2 Pro",
+      "Anycubic Kobra 2 Plus",
+      "Anycubic Kobra 2 Max",
+      "Anycubic Kobra 3",
+      "Anycubic Kobra 3 V2",
+      "Anycubic Kobra 3 Max",
+      "Anycubic Kobra 3 Max V2",
+      "Anycubic Kobra 4",
+      "Anycubic Kobra X",
+      "Anycubic Kobra S1",
+      "Anycubic Kobra S1 Max",
+    ];
+    let actual_anycubic: Vec<&str> = cat
+      .machines
+      .iter()
+      .filter(|m| m.vendor == "Anycubic")
+      .map(|m| m.name.as_str())
+      .collect();
+    assert_eq!(
+      actual_anycubic.len(),
+      expected_anycubic_models.len(),
+      "All Anycubic machines must come authoritatively from AnycubicSlicerNext: {:?}",
+      actual_anycubic
+    );
+    for model in expected_anycubic_models {
+      let m = cat
+        .machines
+        .iter()
+        .find(|m| m.name == model)
+        .unwrap_or_else(|| panic!("Missing AnycubicSlicerNext machine '{}'", model));
+      assert!(
+        cat.anycubic_machine_bases.contains_key(model),
+        "Missing AnycubicSlicerNext machine base for '{}'",
+        model
+      );
+      assert!(
+        cat.anycubic_process_bases.contains_key(model),
+        "Missing AnycubicSlicerNext process base for '{}'",
+        model
+      );
+      let is_corexy = model.contains("Kobra S1");
+      assert_eq!(
+        crate::constants::constants().kinematics_class(&m.kinematics),
+        if is_corexy { "corexy" } else { "bedslinger" },
+        "Wrong kinematics class for '{}' ({})",
+        model,
+        m.kinematics
+      );
+    }
+
+    let kobra_4 = cat
+      .machines
+      .iter()
+      .find(|m| m.name == "Anycubic Kobra 4")
+      .unwrap();
+    assert!(kobra_4
+      .supported_ams_ids
+      .contains(&"ace_pro_single".to_string()));
+
+    // Verify per-machine printable_area comes from AnycubicSlicerNext (e.g. Kobra S1 Max = 350x350)
+    let s1_max_base = cat.machine_base_for_model("Anycubic Kobra S1 Max");
+    assert_eq!(
+      s1_max_base.get("printable_height"),
+      Some(&serde_json::json!("350"))
+    );
+
+    let ac_abs = cat
+      .filaments
+      .iter()
+      .find(|f| f.brand == "Anycubic" && f.code == "ABS")
+      .expect("Anycubic ABS must exist in merged catalog");
+    assert_eq!(ac_abs.base_bed_c, 110);
+    assert_eq!(ac_abs.base_nozzle_c, 260);
+    assert_eq!(ac_abs.fan_pct, 20);
+    assert!((ac_abs.max_vol_mm3s - 15.0).abs() < 0.05);
+    assert!(ac_abs.source.contains("AnycubicSlicerNext System Override"));
+
+    let gen_abs = cat
+      .filaments
+      .iter()
+      .find(|f| f.brand == "Generic" && f.code == "ABS")
+      .expect("Generic ABS must exist in merged catalog");
+    assert_eq!(gen_abs.base_bed_c, 110);
+    assert_eq!(gen_abs.base_nozzle_c, 260);
+
+    let ac_asa = cat
+      .filaments
+      .iter()
+      .find(|f| f.brand == "Anycubic" && f.code == "ASA")
+      .expect("Anycubic ASA must exist in merged catalog");
+    assert_eq!(ac_asa.base_bed_c, 110);
+    assert_eq!(ac_asa.base_nozzle_c, 270);
+    assert_eq!(ac_asa.fan_pct, 20);
   }
 }

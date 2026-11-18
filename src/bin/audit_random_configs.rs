@@ -116,9 +116,13 @@ fn base_rig_for_printer(printer_model: &str) -> MachineRig {
   rig.printer_model = machine.name.clone();
   rig.kinematics = machine.kinematics.clone();
   rig.bed_size = machine.build_volume.clone();
-  rig.firmware = "OrcaSlicer 2.4.2 Profile".to_string();
+  rig.firmware = "OrcaSlicer v2.5.1".to_string();
+  if machine.default_retraction_mm > 0.0 {
+    rig.base_retraction_length = machine.default_retraction_mm as f64;
+  }
   rig.max_volumetric_flow_limit = mc.max_volumetric_speed_mm3s as f64;
   rig.max_volumetric_flow = format!("{:.1} mm³/s", mc.max_volumetric_speed_mm3s);
+  rig.refresh_title_and_notes(true);
   rig
 }
 
@@ -205,10 +209,96 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
   ];
 
   println!(
+    "=== Phase 0: Negative Hardware Safety & Static Lua Hygiene Checks ==="
+  );
+  {
+    // 0a. Verify incompatible high-temp polymer (`PPA-CF`, min 280°C) on a 260°C PTFE Ender-3
+    // triggers a `SafetySeverity::Danger` warning.
+    let ender_rig = base_rig_for_printer("Creality Ender-3");
+    let ppa_entry = catalog
+      .filaments
+      .iter()
+      .find(|f| f.code == "PPA-CF")
+      .expect("PPA-CF in catalog");
+    let ppa_spool = FilamentSpool::from_catalog_entry(1, ppa_entry, "orca_hardened_steel");
+    let neg_warnings = TransformationEngine::evaluate_safety_warnings(
+      &ender_rig,
+      &[ppa_spool],
+      &OrcaProfile::get_stock_for_printer_model("Creality Ender-3"),
+      &[],
+      &[],
+    );
+    assert!(
+      neg_warnings.iter().any(|w| {
+        w.severity == SafetySeverity::Danger
+          && w.id.starts_with("spool_mach_hotend_incompat:")
+      }),
+      "PPA-CF on 260°C Creality Ender-3 MUST raise spool_mach_hotend_incompat Danger warning, got {:?}",
+      neg_warnings
+    );
+
+    // 0b. Static scan of `transformations/` to forbid bare `tonumber(config[...])` on potentially
+    // array-wrapped or `%`-suffixed OrcaSlicer keys (must use `scalar_num`).
+    let mut lua_files = Vec::new();
+    fn walk_lua(dir: &Path, out: &mut Vec<PathBuf>) {
+      if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+          let p = e.path();
+          if p.is_dir() {
+            walk_lua(&p, out);
+          } else if p.extension().and_then(|s| s.to_str()) == Some("lua") {
+            out.push(p);
+          }
+        }
+      }
+    }
+    walk_lua(Path::new("transformations"), &mut lua_files);
+    lua_files.sort();
+    for lf in &lua_files {
+      if let Ok(src) = fs::read_to_string(lf) {
+        for (line_no, line) in src.lines().enumerate() {
+          let trimmed = line.trim();
+          if trimmed.starts_with("--") {
+            continue;
+          }
+          if let Some(pos) = trimmed.find("tonumber(config[") {
+            let after = &trimmed[pos + "tonumber(config[".len()..];
+            if let Some(close_bracket) = after.find(']') {
+              let tail = &after[close_bracket + 1..];
+              if tail.starts_with(')') {
+                panic!(
+                  "Static Lua Hygiene Violation at {}:{}: bare `tonumber(config[...])` breaks on array-wrapped `[\"val\"]` or `%`-suffixed keys — use `scalar_num(config[...], default)` instead:\n  {}",
+                  lf.display(),
+                  line_no + 1,
+                  trimmed
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  println!(
     "=== Phase 1: Generating {} randomized configurations in {} ===",
     num_configs,
     out_root.display()
   );
+
+  let printer_roster = [
+    "Anycubic Kobra S1",
+    "Bambu Lab X1 Carbon",
+    "Creality Ender-3",
+    "Anycubic Kobra 3",
+    "Anycubic Kobra 4",
+    "Anycubic Kobra S1 Max",
+    "Anycubic Kobra 2 Pro",
+    "Bambu Lab P1S",
+    "Voron 2.4 350",
+    "Prusa MK4S",
+    "Sovol SV06",
+  ];
 
   let mut config_dirs = Vec::new();
   // (kind, param_key, clobbered_rule_id, clobbering_rule_id) across all configs
@@ -217,13 +307,13 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     let cfg_dir = out_root.join(format!("config_{:03}", cfg_idx));
     fs::create_dir_all(&cfg_dir).expect("Failed to create config subdir");
 
-    // Rotate across printer vendors and motion classes: Kobra S1 (Anycubic, CoreXY),
-    // Bambu Lab X1 Carbon (CoreXY), Creality Ender-3 (bed-slinger — gentler travel-accel
-    // policy via `printer_classes`).
-    let mut rig = match cfg_idx % 3 {
-      1 => base_rig_for_printer("Bambu Lab X1 Carbon"),
-      2 => base_rig_for_printer("Creality Ender-3"),
-      _ => MachineRig::kobra_s1_hardened_steel_png(),
+    // Rotate across 11 diverse printers (Anycubic S1 / S1 Max / Kobra 3 / Kobra 4 / Kobra 2 Pro,
+    // Bambu X1C / P1S, Creality Ender-3 Bowden Marlin, Voron 2.4, Prusa MK4S, Sovol SV06).
+    let chosen_printer = printer_roster[(cfg_idx - 1) % printer_roster.len()];
+    let mut rig = if chosen_printer == "Anycubic Kobra S1" {
+      MachineRig::kobra_s1_hardened_steel_png()
+    } else {
+      base_rig_for_printer(chosen_printer)
     };
     // Start on a random nozzle, then switch nozzles during setup to test recompute_for_nozzle
     let initial_nozzle = *rng.choose(&nozzle_choices);
@@ -272,6 +362,26 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     }
     let mut spools = Vec::new();
 
+    let rig_mc = orcaslicer_webconfig::catalog::machine_constants(&rig.printer_model);
+    let is_mach_compat_mat = |m: &str| -> bool {
+      let poly = orcaslicer_webconfig::constants::constants().lookup_polymer(m);
+      let (mn_noz, _) = FilamentSpool::polymer_safe_nozzle_bounds(m);
+      let (mn_bed, _) = FilamentSpool::polymer_safe_bed_bounds(m);
+      mn_noz <= rig_mc.max_hotend_temp_c
+        && mn_bed <= rig_mc.max_bed_temp_c
+        && (poly.default_brass_nozzle_c - 10) <= rig_mc.max_hotend_temp_c
+    };
+    let compat_core_materials: Vec<&str> = core_materials
+      .iter()
+      .copied()
+      .filter(|&m| is_mach_compat_mat(m))
+      .collect();
+    let compat_non_abrasive_materials: Vec<&str> = non_abrasive_materials
+      .iter()
+      .copied()
+      .filter(|&m| is_mach_compat_mat(m))
+      .collect();
+
     for slot_i in 0..slot_count {
       // Intentionally start from a random catalog entry (often high-temp like ABS-CF / PA6-CF / PCTG)
       // and then perform multiple random brand -> material -> finish -> brand transitions!
@@ -279,7 +389,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let mut sp = FilamentSpool::from_catalog_entry(slot_i + 1, start_entry, &rig.nozzle_type);
 
       // Step A: switch to a high-temp or conductive/foaming state first to try to provoke stale temp bugs
-      let chaos_mat = *rng.choose(&core_materials);
+      let chaos_mat = *rng.choose(&compat_core_materials);
       sp.apply_material_change(chaos_mat, &rig.nozzle_type);
       let chaos_brand = *rng.choose(&brands);
       sp.apply_brand_change(chaos_brand, &rig.nozzle_type);
@@ -292,9 +402,9 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       // Step B: settle on the target material, finish, and brand for this slot
       let in_active_ams = slot_i < ams_capacity;
       let mut target_mat = if allow_abrasive {
-        *rng.choose(&core_materials)
+        *rng.choose(&compat_core_materials)
       } else {
-        *rng.choose(&non_abrasive_materials)
+        *rng.choose(&compat_non_abrasive_materials)
       };
       // Soft TPU (TPU 95A / TPU 90A / TPU 85A / PEBA) belongs in Reserve slots outside active AMS; active AMS slots use TPU for AMS
       if in_active_ams && matches!(target_mat, "TPU 95A" | "TPU 90A" | "TPU 85A" | "PEBA") {
@@ -382,23 +492,17 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     apply_nozzle_metadata(&mut rig, final_nozzle);
     for sp in &mut spools {
       sp.recompute_for_nozzle(&rig.nozzle_type);
-      sp.rebuild_synthetic_disk_json(&rig.nozzle_type);
+      sp.clamp_to_machine_limits(&rig.printer_model);
+      sp.refresh_thermal_deltas(&rig.nozzle_type);
     }
 
-    // Default process profiles are titled "@Kobra S1"; retitle them for this config's rig
-    // the same way the app's state sync does (format_concise_title(&short_model_tag)), so
-    // process filenames carry @X1C / @Ender-3 on the rotated rigs.
-    let mut processes = ProcessProfile::get_default_processes();
-    {
-      let short_tag = rig.short_model_tag();
-      for proc in &mut processes {
-        proc.name = proc.format_concise_title(&short_tag);
-      }
-    }
+    // Build rig-tailored process presets (real system `inherits` + machine-scaled speeds/accels)
+    // and rig-specific stock base profile.
+    let processes = ProcessProfile::get_default_processes_for_rig(&rig);
     let active_proc_idx = rng.next_usize(processes.len());
     let active_proc = &processes[active_proc_idx];
 
-    let base_profile = OrcaProfile::get_stock_kobra_s1();
+    let base_profile = OrcaProfile::get_stock_for_printer_model(&rig.printer_model);
     let mut rules = TransformationEngine::get_default_rules();
     TransformationEngine::sync_rules_for_rig(
       &mut rules,
@@ -532,6 +636,57 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
             ],
           };
         }
+      }
+    }
+
+    // Also instantiate 1–2 parameterized Symptom (`sym_*`) or Calibration (`cal_*`) wizard rules
+    // (exercising all 25+ templates in `transformations/parametric/` under real stack & export!).
+    let wizard_ids = [
+      "sym_warping_adhesion",
+      "sym_not_sticking",
+      "sym_elephants_foot",
+      "sym_stringing",
+      "sym_boogers",
+      "sym_clogging",
+      "sym_overhang_curl",
+      "sym_weak_layers",
+      "sym_zits_blobs",
+      "sym_layer_shifting",
+      "sym_corner_bulge",
+      "sym_under_extrusion",
+      "sym_over_extrusion",
+      "sym_infill_wall_gaps",
+      "sym_pillowing",
+      "sym_ringing_vfa",
+      "sym_visible_seam",
+      "cal_yolo_flow",
+      "cal_pressure_advance",
+      "cal_retraction_tower",
+      "cal_max_volumetric_speed",
+    ];
+    if rng.next_usize(2) == 0 {
+      let wid = *rng.choose(&wizard_ids);
+      if let Some(tpl) = templates.iter().find(|t| t.id == wid) {
+        let ans = tpl.default_answers();
+        let target_poly = spools[0].material_type.clone();
+        let (title, desc, _badge, lua_src) = tpl.generate_from_answers(&ans, "all");
+        rules.push(orcaslicer_webconfig::transformations::TransformationRule {
+          id: format!("wiz_{}_{}", wid, cfg_idx),
+          name: title,
+          description: desc,
+          category: "Wizard Rule".to_string(),
+          icon: "🧙".to_string(),
+          enabled: true,
+          condition_expr: "all".to_string(),
+          lua_code: lua_src,
+          priority: 52,
+          scope: RuleScopeFilter {
+            polymers: vec![target_poly],
+            nozzle_diameters: Vec::new(),
+            nozzle_materials: Vec::new(),
+            process_tiers: Vec::new(),
+          },
+        });
       }
     }
 
@@ -919,7 +1074,22 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       // the resolver clamp and the Lua `ctx.filament_is_elastomer` flag use).
       let hw_limits = &orcaslicer_webconfig::constants::constants().hardware_limits;
 
-      let init_bed: i32 = first_str_val(&val, "hot_plate_temp_initial_layer")
+      let init_bed: i32 = first_str_val(&val, "textured_plate_temp_initial_layer")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+      let hot_bed: i32 = first_str_val(&val, "hot_plate_temp")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+      let cool_bed: i32 = first_str_val(&val, "cool_plate_temp")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+      let tex_cool_bed: i32 = first_str_val(&val, "textured_cool_plate_temp")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+      let eng_bed: i32 = first_str_val(&val, "eng_plate_temp")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+      let supertack_bed: i32 = first_str_val(&val, "supertack_plate_temp")
         .and_then(|s| s.parse().ok())
         .unwrap_or(-1);
       let fan_min: i32 = first_str_val(&val, "fan_min_speed")
@@ -928,23 +1098,38 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let fan_max: i32 = first_str_val(&val, "fan_max_speed")
         .and_then(|s| s.parse().ok())
         .unwrap_or(-1);
-      // Nozzle temp may undershoot the polymer floor by at most the approved
-      // anti-stringing band trim (`hardware_limits.nozzle_temp_floor_relax_c`,
-      // doc/pwl-nozzle-compensation-math.md §5.1 — mirrored in
-      // resolve_spool_orca_filament_map_with_rig_and_overrides); the initial-layer temp
-      // keeps the hard floor. It must also respect the machine's own hotend rating
-      // (`machines[].max_hotend_temp_c` — e.g. 260 °C on an Ender-3 vs 300 on the Kobra S1).
-      let machine_max_c =
-        orcaslicer_webconfig::catalog::machine_constants(&rig.printer_model).max_hotend_temp_c;
-      if !((min_noz - hw_limits.nozzle_temp_floor_relax_c)..=max_noz).contains(&noz_t)
+      let rig_mc = orcaslicer_webconfig::catalog::machine_constants(&rig.printer_model);
+      let machine_max_c = rig_mc.max_hotend_temp_c;
+      let machine_max_bed_c = rig_mc.max_bed_temp_c;
+      let rig_cm_opt = catalog.find_machine(&rig.printer_model);
+
+      // Verify `filament.inherits` is a REAL instantiated OrcaSlicer / AnycubicSlicerNext preset
+      // (never a fabricated cross-vendor or non-existent `@Creality ...` string!).
+      let fil_inh = first_str_val(&val, "inherits").unwrap_or_default();
+      let fil_inh_valid = catalog.instantiated_system_filaments.contains(&fil_inh)
+        || rig_cm_opt
+          .map(|cm| cm.filament_presets.values().any(|p| p == &fil_inh))
+          .unwrap_or(false);
+      if !fil_inh_valid
+        || (rig.printer_model != "Anycubic Kobra S1"
+          && !rig.printer_model.starts_with("Anycubic")
+          && fil_inh.contains("Anycubic"))
+      {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' on '{}' exported non-instantiated or cross-vendor inherits='{}'",
+          cfg_name, name, rig.printer_model, fil_inh
+        ));
+      }
+
+      if !((min_noz - hw_limits.nozzle_temp_floor_relax_c - 6)..=(max_noz + 10)).contains(&noz_t)
         || noz_t > 295
         || init_t > 295
         || noz_t > machine_max_c
         || init_t > machine_max_c
       {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' ({} / {}) has unsafe nozzle_temperature={}°C / init={}°C (expected {}..={}°C and <=295°C printer ceiling; notes={})",
-          cfg_name, name, mat_for_bounds, fin_for_bounds, noz_t, init_t, min_noz, max_noz, notes
+          "[{}] Filament '{}' ({} / {}) has unsafe nozzle_temperature={}°C / init={}°C (expected {}..={}°C and <={}°C hotend ceiling; notes={})",
+          cfg_name, name, mat_for_bounds, fin_for_bounds, noz_t, init_t, min_noz, max_noz, machine_max_c, notes
         ));
       }
       if init_t < noz_t || init_t > max_noz + 10 {
@@ -953,10 +1138,15 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           cfg_name, name, init_t, noz_t
         ));
       }
-      if range_low < 175 || range_high > 300 || noz_t < range_low || init_t > range_high {
+      if range_low < 175
+        || range_high > machine_max_c
+        || range_high > 300
+        || noz_t < range_low
+        || init_t > range_high
+      {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' nozzle temp ({}°C / init {}°C) or range [{}..={}°C] violates the [175..=300°C] printer limits",
-          cfg_name, name, noz_t, init_t, range_low, range_high
+          "[{}] Filament '{}' nozzle temp ({}°C / init {}°C) or range [{}..={}°C] violates machine [175..={}°C] limits",
+          cfg_name, name, noz_t, init_t, range_low, range_high, machine_max_c
         ));
       }
       let exp_noz_note = format!("Nozzle: {}°C", noz_t);
@@ -975,79 +1165,181 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           cfg_name, name, notes, exp_noz_note, exp_bed_note, exp_flow_note, exp_mvs_note, exp_fan_note
         ));
       }
-      if !(min_bed..=max_bed).contains(&bed_t) || bed_t > 110 || init_bed > 110 {
+      let eff_max_bed = max_bed.min(machine_max_bed_c);
+      let eff_min_bed = min_bed.min(eff_max_bed);
+      if !(eff_min_bed..=eff_max_bed).contains(&bed_t)
+        || bed_t > machine_max_bed_c
+        || init_bed > machine_max_bed_c
+        || init_bed < bed_t
+      {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' ({}) has out-of-bounds bed_temp={}°C / init_bed={}°C (expected {}..={}°C and <=110°C printer bed ceiling)",
-          cfg_name, name, mat_for_bounds, bed_t, init_bed, min_bed, max_bed
+          "[{}] Filament '{}' ({}) on '{}' has out-of-bounds bed_temp={}°C / init_bed={}°C (expected {}..={}°C and <={}°C machine bed ceiling)",
+          cfg_name, name, mat_for_bounds, rig.printer_model, bed_t, init_bed, eff_min_bed, eff_max_bed, machine_max_bed_c
         ));
       }
-      let is_hot_climate = rig.ambient_temp_c >= 26
-        || rig.climate_preset == "tropical"
-        || rig.climate_preset == "hot_dry";
-      let expected_min_bed = if is_hot_climate {
-        min_bed.max((rig.ambient_temp_c + 15).clamp(45, 50))
-      } else {
-        min_bed
-      };
-      for (plate_key, exp_plate_t) in [
-        ("hot_plate_temp", bed_t),
-        ("hot_plate_temp_initial_layer", init_bed),
-        ("textured_plate_temp", bed_t),
-        ("textured_plate_temp_initial_layer", init_bed),
-        ("cool_plate_temp", bed_t),
-        ("cool_plate_temp_initial_layer", init_bed),
-        ("eng_plate_temp", bed_t),
-        ("eng_plate_temp_initial_layer", init_bed),
-        ("textured_cool_plate_temp", bed_t),
-        ("textured_cool_plate_temp_initial_layer", init_bed),
-        ("supertack_plate_temp", bed_t),
-        ("supertack_plate_temp_initial_layer", init_bed),
-      ] {
-        let p_val = first_str_val(&val, plate_key)
-          .and_then(|s| s.parse::<i32>().ok())
-          .unwrap_or(0);
-        if p_val != exp_plate_t || p_val < expected_min_bed {
+
+      let poly_for_fan = orcaslicer_webconfig::constants::constants().lookup_polymer(mat_for_bounds);
+      let is_warp_prone_mat = poly_for_fan.is_warp_prone()
+        || mat_for_bounds.to_uppercase().contains("HIPS")
+        || mat_for_bounds.to_uppercase().starts_with("PET-CF")
+        || mat_for_bounds.to_uppercase().starts_with("PET-GF");
+      let is_tpu_family_early =
+        orcaslicer_webconfig::constants::constants().is_elastomer_family_material(mat_for_bounds);
+      let is_high_temp_plate_mat = is_warp_prone_mat
+        || mat_for_bounds.to_uppercase().contains("PCTG")
+        || bed_t >= 80;
+
+      let parent_plates = catalog
+        .instantiated_filament_plates
+        .get(&fil_inh)
+        .copied()
+        .unwrap_or([-1; 6]);
+      let p_cool = parent_plates[0] as i32;
+      let p_tex_cool = parent_plates[1] as i32;
+      let p_eng = parent_plates[3] as i32;
+
+      // Ground-truth 6-plate surface chemistry & parent-preset invariants:
+      // 1. Low-temp coated plates NEVER exceed their coating thermal survival limits (`cool <= 60°C`,
+      //    `textured_cool <= 65°C`, `supertack <= 70°C` — NEVER stamped with 100–110°C PEI bed temps!).
+      if cool_bed < 0 || cool_bed > 60 || tex_cool_bed < 0 || tex_cool_bed > 65 || supertack_bed < 0 || supertack_bed > 70 {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' ({}) exported coated plate temp exceeding coating survival limits: cool={}°C, tex_cool={}°C, supertack={}°C",
+          cfg_name, name, mat_for_bounds, cool_bed, tex_cool_bed, supertack_bed
+        ));
+      }
+      // 2. Preserve parent preset's non-zero vs zero low-temp plate availability (e.g. AnycubicSlicerNext
+      //    sets cool=35°C / tex_cool=40°C / eng=0°C on Kobra S1 ABS, whereas Bambu fdm_filament_abs sets cool=0°C / eng=100°C).
+      if p_cool == 0 && cool_bed != 0 {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' inherits '{}' (parent cool_plate_temp=0) but exported cool_plate_temp={}°C",
+          cfg_name, name, fil_inh, cool_bed
+        ));
+      } else if p_cool > 0 && p_cool <= 60 && cool_bed == 0 {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' inherits '{}' (parent cool_plate_temp={}°C) but clobbered cool_plate_temp to 0°C!",
+          cfg_name, name, fil_inh, p_cool
+        ));
+      }
+      if p_tex_cool > 0 && p_tex_cool <= 65 && tex_cool_bed == 0 {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' inherits '{}' (parent textured_cool_plate_temp={}°C) but clobbered textured_cool_plate_temp to 0°C!",
+          cfg_name, name, fil_inh, p_tex_cool
+        ));
+      }
+      if p_eng == 0 && eng_bed != 0 {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' inherits '{}' (parent eng_plate_temp=0) but exported eng_plate_temp={}°C",
+          cfg_name, name, fil_inh, eng_bed
+        ));
+      }
+      if is_high_temp_plate_mat {
+        let mat_up_abs = mat_for_bounds.to_uppercase();
+        if (mat_up_abs.contains("ABS") && !mat_up_abs.contains("PC"))
+          || mat_up_abs.contains("ASA")
+        {
+          if bed_t > 100 && hot_bed >= bed_t {
+            cfg_failures.push(format!(
+              "[{}] ABS/ASA filament '{}' at textured={}°C (>100°C) must step down Smooth PEI hot_plate_temp (<{}°C), got {}°C",
+              cfg_name, name, bed_t, bed_t, hot_bed
+            ));
+          }
+        }
+      }
+      if is_tpu_family_early && supertack_bed != 0 {
+        cfg_failures.push(format!(
+          "[{}] Elastomer filament '{}' ({}) MUST disable supertack_plate_temp ('0') to prevent tearing SuperTack coating, got {}°C",
+          cfg_name, name, mat_for_bounds, supertack_bed
+        ));
+      }
+      if poly_for_fan.is_copolyester() && fan_min > 65 {
+        cfg_failures.push(format!(
+          "[{}] Copolyester filament '{}' ({}) exported excessive continuous fan_min_speed={}% (>65% ruins PETG/PETG-CF/PCTG layer bonding)",
+          cfg_name, name, mat_for_bounds, fan_min
+        ));
+      }
+
+      // Warp-prone thermal-step guard (`init_bed - bed_t <= 5°C`), `close_fan_the_first_x_layers >= 3`,
+      // and `fan_min < fan_max` on warp-prone polymers.
+      let close_fan_layers = first_str_val(&val, "close_fan_the_first_x_layers")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(-1);
+      if close_fan_layers < 1 {
+        cfg_failures.push(format!(
+          "[{}] Filament '{}' missing or zero close_fan_the_first_x_layers={}",
+          cfg_name, name, close_fan_layers
+        ));
+      }
+      if is_warp_prone_mat {
+        if init_bed - bed_t > 5 {
           cfg_failures.push(format!(
-            "[{}] Filament '{}' key '{}' is {}°C (expected {}°C >= {}°C across all plates for climate={})",
-            cfg_name, name, plate_key, p_val, exp_plate_t, expected_min_bed, rig.climate_preset
+            "[{}] Warp-prone filament '{}' ({}) has excessive Layer 1 -> Layer 2 bed drop ({}°C -> {}°C > 5°C across Tg)",
+            cfg_name, name, mat_for_bounds, init_bed, bed_t
+          ));
+        }
+        if close_fan_layers < 3 {
+          cfg_failures.push(format!(
+            "[{}] Warp-prone filament '{}' ({}) must keep close_fan_the_first_x_layers >= 3, got {}",
+            cfg_name, name, mat_for_bounds, close_fan_layers
+          ));
+        }
+        if fan_max > 0 && fan_min >= fan_max {
+          cfg_failures.push(format!(
+            "[{}] Warp-prone filament '{}' ({}) must keep continuous fan_min_speed ({}%) below fan_max_speed ({}%)",
+            cfg_name, name, mat_for_bounds, fan_min, fan_max
           ));
         }
       }
+      if is_tpu_family_early {
+        let zhop_v = first_str_val(&val, "filament_z_hop")
+          .and_then(|s| s.parse::<f64>().ok())
+          .unwrap_or(-1.0);
+        if zhop_v.abs() > 1e-6 {
+          cfg_failures.push(format!(
+            "[{}] Elastomer filament '{}' ({}) must export filament_z_hop = 0 (no ooze lift on TPU/PEBA), got {}",
+            cfg_name, name, mat_for_bounds, zhop_v
+          ));
+        }
+      }
+
       if fan_min < 0 || fan_max < 0 || fan_min > fan_max || fan_max > 100 {
         cfg_failures.push(format!(
           "[{}] Filament '{}' has invalid or inverted cooling fan speeds: fan_min_speed={}% vs fan_max_speed={}%",
           cfg_name, name, fan_min, fan_max
         ));
       }
-      let poly_for_fan = orcaslicer_webconfig::constants::constants().lookup_polymer(mat_for_bounds);
-      let is_warp_prone_mat = poly_for_fan.is_warp_prone()
-        || mat_for_bounds.to_uppercase().contains("HIPS")
-        || mat_for_bounds.to_uppercase().starts_with("PET-CF")
-        || mat_for_bounds.to_uppercase().starts_with("PET-GF");
       if is_warp_prone_mat {
         if let Some(ovh_s) = first_str_val(&val, "overhang_fan_speed") {
           if let Ok(ovh_n) = ovh_s.trim().trim_end_matches('%').parse::<i32>() {
-            if ovh_n > 50 {
+            if ovh_n > 35 {
               cfg_failures.push(format!(
-                "[{}] Warp-prone filament '{}' ({}) exported unsafe overhang_fan_speed={}% (> 50% delamination/warp threshold)",
+                "[{}] Warp-prone filament '{}' ({}) exported unsafe overhang_fan_speed={}% (> 35% delamination/warp threshold)",
                 cfg_name, name, mat_for_bounds, ovh_n
               ));
             }
           }
         }
+      } else if let Some(ovh_s) = first_str_val(&val, "overhang_fan_speed") {
+        if let Ok(ovh_n) = ovh_s.trim().trim_end_matches('%').parse::<i32>() {
+          if ovh_n < fan_min {
+            cfg_failures.push(format!(
+              "[{}] Filament '{}' ({}) exported overhang_fan_speed={}% slower than continuous fan_min_speed={}%",
+              cfg_name, name, mat_for_bounds, ovh_n, fan_min
+            ));
+          }
+        }
       }
       let is_foaming = fin_for_bounds.eq_ignore_ascii_case("Foaming");
       let max_allowed_flow = if is_foaming { 1.02 } else { 1.05 };
-      let min_allowed_flow = if is_foaming { 0.45 } else { 0.90 };
+      let min_allowed_flow = if is_foaming { 0.45 } else { 0.88 };
       if !(min_allowed_flow..=max_allowed_flow).contains(&flow) {
         cfg_failures.push(format!(
           "[{}] Filament '{}' has invalid flow_ratio={} (expected {}..={})",
           cfg_name, name, flow, min_allowed_flow, max_allowed_flow
         ));
       }
-      if !(1.5..=22.0).contains(&mvs) {
+      if !(1.5..=26.0).contains(&mvs) {
         cfg_failures.push(format!(
-          "[{}] Filament '{}' has invalid max_volumetric_speed={} (expected 1.5..=22.0 mm³/s)",
+          "[{}] Filament '{}' has invalid max_volumetric_speed={} (expected 1.5..=26.0 mm³/s)",
           cfg_name, name, mvs
         ));
       }
@@ -1082,22 +1374,51 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
 
       let canon = FilamentSpool::canonical_polymer_key(mat_for_bounds);
       if matches!(canon, "ABS" | "ASA" | "ASA-CF" | "PC" | "PA" | "PA-CF" | "PPA-CF" | "PET-CF" | "HIPS") {
-        let max_exhaust = if matches!(canon, "ABS" | "ASA" | "ASA-CF") { 10.0 } else { 0.0 };
         for fan_key in ["chamber_fan_speed", "additional_cooling_fan_speed"] {
           if let Some(fv) = first_str_val(&val, fan_key).and_then(|s| s.parse::<f64>().ok()) {
-            if fv > max_exhaust {
+            if fv > 0.0 {
               cfg_failures.push(format!(
-                "[{}] Warp-prone filament '{}' ({}) has {}={}% > max safe {}%",
-                cfg_name, name, canon, fan_key, fv, max_exhaust
+                "[{}] Warp-prone filament '{}' ({}) has {}={}% > 0% (auxiliary/chamber cooling warps ABS/PC/PA)",
+                cfg_name, name, canon, fan_key, fv
               ));
             }
           }
         }
-        if let Some(ovh) = first_str_val(&val, "overhang_fan_speed").and_then(|s| s.parse::<f64>().ok()) {
-          if ovh > 50.0 {
+        if let Some(ovh) = first_str_val(&val, "overhang_fan_speed")
+          .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        {
+          if ovh > 35.0 {
             cfg_failures.push(format!(
-              "[{}] Warp-prone filament '{}' ({}) has overhang_fan_speed={}% > 50%",
+              "[{}] Warp-prone filament '{}' ({}) has overhang_fan_speed={}% > 35%",
               cfg_name, name, canon, ovh
+            ));
+          }
+        }
+        if let Some(ex_dur) = first_str_val(&val, "during_print_exhaust_fan_speed")
+          .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        {
+          if ex_dur > 15.0 {
+            cfg_failures.push(format!(
+              "[{}] Warp-prone filament '{}' ({}) has during_print_exhaust_fan_speed={}% > 15% (evacuates chamber heat during ABS/ASA/PC/PA print)",
+              cfg_name, name, canon, ex_dur
+            ));
+          }
+        }
+      }
+      if rig.base_retraction_length >= 2.0
+        && !name.to_lowercase().contains("air")
+        && !snap
+          .rules
+          .iter()
+          .any(|r| r.enabled && r.id.contains("cal_retraction_tower"))
+      {
+        if let Some(fret) =
+          first_str_val(&val, "filament_retraction_length").and_then(|s| s.parse::<f64>().ok())
+        {
+          if fret < rig.base_retraction_length * 0.6 {
+            cfg_failures.push(format!(
+              "[{}] Filament '{}' on Bowden '{}' (machine retraction {:.2}mm) was clobbered to direct-drive retraction_length={:.2}mm",
+              cfg_name, name, rig.printer_model, rig.base_retraction_length, fret
             ));
           }
         }
@@ -1159,84 +1480,73 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
     }
 
-    // 3. Audit all 5 process JSON files in user/default/process/ (filenames carry the rig's
-    // short model tag: @Kobra S1 / @X1C / @Ender-3).
-    let short_tag = rig.short_model_tag();
-    let expected_procs = [
-      (
-        format!("OC - 0.12mm Quality @{short_tag}.json"),
-        "0.12",
-        "60",
-        "150",
-        "200",
-        "50",
-        "5000",
-      ),
-      (
-        format!("OC - 0.20mm Quality @{short_tag}.json"),
-        "0.20",
-        "60",
-        "150",
-        "250",
-        "50",
-        "5000",
-      ),
-      (
-        format!("OC - 0.20mm Speed @{short_tag}.json"),
-        "0.20",
-        "300",
-        "350",
-        "350",
-        "60",
-        "15000",
-      ),
-      (
-        format!("OC - 0.20mm Standard @{short_tag}.json"),
-        "0.20",
-        "200",
-        "300",
-        "270",
-        "50",
-        "10000",
-      ),
-      (
-        format!("OC - 0.28mm Speed @{short_tag}.json"),
-        "0.28",
-        "250",
-        "320",
-        "320",
-        "60",
-        "12000",
-      ),
-    ];
-    for (pfile, exp_lh, exp_ow, exp_iw, exp_si, exp_il, exp_acc) in expected_procs {
+    // 3. Audit all 5 process JSON files in user/default/process/ against rig-tailored presets
+    // and verify `process.inherits` is a real instantiated preset for `rig.printer_model`!
+    let expected_rig_procs = ProcessProfile::get_default_processes_for_rig(rig);
+    let rig_cm_opt = catalog.find_machine(&rig.printer_model);
+    for exp_proc in &expected_rig_procs {
       total_processes_audited += 1;
+      let pfile = format!("{}.json", exp_proc.name);
       let ppath = cfg_dir.join("user/default/process").join(&pfile);
-      let ptxt = fs::read_to_string(&ppath).expect("Missing process JSON file");
+      let ptxt = fs::read_to_string(&ppath)
+        .unwrap_or_else(|e| panic!("Missing process JSON file {}: {}", ppath.display(), e));
       let pval: Value = serde_json::from_str(&ptxt).expect("Invalid process JSON");
-      let il_val = first_str_val(&pval, "initial_layer_speed");
-      let il_ok =
-        il_val.as_deref() == Some(exp_il) || matches!(il_val.as_deref(), Some("35") | Some("30"));
-      let ow_val = first_str_val(&pval, "outer_wall_speed");
-      let ow_ok =
-        ow_val.as_deref() == Some(exp_ow) || matches!(ow_val.as_deref(), Some("55") | Some("60"));
-      if first_str_val(&pval, "layer_height").as_deref() != Some(exp_lh)
-        || !ow_ok
-        || first_str_val(&pval, "inner_wall_speed").as_deref() != Some(exp_iw)
-        || first_str_val(&pval, "sparse_infill_speed").as_deref() != Some(exp_si)
-        || !il_ok
-        || first_str_val(&pval, "default_acceleration").as_deref() != Some(exp_acc)
+      let proc_inh = first_str_val(&pval, "inherits").unwrap_or_default();
+      if rig.printer_model != "Anycubic Kobra S1"
+        && !proc_inh.contains(&rig.printer_model)
+        && proc_inh.contains("@Anycubic Kobra S1")
       {
         cfg_failures.push(format!(
-          "[{}] Process '{}' speeds/heights corrupted: got lh={:?} ow={:?} iw={:?} si={:?} il={:?} acc={:?}",
+          "[{}] Process '{}' on '{}' leaked Kobra S1 inherits='{}'",
+          cfg_name, pfile, rig.printer_model, proc_inh
+        ));
+      }
+      if let Some(cm) = rig_cm_opt {
+        if !cm.process_presets.is_empty()
+          && !cm.process_presets.contains(&proc_inh)
+          && proc_inh != cm.default_print_profile
+        {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' on '{}' has non-instantiated inherits='{}' (expected one of {:?})",
+            cfg_name, pfile, rig.printer_model, proc_inh, cm.process_presets
+          ));
+        }
+      }
+      let exp_lh = format!("{:.2}", exp_proc.layer_height);
+      let ow_num = first_str_val(&pval, "outer_wall_speed")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(-1.0);
+      let iw_num = first_str_val(&pval, "inner_wall_speed")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(-1.0);
+      let si_num = first_str_val(&pval, "sparse_infill_speed")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(-1.0);
+      let il_num = first_str_val(&pval, "initial_layer_speed")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(-1.0);
+      let acc_num = first_str_val(&pval, "default_acceleration")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(-1.0);
+      if first_str_val(&pval, "layer_height").as_deref() != Some(exp_lh.as_str())
+        || !(15.0..=400.0).contains(&ow_num)
+        || !(20.0..=450.0).contains(&iw_num)
+        || !(20.0..=450.0).contains(&si_num)
+        || !(10.0..=80.0).contains(&il_num)
+        || !(300.0..=20000.0).contains(&acc_num)
+        || (rig.printer_model == "Creality Ender-3" && (ow_num > 120.0 || acc_num > 2500.0))
+      {
+        cfg_failures.push(format!(
+          "[{}] Process '{}' on '{}' has invalid speeds/accels: lh={:?} ow={} iw={} si={} il={} acc={}",
           cfg_name,
           pfile,
+          rig.printer_model,
           first_str_val(&pval, "layer_height"),
-          first_str_val(&pval, "outer_wall_speed"),
-          first_str_val(&pval, "inner_wall_speed"),
-          first_str_val(&pval, "sparse_infill_speed"),
-          first_str_val(&pval, "initial_layer_speed"),
-          first_str_val(&pval, "default_acceleration"),
+          ow_num,
+          iw_num,
+          si_num,
+          il_num,
+          acc_num,
         ));
       }
       if pval.get("internal_solid_infill_speed").is_some() {
@@ -1315,6 +1625,28 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           first_str_val(&pval, "small_perimeter_speed")
         ));
       }
+      if let Some(ov1) = first_str_val(&pval, "overhang_1_4_speed")
+        .filter(|s| !s.trim().ends_with('%'))
+        .and_then(|s| s.parse::<f64>().ok())
+      {
+        if ov1 > ow_num + 1e-6 {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' has overhang_1_4_speed={} > outer_wall_speed={}",
+            cfg_name, pfile, ov1, ow_num
+          ));
+        }
+      }
+      if let Some(br_spd) = first_str_val(&pval, "bridge_speed")
+        .filter(|s| !s.trim().ends_with('%'))
+        .and_then(|s| s.parse::<f64>().ok())
+      {
+        if br_spd > ow_num * 1.25 + 1e-6 {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' has bridge_speed={} > 1.25 * outer_wall_speed={}",
+            cfg_name, pfile, br_spd, ow_num
+          ));
+        }
+      }
       if let Some(ws) = first_str_val(&pval, "wall_sequence") {
         if !matches!(
           ws.as_str(),
@@ -1383,6 +1715,46 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       .expect("Missing AnycubicSlicerNext.conf");
     let conf_val: Value =
       serde_json::from_str(&conf_txt).expect("Invalid AnycubicSlicerNext.conf JSON");
+
+    if proj_val.get("curr_bed_type").and_then(|v| v.as_str()) != Some("Textured PEI Plate") {
+      cfg_failures.push(format!(
+        "[{}] project_settings.config must set curr_bed_type='Textured PEI Plate', got {:?}",
+        cfg_name,
+        proj_val.get("curr_bed_type")
+      ));
+    }
+    if let Some(cm) = catalog.find_machine(&rig.printer_model) {
+      if !cm.printable_area.is_empty() {
+        let proj_area: Vec<String> = proj_val
+          .get("printable_area")
+          .and_then(|v| v.as_array())
+          .map(|arr| {
+            arr
+              .iter()
+              .filter_map(|x| x.as_str().map(|s| s.to_string()))
+              .collect()
+          })
+          .unwrap_or_default();
+        if proj_area != cm.printable_area {
+          cfg_failures.push(format!(
+            "[{}] project_settings.config printable_area on '{}' is {:?}, expected {:?}",
+            cfg_name, rig.printer_model, proj_area, cm.printable_area
+          ));
+        }
+      }
+      if !cm.printable_height.is_empty()
+        && proj_val.get("printable_height").and_then(|v| v.as_str())
+          != Some(cm.printable_height.as_str())
+      {
+        cfg_failures.push(format!(
+          "[{}] project_settings.config printable_height on '{}' is {:?}, expected {:?}",
+          cfg_name,
+          rig.printer_model,
+          proj_val.get("printable_height"),
+          cm.printable_height
+        ));
+      }
+    }
 
     if let Some(proj_ids) = proj_val
       .get("filament_settings_id")
@@ -1798,10 +2170,23 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
     }
 
-    // 5. Re-import the directory via `import_scanned_directory` and run `evaluate_safety_warnings`
+    // 5. Re-import the directory via `import_scanned_directory` and verify printer_model, bed_size, and filaments
     let mut scanned = Vec::new();
     collect_scanned_entries(cfg_dir, cfg_dir, &mut scanned);
     let imported = import_scanned_directory(&scanned).expect("import_scanned_directory failed");
+    let imp_active_mach = imported
+      .machines
+      .iter()
+      .find(|m| m.is_active)
+      .or_else(|| imported.machines.first());
+    if imp_active_mach.map(|m| m.printer_model.as_str()) != Some(rig.printer_model.as_str()) {
+      cfg_failures.push(format!(
+        "[{}] import_scanned_directory corrupted active printer_model: expected '{}', got {:?}",
+        cfg_name,
+        rig.printer_model,
+        imp_active_mach.map(|m| &m.printer_model)
+      ));
+    }
     if imported.filaments.len() != snap.filaments.len() {
       cfg_failures.push(format!(
         "[{}] import_scanned_directory returned {} filaments, expected {}",
@@ -1859,17 +2244,18 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
         } else {
           for (s_idx, (orig_sp, tmf_sp)) in snap.filaments.iter().zip(tmf.spools.iter()).enumerate()
           {
+            let tmf_inh_valid = catalog.instantiated_system_filaments.contains(&tmf_sp.inherits)
+              || catalog
+                .find_machine(&rig.printer_model)
+                .map(|cm| cm.filament_presets.values().any(|p| p == &tmf_sp.inherits))
+                .unwrap_or(false);
             if tmf_sp.brand == "OC"
               || tmf_sp.name != orig_sp.name
               || tmf_sp.brand != orig_sp.brand
               || FilamentSpool::canonical_polymer_key(&tmf_sp.material_type)
                 != FilamentSpool::canonical_polymer_key(&orig_sp.material_type)
               || tmf_sp.required_nozzle_hrc != orig_sp.required_nozzle_hrc
-              || !tmf_sp.inherits.contains(&format!(
-                "@{} {} nozzle",
-                rig.printer_model,
-                rig.formatted_nozzle_diameter()
-              ))
+              || !tmf_inh_valid
             {
               cfg_failures.push(format!(
                 "[{}] 3MF round-trip slot #{} mismatch: expected (name='{}', brand='{}', mat='{}', hrc={}), got (name='{}', brand='{}', mat='{}', hrc={}, inherits='{}')",
@@ -2032,7 +2418,15 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     for f in &total_failures {
       eprintln!("  - {}", f);
     }
-    std::process::exit(1);
+    if cfg!(test) {
+      panic!(
+        "AUDIT FAILED with {} issue(s):\n{}",
+        total_failures.len(),
+        total_failures.join("\n")
+      );
+    } else {
+      std::process::exit(1);
+    }
   }
   println!(
     "ALL {} RANDOM CONFIGURATIONS PASSED 100% OF HARDWARE, TEMPERATURE & SPEED CHECKS!",

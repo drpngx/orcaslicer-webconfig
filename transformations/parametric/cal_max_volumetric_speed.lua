@@ -126,7 +126,13 @@ function apply(config, ctx, p)
   local margin = tonumber(p and p.margin_pct) or 10.0
   local peak_flow = start + (z_mm * step)
   local safe_mvs = math.max(2.0, math.min(50.0, peak_flow * (1.0 - margin / 100.0)))
-  config["filament_max_volumetric_speed"] = fmt_num(safe_mvs, "%.1f")
+  local mvs_str = fmt_num(safe_mvs, "%.1f")
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  if type(config["filament_max_volumetric_speed"]) == "table" or (config["filament_max_volumetric_speed"] == nil and prof_arr) then
+    config["filament_max_volumetric_speed"] = { mvs_str }
+  else
+    config["filament_max_volumetric_speed"] = mvs_str
+  end
   local d = describe(p or {}, ctx)
   print("[Calibration:MVS] " .. (d.badge or ""))
 end

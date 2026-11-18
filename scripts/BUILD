@@ -10,6 +10,11 @@ py_binary(
 )
 
 py_binary(
+    name = "unzip_archive",
+    srcs = ["unzip_archive.py"],
+)
+
+py_binary(
     name = "import_vendor_profiles",
     srcs = ["import_vendor_profiles.py"],
 )

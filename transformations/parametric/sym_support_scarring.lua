@@ -88,9 +88,9 @@ function apply(config, ctx, p)
     config["support_top_z_distance"] = "0.00"
     config["support_bottom_z_distance"] = "0.00"
   else
-    local lh = tonumber(config["layer_height"]) or 0.20
-    local cur_zd = tonumber(config["support_top_z_distance"]) or lh
-    local new_zd = string.format("%.2f", cur_zd + zd_offset)
+    local lh = scalar_num(config["layer_height"], 0.20)
+    local cur_zd = scalar_num(config["support_top_z_distance"], lh)
+    local new_zd = fmt_num(cur_zd + zd_offset, "%.2f")
     config["support_top_z_distance"] = new_zd
     config["support_bottom_z_distance"] = new_zd
   end

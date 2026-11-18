@@ -120,7 +120,7 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local temp_adj = math.floor(tonumber(p and p.temp_adj) or 5)
+  local temp_adj = tonumber(p and p.temp_adj) or 5
   local ret_pct = tonumber(p and p.max_retract) or -20.0
   local ret_scale = 0.80
   if ret_pct < 0 then
@@ -131,15 +131,28 @@ function apply(config, ctx, p)
   local mvs_drop = math.abs(tonumber(p and p.mvs_drop_pct) or 15.0)
   local scale = math.max(0.5, math.min(1.0, (100.0 - mvs_drop) / 100.0))
 
-  local cur_t = tonumber(config["nozzle_temperature"]) or 230
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local cur_t = scalar_num(config["nozzle_temperature"], 230)
   local new_t = cur_t + temp_adj
-  config["nozzle_temperature"] = fmt_num(new_t, "%.0f")
-  local cur_r = tonumber(config["filament_retraction_length"]) or 0.80
-  config["filament_retraction_length"] = fmt_num(cur_r * ret_scale, "%.2f")
-  local cur_mvs = tonumber(config["filament_max_volumetric_speed"]) or 15.0
-  config["filament_max_volumetric_speed"] = fmt_num(cur_mvs * scale, "%.1f")
-  local cur_cut = tonumber(config["retraction_distances_when_cut"]) or 14.0
-  config["retraction_distances_when_cut"] = fmt_num(math.min(12.0, cur_cut * 0.85), "%.1f")
+  set_arr("nozzle_temperature", fmt_num(new_t, "%.0f"))
+  for _, k in ipairs({ "nozzle_temperature_HS", "nozzle_temperature_BRASS", "nozzle_temperature_initial_layer", "nozzle_temperature_initial_layer_HS", "nozzle_temperature_initial_layer_BRASS" }) do
+    if config[k] ~= nil then
+      set_arr(k, fmt_num(scalar_num(config[k], cur_t) + temp_adj, "%.0f"))
+    end
+  end
+  local cur_r = scalar_num(config["filament_retraction_length"], 0.80)
+  set_arr("filament_retraction_length", fmt_num(cur_r * ret_scale, "%.2f"))
+  local cur_mvs = scalar_num(config["filament_max_volumetric_speed"], 15.0)
+  set_arr("filament_max_volumetric_speed", fmt_num(cur_mvs * scale, "%.1f"))
+  local cur_cut = scalar_num(config["retraction_distances_when_cut"], 14.0)
+  set_arr("retraction_distances_when_cut", fmt_num(math.min(12.0, cur_cut * 0.85), "%.1f"))
   config["_flush_temperature"] = fmt_num(new_t, "%.0f")
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)

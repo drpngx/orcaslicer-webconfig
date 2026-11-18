@@ -114,9 +114,9 @@ params = {
 }
 
 local function resolve_nozzle(config, ctx)
-  local d = tonumber(ctx and ctx.nozzle_diameter)
+  local d = scalar_num(ctx and ctx.nozzle_diameter, nil)
   if not d then
-    d = tonumber(config["nozzle_diameter"])
+    d = scalar_num(config["nozzle_diameter"], nil)
   end
   if not d or d <= 0.05 then
     d = 0.4
@@ -170,7 +170,7 @@ function apply(config, ctx, p)
   config["initial_layer_line_width"] = fmt_num(d * c.initial / 100.0, "%.2f")
   local target_outer = d * c.outer / 100.0
   if (ctx and ctx._process_seeded) and c.outer == 105 then
-    local cur_lw = tonumber(config["line_width"]) or target_outer
+    local cur_lw = scalar_num(config["line_width"], target_outer)
     if cur_lw > target_outer then
       target_outer = cur_lw
     end

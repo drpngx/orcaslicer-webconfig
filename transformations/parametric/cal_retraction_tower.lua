@@ -113,7 +113,7 @@ end
 
 function apply(config, ctx, p)
   local len_num = tonumber(p and p.retract_len) or 0.95
-  local spd_num = math.floor(tonumber(p and p.retract_speed) or 45)
+  local spd_num = tonumber(p and p.retract_speed) or 45
   local deretract_spd = math.max(25, spd_num - 15)
   local z_hop = (p and p.z_hop_style) or "Spiral Lift"
   if z_hop == "Spiral" then z_hop = "Spiral Lift" end
@@ -121,14 +121,23 @@ function apply(config, ctx, p)
   if z_hop == "Normal" then z_hop = "Normal Lift" end
   local rbw = (p and p.retract_before_wipe) or "70%"
 
-  config["filament_retraction_length"] = fmt_num(len_num, "%.2f")
-  config["filament_retraction_speed"] = tostring(spd_num)
-  config["filament_deretraction_speed"] = tostring(deretract_spd)
-  config["filament_z_hop"] = "0.15"
-  config["filament_z_hop_types"] = z_hop
-  config["filament_wipe"] = "1"
-  config["filament_wipe_distance"] = "2.0"
-  config["filament_retract_before_wipe"] = rbw
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  local function set_val(key, val)
+    if type(config[key]) == "table" or (config[key] == nil and prof_arr) then
+      config[key] = { val }
+    else
+      config[key] = val
+    end
+  end
+
+  set_val("filament_retraction_length", fmt_num(len_num, "%.2f"))
+  set_val("filament_retraction_speed", fmt_num(spd_num, "%.0f"))
+  set_val("filament_deretraction_speed", fmt_num(deretract_spd, "%.0f"))
+  set_val("filament_z_hop", fmt_num(0.15, "%.2f"))
+  set_val("filament_z_hop_types", z_hop)
+  set_val("filament_wipe", "1")
+  set_val("filament_wipe_distance", fmt_num(2.0, "%.1f"))
+  set_val("filament_retract_before_wipe", fmt_pct(rbw, "%.0f"))
   local d = describe(p or {}, ctx)
   print("[Calibration:Retraction] " .. (d.badge or ""))
 end

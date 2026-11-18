@@ -999,25 +999,32 @@ function apply(config, ctx, p)
   end
 
   if fam == "kobra_s1" and ((p and p.kobra_unbottleneck_petg_abs) or "1") ~= "0" then
+    local function set_arr(key, val)
+      if type(config[key]) == "string" then
+        config[key] = val
+      else
+        config[key] = { val }
+      end
+    end
     config["_kobra_unbottleneck_petg_abs"] = "1"
     local ftype = string.upper((ctx and ctx.filament_type) or "")
     if string.find(ftype, "PETG", 1, true) then
-      local cur_ret = tonumber(config["filament_retraction_length"]) or 1.0
-      if cur_ret > 0.80 then
-        config["filament_retraction_length"] = "0.70"
+      local cur_ret = scalar_num(config["filament_retraction_length"], 1.0)
+      if cur_ret > 0.80 and cur_ret < 2.0 then
+        set_arr("filament_retraction_length", fmt_num(0.70, "%.2f"))
       end
-      local cur_mvs = tonumber(config["filament_max_volumetric_speed"]) or 12.0
+      local cur_mvs = scalar_num(config["filament_max_volumetric_speed"], 12.0)
       if cur_mvs < 18.0 then
-        config["filament_max_volumetric_speed"] = "19.0"
+        set_arr("filament_max_volumetric_speed", fmt_num(19.0, "%.1f"))
       end
     elseif string.find(ftype, "ABS", 1, true) or string.find(ftype, "ASA", 1, true) then
-      local cur_ret = tonumber(config["filament_retraction_length"]) or 0.80
-      if cur_ret > 0.80 then
-        config["filament_retraction_length"] = "0.70"
+      local cur_ret = scalar_num(config["filament_retraction_length"], 0.80)
+      if cur_ret > 0.80 and cur_ret < 2.0 then
+        set_arr("filament_retraction_length", fmt_num(0.70, "%.2f"))
       end
-      local cur_mvs = tonumber(config["filament_max_volumetric_speed"]) or 15.0
+      local cur_mvs = scalar_num(config["filament_max_volumetric_speed"], 15.0)
       if cur_mvs < 22.0 then
-        config["filament_max_volumetric_speed"] = "23.0"
+        set_arr("filament_max_volumetric_speed", fmt_num(23.0, "%.1f"))
       end
     end
   end

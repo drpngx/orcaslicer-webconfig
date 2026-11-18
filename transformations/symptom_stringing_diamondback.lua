@@ -65,6 +65,9 @@ function apply(config, ctx)
   -- 2. Clamped diminishing-returns retraction recovery over P12's compressed value.
   if config["filament_retraction_length"] then
     config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r1)
+      if r1 >= 2.0 then
+        return r1
+      end
       local headroom = clamp((1.25 - r1) / 0.75, 0.0, 1.0)
       return math.min(r1 + 0.07 * headroom, 1.35)
     end, "%.2f")
@@ -84,17 +87,19 @@ function apply(config, ctx)
   -- 4. Orifice-scaled power-law Z-hop on the per-filament key (slicer-precedence winner).
   --    Ceiling max(z0 + 0.04, 0.65*d) is anchored to `base["filament_z_hop"]` (z0) so it never
   --    ratchets upward if multiple Z-hop rules run, while guaranteeing a small-orifice spool's
-  --    existing z0 is never reduced.
-  if config["filament_z_hop"] then
-    local z0_ref = scalar_num(base["filament_z_hop"], scalar_num(config["filament_z_hop"], 0.15))
-    local max_hop = math.max(z0_ref + 0.04, d * 0.65)
-    local hop_bump = 0.02 + 0.05 * ((d / 0.4) ^ 1.15)
-    config["filament_z_hop"] = map_num(config["filament_z_hop"], function(z_cur)
-      return clamp(z_cur + hop_bump, 0.12, max_hop)
-    end, "%.2f")
-    constrain("filament_z_hop", z0_ref > 0 and 0.10 or 0.0, max_hop, "Orifice-scaled Z-hop envelope")
+  --    existing z0 is never reduced. Skipped on elastomers (zero Z-hop prevents ooze hairs).
+  if not is_elastomer then
+    if config["filament_z_hop"] then
+      local z0_ref = scalar_num(base["filament_z_hop"], scalar_num(config["filament_z_hop"], 0.15))
+      local max_hop = math.max(z0_ref + 0.04, d * 0.65)
+      local hop_bump = 0.02 + 0.05 * ((d / 0.4) ^ 1.15)
+      config["filament_z_hop"] = map_num(config["filament_z_hop"], function(z_cur)
+        return clamp(z_cur + hop_bump, 0.12, max_hop)
+      end, "%.2f")
+      constrain("filament_z_hop", z0_ref > 0 and 0.10 or 0.0, max_hop, "Orifice-scaled Z-hop envelope")
+    end
+    config["filament_z_hop_types"] = { "Spiral Lift" }
   end
-  config["filament_z_hop_types"] = { "Spiral Lift" }
 
   -- 5. Asymptotic breakaway travel acceleration toward the printer-class target
   --    (ctx.travel_accel_target_mm2 / _floor_mm2 from constants.json `printer_classes`:
@@ -105,7 +110,7 @@ function apply(config, ctx)
   local ta_target = scalar_num(ctx.travel_accel_target_mm2, 12000)
   local ta_floor = scalar_num(ctx.travel_accel_floor_mm2, 9000)
   local a_new = a_cur + 0.35 * math.max(0, ta_target - a_cur)
-  config["travel_acceleration"] = tostring(math.floor(math.max(a_new, ta_floor)))
+  config["travel_acceleration"] = fmt_num(math.max(a_new, ta_floor), "%.0f")
   constrain("travel_acceleration", ta_floor, math.max(15000, a0_base), "Printer kinematics travel acceleration envelope")
 
   -- 6. Mechanical inward wipe before the travel move shears the strand off the tip.

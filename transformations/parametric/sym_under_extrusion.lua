@@ -96,15 +96,28 @@ end
 function apply(config, ctx, p)
   local f_boost = tonumber(p and p.flow_boost) or 0.03
   local mvs_trim = math.abs(tonumber(p and p.mvs_trim) or 15.0)
-  local t_boost = math.floor(tonumber(p and p.temp_boost) or 5)
+  local t_boost = tonumber(p and p.temp_boost) or 5
   local scale = math.max(0.5, math.min(1.0, (100.0 - mvs_trim) / 100.0))
 
-  local cur_f = tonumber(config["filament_flow_ratio"]) or 0.96
-  config["filament_flow_ratio"] = fmt_num(cur_f + f_boost, "%.3f")
-  local cur_mvs = tonumber(config["filament_max_volumetric_speed"]) or 15.0
-  config["filament_max_volumetric_speed"] = fmt_num(cur_mvs * scale, "%.1f")
-  local cur_t = tonumber(config["nozzle_temperature"]) or 230
-  config["nozzle_temperature"] = fmt_num(cur_t + t_boost, "%.0f")
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local cur_f = scalar_num(config["filament_flow_ratio"], 0.96)
+  set_arr("filament_flow_ratio", fmt_num(cur_f + f_boost, "%.3f"))
+  local cur_mvs = scalar_num(config["filament_max_volumetric_speed"], 15.0)
+  set_arr("filament_max_volumetric_speed", fmt_num(cur_mvs * scale, "%.1f"))
+  local cur_t = scalar_num(config["nozzle_temperature"], 230)
+  set_arr("nozzle_temperature", fmt_num(cur_t + t_boost, "%.0f"))
+  for _, k in ipairs({ "nozzle_temperature_HS", "nozzle_temperature_BRASS", "nozzle_temperature_initial_layer", "nozzle_temperature_initial_layer_HS", "nozzle_temperature_initial_layer_BRASS" }) do
+    if config[k] ~= nil then
+      set_arr(k, fmt_num(scalar_num(config[k], cur_t) + t_boost, "%.0f"))
+    end
+  end
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:UnderExtrusion] " .. (d.badge or ""))

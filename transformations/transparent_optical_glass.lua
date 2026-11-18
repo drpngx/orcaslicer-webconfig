@@ -66,11 +66,19 @@ function validate(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.40
+  local noz = scalar_num(ctx and ctx.nozzle_diameter, 0.40)
   local wide_w = fmt_num(noz * 1.25, "%.2f")
-  local spd = tostring(math.floor(tonumber(p and p.print_speed) or 20))
+  local spd = fmt_num(tonumber(p and p.print_speed) or 20, "%.0f")
   local f_boost = tonumber(p and p.flow_boost) or 0.05
-  local fan_spd = tostring(math.floor(tonumber(p and p.fan_speed) or 0))
+  local fan_spd = fmt_num(tonumber(p and p.fan_speed) or 0, "%.0f")
+
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
 
   -- 1. Slow speeds (20 mm/s) & low volumetric ceiling (5.0 mm3/s) for bubble-free melt relaxation
   config["outer_wall_speed"] = spd
@@ -79,17 +87,22 @@ function apply(config, ctx, p)
   config["internal_solid_infill_speed"] = spd
   config["top_surface_speed"] = spd
   config["initial_layer_speed"] = "15"
-  config["filament_max_volumetric_speed"] = "5.0"
+  set_arr("filament_max_volumetric_speed", fmt_num(5.0, "%.1f"))
 
   -- 2. Boost flow ratio (+0.05 -> ~1.01) to flood microscopic air gaps between parallel extrusions
-  local cur_flow = tonumber(config["filament_flow_ratio"]) or 0.96
+  local cur_flow = scalar_num(config["filament_flow_ratio"], 0.96)
   local new_flow = math.min(1.05, math.max(1.01, cur_flow + f_boost))
-  config["filament_flow_ratio"] = fmt_num(new_flow, "%.2f")
+  local flow_str = fmt_num(new_flow, "%.2f")
+  set_arr("filament_flow_ratio", flow_str)
 
   -- 3. Turn part cooling fan OFF (0%) so polymer chains anneal without crystalline haze
-  config["fan_max_speed"] = fan_spd
-  config["fan_min_speed"] = fan_spd
-  config["overhang_fan_speed"] = "25"
+  set_arr("fan_max_speed", fan_spd)
+  set_arr("fan_min_speed", fan_spd)
+  if config["fan_max_speed_HS"] ~= nil then set_arr("fan_max_speed_HS", fan_spd) end
+  if config["fan_max_speed_BRASS"] ~= nil then set_arr("fan_max_speed_BRASS", fan_spd) end
+  if config["fan_min_speed_HS"] ~= nil then set_arr("fan_min_speed_HS", fan_spd) end
+  if config["fan_min_speed_BRASS"] ~= nil then set_arr("fan_min_speed_BRASS", fan_spd) end
+  set_arr("overhang_fan_speed", "25")
 
   -- 4. Unidirectional 100% Aligned Rectilinear infill + 1 wall + 0.12mm layer height + 1.25x line width
   config["layer_height"] = "0.12"
@@ -102,15 +115,15 @@ function apply(config, ctx, p)
   config["bottom_shell_layers"] = "0"
   config["top_shell_thickness"] = "0.00"
   config["bottom_shell_thickness"] = "0.00"
-  config["sparse_infill_density"] = "100%"
+  config["sparse_infill_density"] = fmt_pct(100, "%.0f")
   config["sparse_infill_pattern"] = "alignedrectilinear"
   config["infill_direction"] = "0"
 
   -- 5. Keep Textured PEI at 65C for easy release of un-pigmented translucent PETG
-  config["textured_plate_temp"] = "65"
-  config["textured_plate_temp_initial_layer"] = "65"
-  config["hot_plate_temp"] = "65"
-  config["hot_plate_temp_initial_layer"] = "65"
+  set_arr("textured_plate_temp", "65")
+  set_arr("textured_plate_temp_initial_layer", "65")
+  set_arr("hot_plate_temp", "65")
+  set_arr("hot_plate_temp_initial_layer", "65")
 
-  print("[Optical:TransparentGlass] " .. spd .. "mm/s speed, flow -> " .. config["filament_flow_ratio"] .. ", fan -> " .. fan_spd .. "%, 100% alignedrectilinear, width -> " .. wide_w .. "mm, PEI bed -> 65C")
+  print("[Optical:TransparentGlass] " .. spd .. "mm/s speed, flow -> " .. flow_str .. ", fan -> " .. fan_spd .. "%, 100% alignedrectilinear, width -> " .. wide_w .. "mm, PEI bed -> 65C")
 end

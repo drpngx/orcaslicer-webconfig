@@ -541,26 +541,86 @@ pub fn import_scanned_directory(
       addons.push("flowtech_hotend".to_string());
     }
 
+    let cat = crate::catalog::load_merged_catalog();
+    let raw_printer_model = extract_str(m_val, "printer_model")
+      .or_else(|| {
+        extract_str(m_val, "inherits").and_then(|inh| {
+          inh
+            .rsplit_once(" nozzle")
+            .and_then(|(prefix, _)| prefix.rsplit_once(' ').map(|(m, _)| m.trim().to_string()))
+        })
+      })
+      .filter(|s| !s.trim().is_empty())
+      .unwrap_or_else(|| "Anycubic Kobra S1".to_string());
+    let cm_opt = cat.find_machine(&raw_printer_model);
+    let resolved_printer_model = cm_opt
+      .map(|cm| cm.name.clone())
+      .unwrap_or(raw_printer_model);
+    let resolved_bed_size = cm_opt
+      .map(|cm| cm.build_volume.clone())
+      .unwrap_or_else(|| "250 × 250 × 250 mm".to_string());
+    let resolved_kinematics = cm_opt
+      .map(|cm| cm.kinematics.clone())
+      .unwrap_or_else(|| "CoreXY Enclosed S-Series".to_string());
+    let resolved_noz_diam = extract_str(m_val, "nozzle_diameter")
+      .or_else(|| extract_str(m_val, "printer_variant"))
+      .filter(|s| s.trim().parse::<f64>().is_ok())
+      .unwrap_or_else(|| {
+        cm_opt
+          .map(|cm| format!("{:.1}", cm.default_nozzle_diameter))
+          .unwrap_or_else(|| "0.4".to_string())
+      });
+    let resolved_ace_units = if let Some((_, rest)) = notes_low.split_once("double ace") {
+      let _ = rest;
+      2
+    } else if notes_low.contains("single ace") || notes_low.contains("4-slot") {
+      1
+    } else if notes_low.contains("single-spool") || notes_low.contains("direct spool") {
+      0
+    } else if let Some(cm) = cm_opt {
+      if cm.default_ams_id == "none_single_spool" {
+        0
+      } else if resolved_printer_model == "Anycubic Kobra S1" {
+        2
+      } else {
+        1
+      }
+    } else {
+      2
+    };
+    let resolved_retract_default = cm_opt
+      .map(|cm| cm.default_retraction_mm as f64)
+      .filter(|&v| v > 0.0)
+      .unwrap_or(0.80);
+
     let mut rig = MachineRig {
       id: name.to_lowercase().replace([' ', '-', '.'], "_"),
       name: name.clone(),
-      printer_model: "Anycubic Kobra S1".to_string(),
-      bed_size: "250 × 250 × 250 mm".to_string(),
-      kinematics: "CoreXY Enclosed S-Series".to_string(),
-      firmware: "Klipper (AnycubicSlicerNext 2.0.0.3)".to_string(),
-      hotend: "Kobra S1 All-Metal Hotend".to_string(),
+      printer_model: resolved_printer_model.clone(),
+      bed_size: resolved_bed_size,
+      kinematics: resolved_kinematics,
+      firmware: if resolved_printer_model.starts_with("Anycubic") {
+        "Klipper (AnycubicSlicerNext 2.0.0.3)".to_string()
+      } else {
+        "OrcaSlicer v2.5.1".to_string()
+      },
+      hotend: format!("{} Stock Hotend", resolved_printer_model),
       nozzle_type,
       nozzle_material: nozzle_material.clone(),
-      nozzle_name: format!("{} 0.40mm", nozzle_material),
-      nozzle_diameter: "0.4".to_string(),
+      nozzle_name: format!("{} {}mm", nozzle_material, resolved_noz_diam),
+      nozzle_diameter: resolved_noz_diam,
       nozzle_hrc: 55,
-      max_volumetric_flow_limit: 16.0,
-      max_volumetric_flow: "16.0 mm³/s".to_string(),
+      max_volumetric_flow_limit: crate::catalog::machine_constants(&resolved_printer_model)
+        .max_volumetric_speed_mm3s as f64,
+      max_volumetric_flow: format!(
+        "{:.1} mm³/s",
+        crate::catalog::machine_constants(&resolved_printer_model).max_volumetric_speed_mm3s
+      ),
       base_retraction_length: disk_retract_len
         .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.80),
+        .unwrap_or(resolved_retract_default),
       melt_zone_multiplier: 1.07,
-      ace_pro_units: 2,
+      ace_pro_units: resolved_ace_units,
       addons,
       max_speed: "600 mm/s".to_string(),
       max_accel: "20,000 mm/s²".to_string(),
@@ -716,13 +776,20 @@ pub fn import_scanned_directory(
     let mat_type = c.base_material_code(&raw_mat_type).to_string();
     let poly_cfg = c.lookup_polymer(&mat_type);
 
-    // Resolve true system base matching the actual `mat_type`
+    // Resolve true system base matching the actual `mat_type` and active machine
     let finish_hint = oc_notes_header
       .as_ref()
       .map(|(_, _, nf)| nf.as_str())
       .unwrap_or("Basic");
-    let default_inherits_candidate =
-      c.resolve_filament_inherits_with_finish("Anycubic Kobra S1", "0.4", &mat_type, finish_hint);
+    let active_rig_for_fil = machines
+      .iter()
+      .find(|m| m.id == active_machine_id)
+      .or_else(|| machines.first());
+    let (fil_model, fil_noz) = active_rig_for_fil
+      .map(|r| (r.printer_model.as_str(), r.formatted_nozzle_diameter()))
+      .unwrap_or_else(|| ("Anycubic Kobra S1", "0.4".to_string()));
+    let default_inherits_candidate = crate::catalog::load_merged_catalog()
+      .resolve_filament_inherits(fil_model, &fil_noz, &mat_type, finish_hint);
     let canonical_base_name: &str = if system_filaments.contains_key(&default_inherits_candidate) {
       &default_inherits_candidate
     } else if poly_cfg.family == "PA"
@@ -1109,10 +1176,16 @@ pub fn import_scanned_directory(
     let poly_cfg = c.lookup_polymer(&mat_type);
     let (dry_c, dry_hr) = (poly_cfg.default_dry_temp_c, poly_cfg.default_dry_time_hr);
     let default_fan = poly_cfg.default_fan_pct;
-    let disk_fan_pct = extract_str(f_val, "fan_max_speed_HS")
-      .or_else(|| extract_str(f_val, "fan_max_speed"))
-      .and_then(|s| s.parse::<i32>().ok())
-      .unwrap_or(default_fan);
+    let disk_fan_pct = if poly_cfg.is_copolyester() {
+      extract_str(f_val, "fan_min_speed_HS")
+        .or_else(|| extract_str(f_val, "fan_min_speed"))
+        .or_else(|| extract_str(f_val, "fan_max_speed"))
+    } else {
+      extract_str(f_val, "fan_max_speed_HS")
+        .or_else(|| extract_str(f_val, "fan_max_speed"))
+    }
+    .and_then(|s| s.parse::<i32>().ok())
+    .unwrap_or(default_fan);
 
     let (mut final_brand, mut final_mat_type, mut final_finish_type) =
       (vendor, mat_type.clone(), finish_type);
@@ -1203,7 +1276,14 @@ pub fn import_scanned_directory(
       }
       sp.name = saved_name;
       sp.color_hex = saved_color;
-      sp.rebuild_synthetic_disk_json(&detected_spool_noz);
+      if let Some(rig_ref) = machines
+        .iter()
+        .find(|m| m.id == active_machine_id)
+        .or_else(|| machines.first())
+      {
+        sp.clamp_to_machine_limits(&rig_ref.printer_model);
+      }
+      sp.refresh_thermal_deltas(&detected_spool_noz);
     }
     filaments.push(sp);
   }
@@ -1275,7 +1355,8 @@ pub fn import_scanned_directory(
             oc_sp.color_hex = col.clone();
           }
           oc_sp.color_name = format!("Slot #{}", slot_idx + 1);
-          oc_sp.rebuild_synthetic_disk_json(&active_rig_for_slots.nozzle_type);
+          oc_sp.clamp_to_machine_limits(&active_rig_for_slots.printer_model);
+          oc_sp.refresh_thermal_deltas(&active_rig_for_slots.nozzle_type);
           slot_filament_names_from_conf[slot_idx] = oc_sp.name.clone();
           filaments.push(oc_sp);
           continue;
@@ -3190,7 +3271,7 @@ mod tests {
 
         for sp in &mut filaments {
           sp.recompute_for_nozzle(&rig.nozzle_type);
-          sp.rebuild_synthetic_disk_json(&rig.nozzle_type);
+          sp.refresh_thermal_deltas(&rig.nozzle_type);
         }
 
         let procs = ProcessProfile::get_default_processes();

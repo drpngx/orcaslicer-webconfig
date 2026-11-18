@@ -144,11 +144,11 @@ end
 
 function apply(config, ctx, p)
   local mode = (p and p.optical_mode) or "glass_solid"
-  local spd = math.max(10, math.min(60, math.floor(tonumber(p and p.print_speed) or 20)))
+  local spd = math.max(10, math.min(60, tonumber(p and p.print_speed) or 20))
   local init_spd = math.max(12, spd - 5)
   local flow_boost = math.max(0.0, math.min(0.12, tonumber(p and p.flow_boost) or 0.05))
-  local fan_cap = math.max(0, math.min(100, math.floor(tonumber(p and p.fan_cap) or 0)))
-  local bed_pei = math.max(50, math.min(90, math.floor(tonumber(p and p.bed_temp_pei) or 65)))
+  local fan_cap = math.max(0, math.min(100, tonumber(p and p.fan_cap) or 0))
+  local bed_pei = math.max(50, math.min(90, tonumber(p and p.bed_temp_pei) or 65))
   local mvs = 7.0
   if spd <= 15 then
     mvs = 4.0
@@ -156,37 +156,54 @@ function apply(config, ctx, p)
     mvs = 5.0
   end
 
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
   local is_filament = (config["type"] == "filament") or (config["filament_flow_ratio"] ~= nil) or (config["nozzle_temperature"] ~= nil)
   local is_process = (config["type"] == "process") or (config["sparse_infill_speed"] ~= nil) or (config["wall_loops"] ~= nil)
 
   if is_filament then
-    local cur_flow = tonumber(config["filament_flow_ratio"]) or 0.96
-    config["filament_flow_ratio"] = fmt_num(math.min(1.06, cur_flow + flow_boost), "%.3f")
-    config["fan_max_speed"] = tostring(fan_cap)
-    config["fan_min_speed"] = tostring(fan_cap)
-    if config["fan_max_speed_BRASS"] ~= nil then config["fan_max_speed_BRASS"] = tostring(fan_cap) end
-    if config["fan_max_speed_HS"] ~= nil then config["fan_max_speed_HS"] = tostring(fan_cap) end
-    config["slow_down_for_layer_cooling"] = "0"
+    local cur_flow = scalar_num(config["filament_flow_ratio"], 0.96)
+    set_arr("filament_flow_ratio", fmt_num(math.min(1.06, cur_flow + flow_boost), "%.3f"))
+    local fan_str = fmt_num(fan_cap, "%.0f")
+    set_arr("fan_max_speed", fan_str)
+    set_arr("fan_min_speed", fan_str)
+    if config["fan_max_speed_BRASS"] ~= nil then set_arr("fan_max_speed_BRASS", fan_str) end
+    if config["fan_max_speed_HS"] ~= nil then set_arr("fan_max_speed_HS", fan_str) end
+    if config["fan_min_speed_BRASS"] ~= nil then set_arr("fan_min_speed_BRASS", fan_str) end
+    if config["fan_min_speed_HS"] ~= nil then set_arr("fan_min_speed_HS", fan_str) end
+    set_arr("slow_down_for_layer_cooling", "0")
     if fan_cap == 0 then
-      config["overhang_fan_speed"] = "25"
+      set_arr("overhang_fan_speed", "25")
+      if config["enable_overhang_bridge_fan"] ~= nil then
+        set_arr("enable_overhang_bridge_fan", "1")
+      end
     end
-    config["filament_max_volumetric_speed"] = fmt_num(mvs, "%.1f")
-    config["textured_plate_temp"] = tostring(bed_pei)
-    config["textured_plate_temp_initial_layer"] = tostring(bed_pei)
-    config["hot_plate_temp"] = tostring(bed_pei)
-    config["hot_plate_temp_initial_layer"] = tostring(bed_pei)
-    config["filament_retraction_length"] = "0.8"
-    config["filament_retraction_speed"] = "35"
-    config["filament_deretraction_speed"] = "30"
-    config["filament_retract_before_wipe"] = "70%"
-    config["filament_wipe"] = "1"
-    config["filament_wipe_distance"] = "2"
-    config["filament_z_hop"] = "0.10"
-    config["filament_z_hop_types"] = "Spiral Lift"
+    set_arr("filament_max_volumetric_speed", fmt_num(mvs, "%.1f"))
+    local bed_str = fmt_num(bed_pei, "%.0f")
+    set_arr("textured_plate_temp", bed_str)
+    set_arr("textured_plate_temp_initial_layer", bed_str)
+    set_arr("hot_plate_temp", bed_str)
+    set_arr("hot_plate_temp_initial_layer", bed_str)
+    if scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
+      set_arr("filament_retraction_length", fmt_num(0.8, "%.1f"))
+    end
+    set_arr("filament_retraction_speed", "35")
+    set_arr("filament_deretraction_speed", "30")
+    set_arr("filament_retract_before_wipe", fmt_pct(70, "%.0f"))
+    set_arr("filament_wipe", "1")
+    set_arr("filament_wipe_distance", "2")
+    set_arr("filament_z_hop", fmt_num(0.10, "%.2f"))
+    set_arr("filament_z_hop_types", "Spiral Lift")
   end
 
   if is_process then
-    local nd = tonumber(ctx and ctx.nozzle_diameter) or 0.4
+    local nd = scalar_num(ctx and ctx.nozzle_diameter, 0.4)
     if mode == "vase_crystal" then
       local lw = fmt_num(nd * 1.50, "%.2f")
       config["spiral_mode"] = "1"
@@ -194,7 +211,7 @@ function apply(config, ctx, p)
       config["top_shell_layers"] = "0"
       config["top_shell_thickness"] = "0.00"
       config["bottom_shell_layers"] = "3"
-      config["sparse_infill_density"] = "0%"
+      config["sparse_infill_density"] = fmt_pct(0, "%.0f")
       config["line_width"] = lw
       config["outer_wall_line_width"] = lw
     elseif mode == "clear_shell" then
@@ -204,7 +221,7 @@ function apply(config, ctx, p)
       config["bottom_surface_pattern"] = "monotonicline"
       config["sparse_infill_pattern"] = "alignedrectilinear"
       config["infill_direction"] = "0"
-      config["infill_wall_overlap"] = "25%"
+      config["infill_wall_overlap"] = fmt_pct(25, "%.0f")
       config["line_width"] = lw
       config["outer_wall_line_width"] = lw
       config["inner_wall_line_width"] = lw
@@ -219,13 +236,13 @@ function apply(config, ctx, p)
       config["bottom_shell_layers"] = "0"
       config["top_shell_thickness"] = "0.00"
       config["bottom_shell_thickness"] = "0.00"
-      config["sparse_infill_density"] = "100%"
+      config["sparse_infill_density"] = fmt_pct(100, "%.0f")
       config["sparse_infill_pattern"] = "alignedrectilinear"
       config["internal_solid_infill_pattern"] = "monotonicline"
       config["top_surface_pattern"] = "monotonicline"
       config["bottom_surface_pattern"] = "monotonicline"
       config["infill_direction"] = "0"
-      config["infill_wall_overlap"] = "25%"
+      config["infill_wall_overlap"] = fmt_pct(25, "%.0f")
       config["line_width"] = lw
       config["outer_wall_line_width"] = lw
       config["inner_wall_line_width"] = lw
@@ -233,14 +250,16 @@ function apply(config, ctx, p)
       config["internal_solid_infill_line_width"] = lw
       config["top_surface_line_width"] = lw
     end
-    config["outer_wall_speed"] = tostring(spd)
-    config["inner_wall_speed"] = tostring(spd)
-    config["sparse_infill_speed"] = tostring(spd)
-    config["internal_solid_infill_speed"] = tostring(spd)
-    config["top_surface_speed"] = tostring(spd)
-    config["gap_infill_speed"] = tostring(spd)
-    config["initial_layer_speed"] = tostring(init_spd)
-    config["initial_layer_infill_speed"] = tostring(init_spd)
+    local spd_str = fmt_num(spd, "%.0f")
+    local init_spd_str = fmt_num(init_spd, "%.0f")
+    config["outer_wall_speed"] = spd_str
+    config["inner_wall_speed"] = spd_str
+    config["sparse_infill_speed"] = spd_str
+    config["internal_solid_infill_speed"] = spd_str
+    config["top_surface_speed"] = spd_str
+    config["gap_infill_speed"] = spd_str
+    config["initial_layer_speed"] = init_spd_str
+    config["initial_layer_infill_speed"] = init_spd_str
     config["reduce_crossing_wall"] = "1"
     config["avoid_crossing_perimeters"] = "1"
   end

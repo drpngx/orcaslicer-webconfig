@@ -77,10 +77,18 @@ function apply(config, ctx, p)
   local j_pct = tonumber(p and p.outer_jerk) or -15.0
   local j_scale = math.max(0.50, math.min(1.50, (100.0 + j_pct) / 100.0))
 
-  config["enable_pressure_advance"] = "1"
-  local cur_pa = tonumber(config["pressure_advance"]) or 0.036
-  config["pressure_advance"] = fmt_num(math.max(0.005, cur_pa + pa_delta), "%.3f")
-  local cur_j = tonumber(config["outer_wall_jerk"]) or 9
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  set_arr("enable_pressure_advance", "1")
+  local cur_pa = scalar_num(config["pressure_advance"], 0.036)
+  set_arr("pressure_advance", fmt_num(math.max(0.005, cur_pa + pa_delta), "%.3f"))
+  local cur_j = scalar_num(config["outer_wall_jerk"], 9)
   config["outer_wall_jerk"] = fmt_num(math.max(4, cur_j * j_scale), "%.0f")
   local d = describe(p or {}, ctx)
   print("[Symptom:CornerBulge] " .. (d.badge or ""))

@@ -95,7 +95,7 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local t_boost = math.floor(tonumber(p and p.temp_boost) or 5)
+  local t_boost = tonumber(p and p.temp_boost) or 5
   local fan_pct = tonumber(p and p.fan_cap) or -25.0
   local fan_scale = 0.75
   if fan_pct < 0 then
@@ -103,14 +103,32 @@ function apply(config, ctx, p)
   else
     fan_scale = math.max(0.30, math.min(1.0, (100.0 - fan_pct) / 100.0))
   end
-  local extra_loops = math.floor(tonumber(p and p.wall_loops) or 2)
+  local extra_loops = tonumber(p and p.wall_loops) or 2
 
-  local cur_t = tonumber(config["nozzle_temperature"]) or 240
-  config["nozzle_temperature"] = tostring(cur_t + t_boost)
-  local cur_fan = tonumber(config["fan_max_speed"]) or 50
-  config["fan_max_speed"] = tostring(math.max(10, math.floor(cur_fan * fan_scale + 0.5)))
-  local cur_w = tonumber(config["wall_loops"]) or 2
-  config["wall_loops"] = tostring(math.max(2, math.floor(cur_w + extra_loops)))
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local cur_t = scalar_num(config["nozzle_temperature"], 240)
+  set_arr("nozzle_temperature", fmt_num(cur_t + t_boost, "%.0f"))
+  for _, k in ipairs({ "nozzle_temperature_HS", "nozzle_temperature_BRASS", "nozzle_temperature_initial_layer", "nozzle_temperature_initial_layer_HS", "nozzle_temperature_initial_layer_BRASS" }) do
+    if config[k] ~= nil then
+      set_arr(k, fmt_num(scalar_num(config[k], cur_t) + t_boost, "%.0f"))
+    end
+  end
+  local cur_fan = scalar_num(config["fan_max_speed"], 50)
+  set_arr("fan_max_speed", fmt_num(math.max(10, cur_fan * fan_scale), "%.0f"))
+  for _, fk in ipairs({ "fan_max_speed_HS", "fan_max_speed_BRASS" }) do
+    if config[fk] ~= nil then
+      set_arr(fk, fmt_num(math.max(10, scalar_num(config[fk], cur_fan) * fan_scale), "%.0f"))
+    end
+  end
+  local cur_w = scalar_num(config["wall_loops"], 2)
+  config["wall_loops"] = fmt_num(math.max(2, cur_w + extra_loops), "%.0f")
   sync_coupled_physics(config, ctx)
   local d = describe(p or {}, ctx)
   print("[Symptom:LayerStrength] " .. (d.badge or ""))

@@ -90,12 +90,12 @@ function apply(config, ctx, p)
   local spd_pct = tonumber(p and p.outer_spd) or 20.0
   local spd_scale = math.max(0.40, math.min(1.60, (100.0 + spd_pct) / 100.0))
 
-  local cur_acc = tonumber(config["outer_wall_acceleration"]) or 5000
-  config["outer_wall_acceleration"] = tostring(math.max(1000, math.floor(cur_acc * acc_scale + 0.5)))
-  local cur_spd = tonumber(config["outer_wall_speed"]) or 140
-  config["outer_wall_speed"] = tostring(math.max(30, math.floor(cur_spd * spd_scale + 0.5)))
-  local cur_j = tonumber(config["outer_wall_jerk"]) or 9
-  config["outer_wall_jerk"] = tostring(math.max(4, math.floor(cur_j * acc_scale + 0.5)))
+  local cur_acc = scalar_num(config["outer_wall_acceleration"], 5000)
+  config["outer_wall_acceleration"] = fmt_num(math.max(1000, cur_acc * acc_scale), "%.0f")
+  local cur_spd = scalar_num(config["outer_wall_speed"], 140)
+  config["outer_wall_speed"] = fmt_num(math.max(30, cur_spd * spd_scale), "%.0f")
+  local cur_j = scalar_num(config["outer_wall_jerk"], 9)
+  config["outer_wall_jerk"] = fmt_num(math.max(4, cur_j * acc_scale), "%.0f")
   local d = describe(p or {}, ctx)
   print("[Symptom:RingingVFA] " .. (d.badge or ""))
 end

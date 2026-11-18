@@ -86,11 +86,23 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local best_temp = math.floor(tonumber(p and p.best_temp) or 255)
-  local boost = math.floor(tonumber(p and p.first_layer_boost) or 5)
+  local best_temp = tonumber(p and p.best_temp) or 255
+  local boost = tonumber(p and p.first_layer_boost) or 5
   local init_temp = math.max(180, math.min(350, best_temp + boost))
-  config["nozzle_temperature"] = tostring(best_temp)
-  config["nozzle_temperature_initial_layer"] = tostring(init_temp)
+  local prof_arr = type(config["nozzle_temperature"]) == "table" or type(config["filament_flow_ratio"]) == "table"
+  local function set_val(key, val)
+    if type(config[key]) == "table" or (config[key] == nil and prof_arr) then
+      config[key] = { val }
+    else
+      config[key] = val
+    end
+  end
+  set_val("nozzle_temperature", fmt_num(best_temp, "%.0f"))
+  set_val("nozzle_temperature_initial_layer", fmt_num(init_temp, "%.0f"))
+  if config["nozzle_temperature_HS"] ~= nil then set_val("nozzle_temperature_HS", fmt_num(best_temp, "%.0f")) end
+  if config["nozzle_temperature_BRASS"] ~= nil then set_val("nozzle_temperature_BRASS", fmt_num(best_temp, "%.0f")) end
+  if config["nozzle_temperature_initial_layer_HS"] ~= nil then set_val("nozzle_temperature_initial_layer_HS", fmt_num(init_temp, "%.0f")) end
+  if config["nozzle_temperature_initial_layer_BRASS"] ~= nil then set_val("nozzle_temperature_initial_layer_BRASS", fmt_num(init_temp, "%.0f")) end
   local d = describe(p or {}, ctx)
   print("[Calibration:TempTower] " .. (d.badge or ""))
 end

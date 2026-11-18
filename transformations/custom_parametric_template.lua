@@ -107,28 +107,28 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local temp_off = math.floor((tonumber(p.temp_offset) or 0) + 0.5)
+  local temp_off = tonumber(p.temp_offset) or 0
   local scale = tonumber(p.outer_wall_scale) or 0.85
   local wipe = p.enable_wipe or "1"
 
   -- 1. Apply relative nozzle temperature offset if non-zero
   if temp_off ~= 0 and config["nozzle_temperature"] ~= nil then
     local is_arr = type(config["nozzle_temperature"]) == "table"
-    local cur = tonumber(is_arr and config["nozzle_temperature"][1] or config["nozzle_temperature"]) or 220
-    local next_t = tostring(math.floor(cur + temp_off + 0.5))
+    local cur = scalar_num(config["nozzle_temperature"], 220)
+    local next_t = fmt_num(cur + temp_off, "%.0f")
     config["nozzle_temperature"] = is_arr and { next_t } or next_t
   end
 
   -- 2. Scale outer_wall_speed proportionally
   if math.abs(scale - 1.0) > 0.001 and config["outer_wall_speed"] ~= nil then
     local is_arr = type(config["outer_wall_speed"]) == "table"
-    local cur_spd = tonumber(is_arr and config["outer_wall_speed"][1] or config["outer_wall_speed"]) or 120
-    local next_spd = tostring(math.max(15, math.floor(cur_spd * scale + 0.5)))
+    local cur_spd = scalar_num(config["outer_wall_speed"], 120)
+    local next_spd = fmt_num(math.max(15, cur_spd * scale), "%.0f")
     config["outer_wall_speed"] = is_arr and { next_spd } or next_spd
   end
 
   -- 3. Set boolean flag
   config["wipe_on_loops"] = tostring(wipe)
 
-  print(string.format("[CustomRule] mode=%s, temp_offset=%+dC, outer_wall_scale=%.2fx, wipe_on_loops=%s", tostring(p.mode), temp_off, scale, tostring(wipe)))
+  print(string.format("[CustomRule] mode=%s, temp_offset=%+.0fC, outer_wall_scale=%.2fx, wipe_on_loops=%s", tostring(p.mode), temp_off, scale, tostring(wipe)))
 end

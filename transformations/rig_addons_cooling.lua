@@ -30,35 +30,33 @@ function apply(config, ctx)
   end
 
   if has_addon(addons, "hollow_front_back_covers") then
-    local fmin = 30
-    if config["fan_min_speed"] and config["fan_min_speed"][1] then
-      fmin = tonumber(config["fan_min_speed"][1]) or 30
-    end
+    local fmin = scalar_num(config["fan_min_speed"], 30)
     local new_min = math.min(fmin, math.max(10, fmin - 15))
-    config["fan_min_speed"] = { tostring(new_min) }
-    config["during_print_exhaust_fan_speed"] = { "40" }
+    config["fan_min_speed"] = { fmt_num(new_min, "%.0f") }
+    if ctx.filament_is_warp_prone == true then
+      config["during_print_exhaust_fan_speed"] = { "0" }
+    else
+      config["during_print_exhaust_fan_speed"] = { "40" }
+    end
     config["complete_print_exhaust_fan_speed"] = { "50" }
-    print("[AddOn:HollowCovers] Lowered fan_min_speed to " .. tostring(new_min) .. "%, exhaust fan to 40% (open-frame cooling schedule)")
+    print("[AddOn:HollowCovers] Lowered fan_min_speed to " .. string.format("%.0f", new_min) .. "%, exhaust fan to 40% (open-frame cooling schedule)")
   end
 
   if has_addon(addons, "microswiss_duct") then
-    local fmax = 90
-    if config["fan_max_speed"] and config["fan_max_speed"][1] then
-      fmax = tonumber(config["fan_max_speed"][1]) or 90
-    end
-    local new_max = math.floor(fmax * 0.85)
-    config["fan_max_speed"] = { tostring(new_max) }
-    if config["fan_min_speed"] and config["fan_min_speed"][1] then
-      local cur_min = tonumber(config["fan_min_speed"][1]) or 0
+    local fmax = scalar_num(config["fan_max_speed"], 90)
+    local new_max = fmax * 0.85
+    config["fan_max_speed"] = { fmt_num(new_max, "%.0f") }
+    if config["fan_min_speed"] ~= nil then
+      local cur_min = scalar_num(config["fan_min_speed"], 0)
       if cur_min > new_max then
-        config["fan_min_speed"] = { tostring(new_max) }
+        config["fan_min_speed"] = { fmt_num(new_max, "%.0f") }
       end
     end
     if not ctx.filament_is_warp_prone then
       config["overhang_fan_speed"] = { "100" }
     end
     config["enable_overhang_bridge_fan"] = { "1" }
-    print("[AddOn:MicroSwissDuct] Scaled fan_max_speed to " .. tostring(new_max) .. "% (high static pressure duct)")
+    print("[AddOn:MicroSwissDuct] Scaled fan_max_speed to " .. string.format("%.0f", new_max) .. "% (high static pressure duct)")
   end
 
   if has_addon(addons, "flowtech_hotend") then
@@ -78,7 +76,8 @@ function apply(config, ctx)
       { 1.50, 1.35 }  -- elastomeric TPU decompression travel preserved
     }
     local r0_base = scalar_num(base["filament_retraction_length"], scalar_num(config["filament_retraction_length"], 0.80))
-    if config["filament_retraction_length"] then
+    local is_bowden = r0_base >= 2.0
+    if config["filament_retraction_length"] and not is_bowden then
       local r1_target = pwl(r0_base, flowtech_retract_pwl) * d_scale
       local r_scale = r1_target / math.max(r0_base, 0.01)
       config["filament_retraction_length"] = map_num(config["filament_retraction_length"], function(r_cur)
@@ -94,8 +93,8 @@ function apply(config, ctx)
     -- single source; nil (standalone rule testing without a rig ctx) means rigid.
     local is_elastomer = ctx.filament_is_elastomer == true
     local is_elastomer_retract = is_elastomer or r0_base >= 1.15
-    local max_retract = is_elastomer_retract and 1.45 or (1.15 * math.sqrt(d / 0.4))
-    constrain("filament_retraction_length", 0.35, max_retract, "FlowTech all-metal heat-creep ceiling")
+    local max_retract = is_bowden and (r0_base + 1.5) or (is_elastomer_retract and 1.45 or (1.15 * math.sqrt(d / 0.4)))
+    constrain("filament_retraction_length", is_bowden and 2.0 or 0.35, max_retract, "FlowTech all-metal heat-creep ceiling")
     constrain("filament_retraction_speed", is_elastomer and 15 or 20, 46, "Direct-drive + all-metal meniscus speed limit")
     local flowtech_speed_pwl = {
       { 20, 20 },

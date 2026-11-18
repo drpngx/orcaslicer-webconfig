@@ -70,29 +70,69 @@ function validate(p, ctx)
   return true
 end
 
+local function is_warp_prone_polymer(config, ctx)
+  if ctx and ctx.filament_is_warp_prone == true then
+    return true
+  end
+  local ft = ""
+  if ctx and ctx.filament_type then
+    ft = tostring(ctx.filament_type)
+  elseif config and config["filament_type"] then
+    local raw = config["filament_type"]
+    ft = type(raw) == "table" and tostring(raw[1] or "") or tostring(raw)
+  end
+  local up = string.upper(ft)
+  if string.find(up, "PCTG", 1, true) ~= nil then
+    return false
+  end
+  return string.find(up, "ABS", 1, true) ~= nil
+    or string.find(up, "ASA", 1, true) ~= nil
+    or string.find(up, "HIPS", 1, true) ~= nil
+    or string.find(up, "PC", 1, true) ~= nil
+    or string.find(up, "PPA", 1, true) ~= nil
+    or string.find(up, "PAHT", 1, true) ~= nil
+    or string.find(up, "PA6", 1, true) ~= nil
+    or string.find(up, "PA12", 1, true) ~= nil
+    or up == "PA"
+    or string.find(up, "PA%-") ~= nil
+    or string.find(up, "NYLON", 1, true) ~= nil
+end
+
 function describe(p, ctx)
-  local ov_boost = math.floor(tonumber(p.overhang_fan) or 20)
-  local l_time_boost = math.floor(tonumber(p.layer_time) or 4)
+  local ov_boost = math.floor((tonumber(p.overhang_fan) or 20) + 0.5)
+  local l_time_boost = math.floor((tonumber(p.layer_time) or 4) + 0.5)
   local w_seq = p.wall_seq or "inner wall/outer wall"
   local scope = (ctx and ctx.scope) or "Selected Profile"
-  local badge = string.format("Overhang Fan %+d%% (≤100%%) • Min Layer Time %+ds • Order = %s", ov_boost, l_time_boost, w_seq)
+  local cap_pct = is_warp_prone_polymer(nil, ctx) and 35 or 100
+  local badge = string.format("Overhang Fan %+d%% (≤%d%%) • Min Layer Time %+ds • Order = %s", ov_boost, cap_pct, l_time_boost, w_seq)
   return {
     title = string.format("Symptom Fix: Overhang Curling (%+d%% Fan, %+ds Layer Time)", ov_boost, l_time_boost),
-    description = string.format("Stops steep overhang curling and bridge sag for %s: boosts overhang fan by %+d%% (up to 100%%), adds %+ds to minimum layer time, and sets %s wall sequence.", scope, ov_boost, l_time_boost, w_seq),
+    description = string.format("Stops steep overhang curling and bridge sag for %s: boosts overhang fan by %+d%% (up to %d%%), adds %+ds to minimum layer time, and sets %s wall sequence.", scope, ov_boost, cap_pct, l_time_boost, w_seq),
     badge = badge,
   }
 end
 
 function apply(config, ctx, p)
-  local ov_boost = math.floor(tonumber(p and p.overhang_fan) or 20)
-  local l_time_boost = math.floor(tonumber(p and p.layer_time) or 4)
+  local ov_boost = tonumber(p and p.overhang_fan) or 20
+  local l_time_boost = tonumber(p and p.layer_time) or 4
   local w_seq = (p and p.wall_seq) or "inner wall/outer wall"
 
-  local cur_of = tonumber(config["overhang_fan_speed"]) or 80
-  config["overhang_fan_speed"] = tostring(math.min(100, math.floor(cur_of + ov_boost)))
-  local cur_lt = tonumber(config["slow_down_layer_time"]) or 6
-  config["slow_down_layer_time"] = tostring(math.max(4, math.floor(cur_lt + l_time_boost)))
-  config["slow_down_for_layer_cooling"] = "1"
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local warp_prone = is_warp_prone_polymer(config, ctx)
+  local fan_cap = warp_prone and 35 or 100
+  local default_of = warp_prone and 20 or 80
+  local cur_of = scalar_num(config["overhang_fan_speed"], default_of)
+  set_arr("overhang_fan_speed", fmt_num(math.min(fan_cap, cur_of + ov_boost), "%.0f"))
+  local cur_lt = scalar_num(config["slow_down_layer_time"], 6)
+  set_arr("slow_down_layer_time", fmt_num(math.max(4, cur_lt + l_time_boost), "%.0f"))
+  set_arr("slow_down_for_layer_cooling", "1")
   config["wall_sequence"] = w_seq
   local d = describe(p or {}, ctx)
   print("[Symptom:Overhangs] " .. (d.badge or ""))

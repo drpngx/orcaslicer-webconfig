@@ -124,12 +124,23 @@ function apply(config, ctx, p)
   local infill = (p and p.infill_pattern) or "gyroid"
   local seam_gap = (p and p.seam_gap) or "10%"
 
-  local cur_f = tonumber(config["filament_flow_ratio"]) or 0.96
-  config["filament_flow_ratio"] = fmt_num(cur_f + flow_trim, "%.3f")
-  local cur_d = tonumber(config["filament_deretraction_speed"]) or 40
-  config["filament_deretraction_speed"] = fmt_num(math.max(15, cur_d * d_scale), "%.0f")
-  config["filament_retract_before_wipe"] = "80%"
-  config["seam_gap"] = seam_gap
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local cur_f = scalar_num(config["filament_flow_ratio"], 0.96)
+  set_arr("filament_flow_ratio", fmt_num(cur_f + flow_trim, "%.3f"))
+  local cur_d = scalar_num(config["filament_deretraction_speed"], 0)
+  if cur_d <= 0 then
+    cur_d = scalar_num(config["filament_retraction_speed"], 40)
+  end
+  set_arr("filament_deretraction_speed", fmt_num(math.max(15, cur_d * d_scale), "%.0f"))
+  set_arr("filament_retract_before_wipe", fmt_pct(80, "%.0f"))
+  config["seam_gap"] = fmt_pct(seam_gap, "%.0f")
   config["wipe_on_loops"] = "1"
   config["reduce_infill_retraction"] = "0"
   if infill ~= "keep" then

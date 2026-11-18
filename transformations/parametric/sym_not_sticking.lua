@@ -106,22 +106,38 @@ function apply(config, ctx, p)
   else
     s_scale = math.max(0.35, math.min(1.0, (100.0 - s_pct) / 100.0))
   end
-  local fl_t = math.floor(tonumber(p and p.fl_temp_boost) or 5)
+  local fl_t = tonumber(p and p.fl_temp_boost) or 5
 
-  local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.42
-  local cur_w = tonumber(config["initial_layer_line_width"]) or noz
+  local function set_arr(key, val)
+    if type(config[key]) == "string" then
+      config[key] = val
+    else
+      config[key] = { val }
+    end
+  end
+
+  local noz = scalar_num(ctx and ctx.nozzle_diameter, 0.42)
+  local cur_w = scalar_num(config["initial_layer_line_width"], noz)
   config["initial_layer_line_width"] = fmt_num(cur_w * w_scale, "%.2f")
-  local cur_s = tonumber(config["initial_layer_speed"]) or 45
+  local cur_s = scalar_num(config["initial_layer_speed"], 45)
   config["initial_layer_speed"] = fmt_num(math.max(15, cur_s * s_scale), "%.0f")
-  local cur_is = tonumber(config["initial_layer_infill_speed"]) or cur_s
+  local cur_is = scalar_num(config["initial_layer_infill_speed"], cur_s)
   config["initial_layer_infill_speed"] = fmt_num(math.max(15, cur_is * s_scale), "%.0f")
-  local cur_nt = tonumber(config["nozzle_temperature_initial_layer"]) or 230
-  config["nozzle_temperature_initial_layer"] = fmt_num(cur_nt + fl_t, "%.0f")
-  local cur_bt = tonumber(config["textured_plate_temp_initial_layer"]) or tonumber(config["hot_plate_temp_initial_layer"]) or 65
-  config["textured_plate_temp_initial_layer"] = tostring(cur_bt + fl_t)
-  config["hot_plate_temp_initial_layer"] = tostring(cur_bt + fl_t)
-  local cur_fo = tonumber(config["close_fan_the_first_x_layers"]) or 1
-  config["close_fan_the_first_x_layers"] = tostring(math.max(2, cur_fo + 2))
+  local cur_nt = scalar_num(config["nozzle_temperature_initial_layer"], 230)
+  set_arr("nozzle_temperature_initial_layer", fmt_num(cur_nt + fl_t, "%.0f"))
+  if config["nozzle_temperature_initial_layer_HS"] ~= nil then
+    set_arr("nozzle_temperature_initial_layer_HS", fmt_num(scalar_num(config["nozzle_temperature_initial_layer_HS"], cur_nt) + fl_t, "%.0f"))
+  end
+  if config["nozzle_temperature_initial_layer_BRASS"] ~= nil then
+    set_arr("nozzle_temperature_initial_layer_BRASS", fmt_num(scalar_num(config["nozzle_temperature_initial_layer_BRASS"], cur_nt) + fl_t, "%.0f"))
+  end
+  local cur_tbt = scalar_num(config["textured_plate_temp_initial_layer"], scalar_num(config["hot_plate_temp_initial_layer"], 65))
+  local cur_hbt = scalar_num(config["hot_plate_temp_initial_layer"], cur_tbt)
+  set_arr("textured_plate_temp_initial_layer", fmt_num(cur_tbt + fl_t, "%.0f"))
+  set_arr("hot_plate_temp_initial_layer", fmt_num(cur_hbt + fl_t, "%.0f"))
+  config["_lua_init_bed_delta_c"] = fmt_num(scalar_num(config["_lua_init_bed_delta_c"], 0) + fl_t, "%.0f")
+  local cur_fo = scalar_num(config["close_fan_the_first_x_layers"], 1)
+  set_arr("close_fan_the_first_x_layers", fmt_num(math.max(2, cur_fo + 2), "%.0f"))
   local d = describe(p or {}, ctx)
   print("[Symptom:FirstLayerStick] " .. (d.badge or ""))
 end

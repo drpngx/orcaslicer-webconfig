@@ -80,12 +80,17 @@ function apply(config, ctx, p)
   local pv_scale = math.max(1.0, math.min(2.5, (100.0 + pv_pct) / 100.0))
 
   config["enable_prime_tower"] = "1"
-  local cur_tw = tonumber(config["prime_tower_width"]) or 35
+  local cur_tw = scalar_num(config["prime_tower_width"], 35)
   config["prime_tower_width"] = fmt_num(cur_tw * tw_scale, "%.0f")
-  local cur_pv = tonumber(config["prime_volume"]) or 35
+  local cur_pv = scalar_num(config["prime_volume"], 35)
   config["prime_volume"] = fmt_num(cur_pv * pv_scale, "%.0f")
-  local cur_cut = tonumber(config["retraction_distances_when_cut"]) or 14.0
-  config["retraction_distances_when_cut"] = fmt_num(math.min(12.0, cur_cut * 0.85), "%.1f")
+  local cur_cut = scalar_num(config["retraction_distances_when_cut"], 14.0)
+  local cut_str = fmt_num(math.min(12.0, cur_cut * 0.85), "%.1f")
+  if type(config["retraction_distances_when_cut"]) == "string" then
+    config["retraction_distances_when_cut"] = cut_str
+  else
+    config["retraction_distances_when_cut"] = { cut_str }
+  end
   local d = describe(p or {}, ctx)
   print("[Symptom:AMSColorBleed] " .. (d.badge or ""))
 end

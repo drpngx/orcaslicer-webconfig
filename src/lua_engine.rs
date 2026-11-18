@@ -20,14 +20,29 @@ pub const MAX_LUA_STDOUT_LINES: usize = 200;
 /// vs bare scalars) while the numeric curve helpers (`pwl`, `clamp`, `math.sqrt`, `^`) are
 /// native Rust builtins.
 const LUA_RULE_PRELUDE: &str = r#"
--- scalar_num(val, default): read a possibly array-wrapped numeric config slot.
--- Slicer keys arrive either as "235" or {"235"}; this returns 235.0 either way,
--- or `default` when absent / non-numeric.
+-- scalar_num(val, default): read a possibly array-wrapped or '%'-suffixed numeric config slot.
+-- Slicer keys arrive either as "235", {"235"}, "15%", or {"10%"}; this returns the number
+-- either way, or `default` when absent / non-numeric.
 function scalar_num(val, default)
-  if type(val) == "table" then
-    return tonumber(val[1]) or default
+  local raw = val
+  if type(raw) == "table" then
+    raw = raw[1]
   end
-  return tonumber(val) or default
+  if type(raw) == "number" then
+    return raw
+  end
+  if type(raw) == "string" then
+    local n = tonumber(raw)
+    if n then
+      return n
+    end
+    local stripped = string.gsub(raw, "%%$", "")
+    local np = tonumber(stripped)
+    if np then
+      return np
+    end
+  end
+  return default
 end
 
 -- map_num(tbl, fn, fmt): apply `fn` to every numeric slot of a config key (either an
@@ -96,6 +111,20 @@ function fmt_num(val, fmt)
     end
   end
   return string.format(f, n)
+end
+
+-- fmt_pct(val, fmt): format a percentage value with trailing '%', preserving full IEEE-754
+-- float precision `tostring(n) .. "%"` during Phase 2 (`config["_defer_quantization"] == "1"`)
+-- so quantization happens once in Phase 3 Epilogue.
+function fmt_pct(val, fmt)
+  local n = scalar_num(val, nil)
+  if not n then
+    return tostring(val)
+  end
+  if type(config) == "table" and config["_defer_quantization"] == "1" then
+    return tostring(n) .. "%"
+  end
+  return fmt_num(n, fmt or "%.0f") .. "%"
 end
 "#;
 

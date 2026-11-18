@@ -127,8 +127,8 @@ exports_files([
     "resources/profiles/OrcaFilamentLibrary.json",
 ])
 """,
-    sha256 = "d97244baf15eb9377aa86714cb042d537ff3b1db13b7c2657cf865b820701cf0",
-    strip_prefix = "OrcaSlicer-2.4.2",
-    urls = ["https://github.com/OrcaSlicer/OrcaSlicer/archive/refs/tags/v2.4.2.tar.gz"],
+    sha256 = "7f04a53c7680816d2b54063dc4b88950607e5486240f2d0292919f8b6652cdb3",
+    strip_prefix = "OrcaSlicer-2.5.1",
+    urls = ["https://github.com/OrcaSlicer/OrcaSlicer/archive/refs/tags/v2.5.1.tar.gz"],
 )
 

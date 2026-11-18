@@ -5,22 +5,15 @@
 --   Safe Speed Ceiling (mm/s) = min(Hotend_max_flow, Filament_max_flow) / (Layer_Height * Line_Width)
 
 function apply(config, ctx)
-  local hotend_flow = tonumber(ctx.hotend_max_flow) or 22.0
-  local filament_flow = tonumber(ctx.filament_max_flow) or 18.0
-  if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] then
-    local cfg_mvs = tonumber(config["filament_max_volumetric_speed"][1])
-    if cfg_mvs and cfg_mvs > 0 and not (config["type"] == "machine" and math.abs(cfg_mvs - 12.0) < 0.01 and ctx.filament_max_flow) then
-      filament_flow = cfg_mvs
-    end
-  elseif type(config["filament_max_volumetric_speed"]) == "string" then
-    local cfg_mvs = tonumber(config["filament_max_volumetric_speed"])
-    if cfg_mvs and cfg_mvs > 0 then
-      filament_flow = cfg_mvs
-    end
+  local hotend_flow = scalar_num(ctx.hotend_max_flow, 22.0)
+  local filament_flow = scalar_num(ctx.filament_max_flow, 18.0)
+  local cfg_mvs = scalar_num(config["filament_max_volumetric_speed"], nil)
+  if cfg_mvs and cfg_mvs > 0 and not (config["type"] == "machine" and math.abs(cfg_mvs - 12.0) < 0.01 and ctx.filament_max_flow) then
+    filament_flow = cfg_mvs
   end
 
-  local layer_h = tonumber(config["layer_height"]) or tonumber(ctx.layer_height) or 0.20
-  local line_w = tonumber(config["outer_wall_line_width"]) or tonumber(ctx.line_width) or 0.42
+  local layer_h = scalar_num(config["layer_height"], nil) or scalar_num(ctx.layer_height, 0.20)
+  local line_w = scalar_num(config["outer_wall_line_width"], nil) or scalar_num(ctx.line_width, 0.42)
 
   local effective_flow = math.min(hotend_flow, filament_flow)
   local cross_section = layer_h * line_w
@@ -48,14 +41,14 @@ function apply(config, ctx)
   -- OrcaSlicer's G-code planner dynamically caps extrusion velocity using `filament_max_volumetric_speed`.
   -- Only overwrite linear speed keys in standalone (non-process-seeded) profile evaluations.
   if not (ctx and ctx._process_seeded) then
-    local outer_spd = tonumber(config["outer_wall_speed"]) or 200
-    local inner_spd = tonumber(config["inner_wall_speed"]) or 300
-    local infill_spd = tonumber(config["sparse_infill_speed"]) or 350
+    local outer_spd = scalar_num(config["outer_wall_speed"], 200)
+    local inner_spd = scalar_num(config["inner_wall_speed"], 300)
+    local infill_spd = scalar_num(config["sparse_infill_speed"], 350)
 
     -- Wider inner walls / sparse infill (e.g. 125% Line Width Geometry pack) carry more plastic per mm,
     -- so each feature gets its own ceiling from its own line width.
-    local inner_w = tonumber(config["inner_wall_line_width"]) or line_w
-    local infill_w = tonumber(config["sparse_infill_line_width"]) or line_w
+    local inner_w = scalar_num(config["inner_wall_line_width"], line_w)
+    local infill_w = scalar_num(config["sparse_infill_line_width"], line_w)
     local inner_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * inner_w))
     local infill_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * infill_w))
 
@@ -69,18 +62,18 @@ function apply(config, ctx)
       config["sparse_infill_speed"] = tostring(infill_ceiling)
     end
 
-    local solid_spd = tonumber(config["internal_solid_infill_speed"])
+    local solid_spd = scalar_num(config["internal_solid_infill_speed"], nil)
     if solid_spd then
-      local solid_w = tonumber(config["internal_solid_infill_line_width"]) or line_w
+      local solid_w = scalar_num(config["internal_solid_infill_line_width"], line_w)
       local solid_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * solid_w))
       if solid_spd > solid_ceiling then
         config["internal_solid_infill_speed"] = tostring(solid_ceiling)
       end
     end
 
-    local top_spd = tonumber(config["top_surface_speed"])
+    local top_spd = scalar_num(config["top_surface_speed"], nil)
     if top_spd then
-      local top_w = tonumber(config["top_surface_line_width"]) or line_w
+      local top_w = scalar_num(config["top_surface_line_width"], line_w)
       local top_ceiling = math.floor(effective_flow / math.max(0.01, layer_h * top_w))
       if top_spd > top_ceiling then
         config["top_surface_speed"] = tostring(top_ceiling)

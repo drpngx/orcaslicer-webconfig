@@ -157,11 +157,8 @@ local function is_corexy_printer(ctx)
 end
 
 local function infer_polymer_mvs(config, ctx)
-  local cfg_v = nil
-  if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] then
-    cfg_v = tonumber(config["filament_max_volumetric_speed"][1])
-  end
-  local ctx_v = tonumber(ctx and ctx.filament_max_flow)
+  local cfg_v = scalar_num(config["filament_max_volumetric_speed"], nil)
+  local ctx_v = scalar_num(ctx and ctx.filament_max_flow, nil)
   if cfg_v and cfg_v > 0 and (not ctx_v or math.abs(cfg_v - 12.0) > 0.01) then
     return cfg_v
   end
@@ -229,14 +226,11 @@ end
 function apply(config, ctx, p)
   local mode = (p and p.consistency_mode) or "auto_guard"
   local lock_pref = (p and p.dont_slow_down_outer_wall) or "auto"
-  local sub_spd = math.floor((tonumber(p and p.sub_vfa_speed) or 55) + 0.5)
-  local clear_spd = math.floor((tonumber(p and p.vfa_clear_speed) or 145) + 0.5)
-  local small_spd = math.floor((tonumber(p and p.small_perimeter_speed) or 50) + 0.5)
+  local sub_spd = tonumber(p and p.sub_vfa_speed) or 55
+  local clear_spd = tonumber(p and p.vfa_clear_speed) or 145
+  local small_spd = tonumber(p and p.small_perimeter_speed) or 50
 
-  if not is_corexy_printer(ctx) and mode == "auto_guard" then
-    print("[OuterWallConsistency] Non-CoreXY kinematics detected; skipping CoreXY 70-130 mm/s VFA guard")
-    return
-  end
+  local is_corexy = is_corexy_printer(ctx)
 
   local hotend_flow = tonumber(ctx and ctx.hotend_max_flow) or 22.0
   local filament_flow = infer_polymer_mvs(config, ctx)
@@ -246,12 +240,12 @@ function apply(config, ctx, p)
   local finish = string.upper(tostring((ctx and ctx.filament_finish) or ""))
   local is_silk = string.find(ftype, "SILK", 1, true) ~= nil or string.find(finish, "SILK", 1, true) ~= nil
 
-  local layer_h = tonumber(config["layer_height"]) or tonumber(ctx and ctx.layer_height) or 0.20
-  local outer_w = tonumber(config["outer_wall_line_width"]) or tonumber(ctx and ctx.line_width) or 0.42
+  local layer_h = scalar_num(config["layer_height"], nil) or scalar_num(ctx and ctx.layer_height, 0.20)
+  local outer_w = scalar_num(config["outer_wall_line_width"], nil) or scalar_num(ctx and ctx.line_width, 0.42)
   local cross_section = math.max(0.01, layer_h * outer_w)
 
   local mvs_ceiling = math.floor(effective_flow / cross_section)
-  local cur_outer_spd = tonumber(config["outer_wall_speed"]) or 200
+  local cur_outer_spd = scalar_num(config["outer_wall_speed"], 200)
   local actual_outer_spd = math.min(cur_outer_spd, mvs_ceiling)
 
   local new_outer_spd = cur_outer_spd
@@ -259,7 +253,7 @@ function apply(config, ctx, p)
   if mode == "sub_resonance_gloss" or (is_silk and cur_outer_spd > (sub_spd + 5)) then
     new_outer_spd = sub_spd
     stepped_down = true
-  elseif actual_outer_spd > (sub_spd + 5) and actual_outer_spd < clear_spd then
+  elseif is_corexy and actual_outer_spd > (sub_spd + 5) and actual_outer_spd < clear_spd then
     -- MVS or profile speed would trap the outer wall inside the 70 - 130 mm/s CoreXY VFA resonance band!
     new_outer_spd = sub_spd
     stepped_down = true
@@ -283,21 +277,22 @@ function apply(config, ctx, p)
   end
 
   config["dont_slow_down_outer_wall"] = lock_ow
-  config["small_perimeter_speed"] = tostring(small_spd)
+  config["small_perimeter_speed"] = fmt_num(math.max(20, math.min(small_spd, new_outer_spd)), "%.0f")
   if stepped_down then
-    config["outer_wall_speed"] = tostring(new_outer_spd)
+    config["outer_wall_speed"] = fmt_num(new_outer_spd, "%.0f")
   end
 
   -- Side-channel metadata so per-process / standalone export can evaluate each process tier's cross-section
   config["_outer_wall_vfa_mode"] = mode
+  config["_outer_wall_vfa_is_corexy"] = is_corexy and "1" or "0"
   config["_outer_wall_vfa_lock_pref"] = lock_pref
   config["_outer_wall_vfa_is_silk"] = is_silk and "1" or "0"
-  config["_outer_wall_vfa_sub_speed"] = tostring(sub_spd)
-  config["_outer_wall_vfa_clear_speed"] = tostring(clear_spd)
+  config["_outer_wall_vfa_sub_speed"] = fmt_num(sub_spd, "%.0f")
+  config["_outer_wall_vfa_clear_speed"] = fmt_num(clear_spd, "%.0f")
   config["_outer_wall_vfa_effective_mvs"] = fmt_num(effective_flow, "%.2f")
 
   print(string.format(
-    "[OuterWallConsistency:%s] dont_slow_down_outer_wall=%s, MVS=%.1f mm3/s @ %.2fx%.2fmm (ceiling %d mm/s) -> outer_wall_speed=%d mm/s%s",
+    "[OuterWallConsistency:%s] dont_slow_down_outer_wall=%s, MVS=%.1f mm3/s @ %.2fx%.2fmm (ceiling %d mm/s) -> outer_wall_speed=%.0f mm/s%s",
     mode,
     lock_ow,
     effective_flow,

@@ -85,10 +85,10 @@ function apply(config, ctx, p)
   end
 
   config["sparse_infill_pattern"] = pat
-  local cur_s = tonumber(config["sparse_infill_speed"]) or 240
+  local cur_s = scalar_num(config["sparse_infill_speed"], 240)
   config["sparse_infill_speed"] = fmt_num(math.max(40, cur_s * spd_scale), "%.0f")
-  local noz = tonumber(ctx and ctx.nozzle_diameter) or 0.40
-  local cur_w = tonumber(config["sparse_infill_line_width"]) or noz
+  local noz = scalar_num(ctx and ctx.nozzle_diameter, 0.40)
+  local cur_w = scalar_num(config["sparse_infill_line_width"], noz)
   config["sparse_infill_line_width"] = fmt_num(cur_w * 1.12, "%.2f")
   local d = describe(p or {}, ctx)
   print("[Symptom:WeakInfill] " .. (d.badge or ""))
