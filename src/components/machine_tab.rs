@@ -57,7 +57,11 @@ pub fn MachineTab(props: &MachineTabProps) -> Html {
     .unwrap_or_else(MachineRig::kobra_s1_hardened_steel_png);
 
   let addon_catalog = RigAddOn::get_catalog();
-  let template_catalog = MachineRig::get_template_catalog();
+  let template_catalog = if *show_template_picker {
+    MachineRig::get_template_catalog()
+  } else {
+    Vec::new()
+  };
 
   html! {
     <div class="flex flex-col w-full gap-space-lg">

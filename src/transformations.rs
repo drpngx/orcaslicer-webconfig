@@ -1039,7 +1039,16 @@ impl TransformationEngine {
   }
 
   /// Curated rule templates for the interactive "Create / Add New Lua Rule" builder in `WizardTab`.
+  pub fn get_rule_templates_ref() -> &'static [TransformationRule] {
+    static TEMPLATES: std::sync::OnceLock<Vec<TransformationRule>> = std::sync::OnceLock::new();
+    TEMPLATES.get_or_init(Self::build_rule_templates)
+  }
+
   pub fn get_rule_templates() -> Vec<TransformationRule> {
+    Self::get_rule_templates_ref().to_vec()
+  }
+
+  fn build_rule_templates() -> Vec<TransformationRule> {
     vec![
       TransformationRule {
         id: "line_width_geometry".to_string(),
@@ -4531,7 +4540,17 @@ end
   /// `transformations/parametric/*.lua`. Each Lua script declares `meta = { ... }`,
   /// `params = { ... }` (with description, range/enum bounds, default, unit),
   /// `validate(params, ctx)`, `describe(params, ctx)`, and `apply(config, ctx, params)`.
+  pub fn get_parameterized_calibration_templates_ref() -> &'static [ParameterizedCalibrationTemplate] {
+    static CAL_TEMPLATES: std::sync::OnceLock<Vec<ParameterizedCalibrationTemplate>> =
+      std::sync::OnceLock::new();
+    CAL_TEMPLATES.get_or_init(Self::build_parameterized_calibration_templates)
+  }
+
   pub fn get_parameterized_calibration_templates() -> Vec<ParameterizedCalibrationTemplate> {
+    Self::get_parameterized_calibration_templates_ref().to_vec()
+  }
+
+  fn build_parameterized_calibration_templates() -> Vec<ParameterizedCalibrationTemplate> {
     let scripts: &[(&str, &str)] = &[
       (
         "cal_yolo_flow",

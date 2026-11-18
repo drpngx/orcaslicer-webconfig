@@ -53,7 +53,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
   // State for the interactive "Create / Add New Lua Rule" Builder, Calibration Q&A Wizard & Simple Visual Setting Wizard
   let show_rule_creator = use_state(|| false);
   let creator_mode = use_state(|| "calibration_qa".to_string()); // "calibration_qa", "visual_wizard", or "preset_templates"
-  let setting_catalog = use_memo((), |_| OrcaProfile::get_wizard_setting_catalog());
+  let setting_catalog = OrcaProfile::get_wizard_setting_catalog_ref();
   let search_query = use_state(String::new);
   let section_filter = use_state(|| "All".to_string());
   let selected_setting_key = use_state(|| "nozzle_temperature".to_string());
@@ -61,20 +61,18 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
   let custom_operand = use_state(|| "+5".to_string());
   let staged_actions = use_state(Vec::<WizardRuleAction>::new);
 
-  let cal_templates = use_memo((), |_| {
-    TransformationEngine::get_parameterized_calibration_templates()
-  });
+  let cal_templates = TransformationEngine::get_parameterized_calibration_templates_ref();
   let selected_cal_idx = use_state(|| 0usize);
   let issue_tree_category = use_state(|| "all".to_string());
   let issue_search_query = use_state(String::new);
   let cal_answers = use_state(|| {
-    TransformationEngine::get_parameterized_calibration_templates()
+    TransformationEngine::get_parameterized_calibration_templates_ref()
       .first()
       .map(|t| t.default_answers())
       .unwrap_or_default()
   });
 
-  let templates = use_memo((), |_| TransformationEngine::get_rule_templates());
+  let templates = TransformationEngine::get_rule_templates_ref();
   let selected_template_idx = use_state(|| 0usize);
   let draft_name = use_state(|| "Calibration: YOLO Flow Rate (0.960 → 0.940)".to_string());
   let draft_desc = use_state(|| {
@@ -85,8 +83,8 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
   let draft_icon = use_state(|| "🎯".to_string());
   let draft_condition = use_state(|| "filament:PCTG".to_string());
   let draft_lua = use_state(|| {
-    let cals = TransformationEngine::get_parameterized_calibration_templates();
-    if let Some(first) = cals.first() {
+    if let Some(first) = TransformationEngine::get_parameterized_calibration_templates_ref().first()
+    {
       let ans = first.default_answers();
       let (_, _, _, lua) = first.generate_from_answers(&ans, &first.default_condition_expr);
       lua
@@ -427,7 +425,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                 let d_icon = draft_icon.clone();
                 let d_cond = draft_condition.clone();
                 let d_lua = draft_lua.clone();
-                let cal_list_c = (*cal_templates).clone();
+                let cal_list_c = cal_templates;
                 Callback::from(move |_| {
                   if let Some((w_idx, w_tpl)) = cal_list_c
                     .iter()
@@ -468,7 +466,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                 let d_icon = draft_icon.clone();
                 let d_cond = draft_condition.clone();
                 let d_lua = draft_lua.clone();
-                let cal_list_c = (*cal_templates).clone();
+                let cal_list_c = cal_templates;
                 Callback::from(move |_| {
                   if let Some((f_idx, f_tpl)) = cal_list_c
                     .iter()
@@ -508,7 +506,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                 let d_icon = draft_icon.clone();
                 let d_cond = draft_condition.clone();
                 let d_lua = draft_lua.clone();
-                let cal_list_c = (*cal_templates).clone();
+                let cal_list_c = cal_templates;
                 Callback::from(move |_| {
                   if let Some((sym_idx, sym_tpl)) = cal_list_c
                     .iter()
@@ -548,7 +546,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                 let d_icon = draft_icon.clone();
                 let d_cond = draft_condition.clone();
                 let d_lua = draft_lua.clone();
-                let cal_list_c = (*cal_templates).clone();
+                let cal_list_c = cal_templates;
                 Callback::from(move |_| {
                   if let Some((cal_idx, cal_tpl)) = cal_list_c
                     .iter()
@@ -596,9 +594,9 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
 
         // Interactive Rule Creator: Symptom Q&A + Calibration Print Q&A + Simple Visual Setting Search Wizard + Preset Library Drawer
         {if *show_rule_creator {
-          let templates_list = (*templates).clone();
+          let templates_list = templates;
           let cur_idx = *selected_template_idx;
-          let cal_list = (*cal_templates).clone();
+          let cal_list = cal_templates;
           let cur_cal_idx = (*selected_cal_idx).min(cal_list.len().saturating_sub(1));
           let cur_cal = cal_list[cur_cal_idx].clone();
           let cur_mode = (*creator_mode).clone();
@@ -687,7 +685,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                       let d_icon = draft_icon.clone();
                       let d_cond = draft_condition.clone();
                       let d_lua = draft_lua.clone();
-                      let cal_list_c = cal_list.clone();
+                      let cal_list_c = cal_list;
                       Callback::from(move |_| {
                         if let Some((sym_idx, sym_tpl)) = cal_list_c
                           .iter()
@@ -731,7 +729,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                       let d_icon = draft_icon.clone();
                       let d_cond = draft_condition.clone();
                       let d_lua = draft_lua.clone();
-                      let cal_list_c = cal_list.clone();
+                      let cal_list_c = cal_list;
                       Callback::from(move |_| {
                         if let Some((cal_idx, cal_tpl)) = cal_list_c
                           .iter()
@@ -806,7 +804,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                       let d_icon = draft_icon.clone();
                       let d_cond = draft_condition.clone();
                       let d_lua = draft_lua.clone();
-                      let tpls_c = templates_list.clone();
+                      let tpls_c = templates_list;
                       Callback::from(move |_| {
                         if let Some((c_idx, c_tpl)) = tpls_c
                           .iter()
@@ -2004,7 +2002,7 @@ pub fn WizardTab(props: &WizardTabProps) -> Html {
                           let d_icon = draft_icon.clone();
                           let d_cond = draft_condition.clone();
                           let d_lua = draft_lua.clone();
-                          let tpls_c = templates_list.clone();
+                          let tpls_c = templates_list;
                           Callback::from(move |_| {
                             if let Some(c_tpl) = tpls_c.iter().find(|t| t.id == "custom_blank_rule") {
                               d_name.set(c_tpl.name.clone());

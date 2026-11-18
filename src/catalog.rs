@@ -418,9 +418,9 @@ fn polymer_priority(code: &str) -> usize {
   crate::constants::constants().polymer_sort_priority(code)
 }
 
-pub fn load_merged_catalog() -> CombinedCatalog {
+pub fn load_merged_catalog() -> &'static CombinedCatalog {
   static MERGED_CATALOG: std::sync::OnceLock<CombinedCatalog> = std::sync::OnceLock::new();
-  MERGED_CATALOG.get_or_init(build_merged_catalog).clone()
+  MERGED_CATALOG.get_or_init(build_merged_catalog)
 }
 
 /// Machine hardware constants for `printer_model`. A curated `constants.json machines[]`

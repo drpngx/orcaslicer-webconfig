@@ -329,41 +329,68 @@ pub fn App() -> Html {
       .and_then(|s| s.active_moonraker_spool_id)
   });
 
-  // Automatically persist full site state to browser localStorage whenever a config is loaded
+  // Automatically persist full site state to browser localStorage whenever persisted state changes
+  // (using `UseStateHandle` `Rc::ptr_eq` fast-path so tab switches do zero deep clones!).
   {
-    let is_loaded = *is_config_loaded;
-    let snap = WebConfigStateSnapshot {
-      schema_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
-      config_version: *config_version,
-      orca_slicer_version: "2.2".to_string(),
-      webconfig_app_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
-      bound_filename: (*bound_filename).clone(),
-      bound_path_hint: (*bound_path_hint).clone(),
-      detected_hardware_summary: (*detected_hardware_summary).clone(),
-      machines: (*machines).clone(),
-      active_machine_id: (*active_machine_id).clone(),
-      filaments: (*filaments).clone(),
-      active_filament_type: (*active_filament_type).clone(),
-      processes: (*processes).clone(),
-      active_process_id: (*active_process_id).clone(),
-      base_profile: (*base_profile).clone(),
-      rules: (*rules).clone(),
-      conflicts: (*conflicts).clone(),
-      pending_updates: (*pending_updates).clone(),
-      flush_multiplier: *flush_multiplier,
-      disk_flush_multiplier: *disk_flush_multiplier,
-      disk_flush_matrix: (*disk_flush_matrix).clone(),
-      disk_flush_slot_count: *disk_flush_slot_count,
-      conf_relative_path: (*conf_relative_path).clone(),
-      spoolman_url: (*spoolman_url).clone(),
-      spoolman_inventory: (*spoolman_inventory).clone(),
-      moonraker_enabled: *moonraker_enabled,
-      moonraker_url: (*moonraker_url).clone(),
-      active_moonraker_spool_id: *active_moonraker_spool_id,
-    };
-    use_effect_with((is_loaded, snap), move |(loaded, snapshot)| {
-      if *loaded {
-        let _ = FsManager::save_state_to_storage(snapshot);
+    let persist_a = (
+      *is_config_loaded,
+      *config_version,
+      bound_filename.clone(),
+      bound_path_hint.clone(),
+      detected_hardware_summary.clone(),
+      machines.clone(),
+      active_machine_id.clone(),
+      filaments.clone(),
+      active_filament_type.clone(),
+      processes.clone(),
+      active_process_id.clone(),
+      base_profile.clone(),
+    );
+    let persist_b = (
+      rules.clone(),
+      conflicts.clone(),
+      pending_updates.clone(),
+      *flush_multiplier,
+      *disk_flush_multiplier,
+      disk_flush_matrix.clone(),
+      *disk_flush_slot_count,
+      conf_relative_path.clone(),
+      spoolman_url.clone(),
+      spoolman_inventory.clone(),
+      (*moonraker_enabled, moonraker_url.clone(), *active_moonraker_spool_id),
+    );
+    use_effect_with((persist_a, persist_b), move |(a, b)| {
+      if a.0 {
+        let snapshot = WebConfigStateSnapshot {
+          schema_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
+          config_version: a.1,
+          orca_slicer_version: "2.5.1".to_string(),
+          webconfig_app_version: crate::models::WEBCONFIG_APP_VERSION.to_string(),
+          bound_filename: (*a.2).clone(),
+          bound_path_hint: (*a.3).clone(),
+          detected_hardware_summary: (*a.4).clone(),
+          machines: (*a.5).clone(),
+          active_machine_id: (*a.6).clone(),
+          filaments: (*a.7).clone(),
+          active_filament_type: (*a.8).clone(),
+          processes: (*a.9).clone(),
+          active_process_id: (*a.10).clone(),
+          base_profile: (*a.11).clone(),
+          rules: (*b.0).clone(),
+          conflicts: (*b.1).clone(),
+          pending_updates: (*b.2).clone(),
+          flush_multiplier: b.3,
+          disk_flush_multiplier: b.4,
+          disk_flush_matrix: (*b.5).clone(),
+          disk_flush_slot_count: b.6,
+          conf_relative_path: (*b.7).clone(),
+          spoolman_url: (*b.8).clone(),
+          spoolman_inventory: (*b.9).clone(),
+          moonraker_enabled: (b.10).0,
+          moonraker_url: (*(b.10).1).clone(),
+          active_moonraker_spool_id: (b.10).2,
+        };
+        let _ = FsManager::save_state_to_storage(&snapshot);
       }
       || ()
     });
@@ -384,184 +411,214 @@ pub fn App() -> Html {
     .or_else(|| processes.first().cloned())
     .unwrap_or_else(|| ProcessProfile::get_default_processes().remove(1));
 
-  let active_slots: Vec<FilamentSpool> = filaments.iter().cloned().collect();
-
-  // Minimum filament max volumetric speed across active slots
-  let active_filament_max_flow = filaments
-    .iter()
-    .find(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
-    .map(|s| s.max_volumetric_speed as f64)
-    .unwrap_or(12.0);
-  let active_filament_finish = filaments
-    .iter()
-    .find(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
-    .map(|s| s.finish_type.clone())
-    .unwrap_or_else(|| "Standard".to_string());
-
-  let slots_json: Vec<serde_json::Value> = active_slots
-    .iter()
-    .map(|s| {
-      serde_json::json!({
-        "name": s.name,
-        "material_type": s.material_type,
-        "color_hex": s.color_hex,
-        "opacity": s.opacity,
-        "pigment_stickiness": s.pigment_stickiness
-      })
-    })
-    .collect();
-
-  let all_filament_types: Vec<String> = filaments.iter().map(|s| s.material_type.clone()).collect();
-
-  // Context for Lua Evaluation (includes rig addons, hotend, weather & flush_multiplier!)
-  let eval_context = serde_json::json!({
-    "printer_model": active_rig.printer_model,
-    "hotend": active_rig.hotend,
-    "nozzle_type": active_rig.nozzle_type,
-    "nozzle_material": active_rig.nozzle_material,
-    "nozzle_diameter": active_rig.nozzle_diameter,
-    "hotend_max_flow": active_rig.max_volumetric_flow_limit,
-    "hotend_max_temp_c": crate::catalog::machine_constants(&active_rig.printer_model).max_hotend_temp_c,
-    "printer_kinematics_class": active_rig.kinematics_class(),
-    "travel_accel_target_mm2": active_rig.travel_accel_policy().travel_accel_target_mm2,
-    "travel_accel_floor_mm2": active_rig.travel_accel_policy().travel_accel_floor_mm2,
-    "filament_max_flow": active_filament_max_flow,
-    "melt_zone_multiplier": active_rig.melt_zone_multiplier,
-    "flush_multiplier": *flush_multiplier,
-    "layer_height": active_proc.layer_height,
-    "line_width": active_proc.line_width,
-    "filament_type": *active_filament_type,
-    "filament_finish": active_filament_finish,
-    "filament_is_elastomer": crate::constants::constants()
-      .is_elastomer_family_material(&active_filament_type),
-    "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&active_filament_type).1,
-    "all_filament_types": all_filament_types,
-    "addons": active_rig.addons,
-    "climate_preset": active_rig.climate_preset,
-    "ambient_temp_c": active_rig.ambient_temp_c,
-    "humidity_pct": active_rig.humidity_pct,
-    "slots": slots_json,
+  let memo_inputs = use_memo(
+    (
+      base_profile.clone(),
+      active_machine_id.clone(),
+      machines.clone(),
+      active_process_id.clone(),
+      processes.clone(),
+      active_filament_type.clone(),
+      filaments.clone(),
+      *flush_multiplier,
+    ),
+    |(bp, amid, machs, apid, procs, act_ft, fils, fmult)| {
+      let rig = machs
+        .iter()
+        .find(|m| m.id == **amid)
+        .cloned()
+        .or_else(|| machs.first().cloned())
+        .unwrap_or_else(MachineRig::kobra_s1_hardened_steel_png);
+      let proc_p = procs
+        .iter()
+        .find(|p| p.id == **apid)
+        .cloned()
+        .or_else(|| procs.first().cloned())
+        .unwrap_or_else(|| ProcessProfile::get_default_processes().remove(1));
+      let active_filament_max_flow = fils
+        .iter()
+        .find(|s| s.material_type.eq_ignore_ascii_case(act_ft))
+        .map(|s| s.max_volumetric_speed as f64)
+        .unwrap_or(12.0);
+      let active_filament_finish = fils
+        .iter()
+        .find(|s| s.material_type.eq_ignore_ascii_case(act_ft))
+        .map(|s| s.finish_type.clone())
+        .unwrap_or_else(|| "Standard".to_string());
+      let slots_json: Vec<serde_json::Value> = fils
+        .iter()
+        .map(|s| {
+          serde_json::json!({
+            "name": s.name,
+            "material_type": s.material_type,
+            "color_hex": s.color_hex,
+            "opacity": s.opacity,
+            "pigment_stickiness": s.pigment_stickiness
+          })
+        })
+        .collect();
+      let all_filament_types: Vec<String> = fils.iter().map(|s| s.material_type.clone()).collect();
+      let raw_ctx = serde_json::json!({
+        "printer_model": rig.printer_model,
+        "hotend": rig.hotend,
+        "nozzle_type": rig.nozzle_type,
+        "nozzle_material": rig.nozzle_material,
+        "nozzle_diameter": rig.nozzle_diameter,
+        "hotend_max_flow": rig.max_volumetric_flow_limit,
+        "hotend_max_temp_c": crate::catalog::machine_constants(&rig.printer_model).max_hotend_temp_c,
+        "printer_kinematics_class": rig.kinematics_class(),
+        "travel_accel_target_mm2": rig.travel_accel_policy().travel_accel_target_mm2,
+        "travel_accel_floor_mm2": rig.travel_accel_policy().travel_accel_floor_mm2,
+        "filament_max_flow": active_filament_max_flow,
+        "melt_zone_multiplier": rig.melt_zone_multiplier,
+        "flush_multiplier": *fmult,
+        "layer_height": proc_p.layer_height,
+        "line_width": proc_p.line_width,
+        "filament_type": &**act_ft,
+        "filament_finish": active_filament_finish,
+        "filament_is_elastomer": crate::constants::constants()
+          .is_elastomer_family_material(act_ft),
+        "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(act_ft).1,
+        "all_filament_types": all_filament_types,
+        "addons": rig.addons,
+        "climate_preset": rig.climate_preset,
+        "ambient_temp_c": rig.ambient_temp_c,
+        "humidity_pct": rig.humidity_pct,
+        "slots": slots_json,
+      });
+      let mut wb_ctx = TransformationEngine::seed_process_inputs(bp, &raw_ctx, &proc_p);
+      wb_ctx.0.set_str("flush_multiplier", &format!("{:.2}", *fmult));
+      let mut export_base = (**bp).clone();
+      export_base.set_str("flush_multiplier", &format!("{:.2}", *fmult));
+      (wb_ctx.0, wb_ctx.1, export_base)
+    },
+  );
+  let export_eval_inputs = std::rc::Rc::new(ExportEvalInputs {
+    base: memo_inputs.2.clone(),
+    rules: (*rules).clone(),
+    ctx: memo_inputs.1.clone(),
   });
 
-  // Prepare base profile with active process speeds so Lua can cap them (also seeds `process_tier`
-  // for declarative Process Tier scope filters)
-  let (working_base, eval_context) = {
-    let mut wb_ctx =
-      TransformationEngine::seed_process_inputs(&base_profile, &eval_context, &active_proc);
-    wb_ctx
-      .0
-      .set_str("flush_multiplier", &format!("{:.2}", *flush_multiplier));
-    wb_ctx
-  };
-
-  // Inputs for independent per-process Lua evaluation at Save / Export time
-  let export_eval_inputs = ExportEvalInputs {
-    base: {
-      let mut b = (*base_profile).clone();
-      b.set_str("flush_multiplier", &format!("{:.2}", *flush_multiplier));
-      b
+  // Memoize Lua Stack Evaluation, Provenance, Safety Scan & JSON Diffs so tab switches run 0 Lua VMs!
+  let memo_eval = use_memo(
+    (
+      memo_inputs.clone(),
+      rules.clone(),
+      active_filament_type.clone(),
+      active_rig.clone(),
+      filaments.clone(),
+      conflicts.clone(),
+      disk_flush_matrix.clone(),
+    ),
+    |(inputs, r_list, act_ft, rig, fils, confs, df_mat)| {
+      let wb = &inputs.0;
+      let ctx = &inputs.1;
+      let mut ev: StackEvaluationResult = TransformationEngine::evaluate_stack(wb, r_list, ctx);
+      if let Some(active_spool_ref) = fils
+        .iter()
+        .find(|s| s.material_type.eq_ignore_ascii_case(act_ft))
+        .or_else(|| fils.first())
+      {
+        let spool_eval = crate::threemf::evaluate_spool_filament_provenance(
+          active_spool_ref,
+          rig,
+          Some(&ev.resulting_profile.values),
+        );
+        TransformationEngine::merge_active_spool_provenance(&mut ev, &spool_eval);
+      }
+      let warnings: Vec<SafetyWarning> = TransformationEngine::evaluate_safety_warnings(
+        rig,
+        fils,
+        &ev.resulting_profile,
+        confs,
+        df_mat,
+      );
+      let base_str = wb.to_json_pretty();
+      let derived_str = ev.resulting_profile.to_json_pretty();
+      let mut d_lines = Vec::new();
+      for (b_line, d_line) in base_str.lines().zip(derived_str.lines()) {
+        if b_line == d_line {
+          d_lines.push(format!("  {}", b_line));
+        } else {
+          d_lines.push(format!("- {}", b_line));
+          d_lines.push(format!("+ {}", d_line));
+        }
+      }
+      let diff_txt = d_lines.join("\n");
+      (ev, warnings, base_str, derived_str, diff_txt)
     },
-    rules: (*rules).clone(),
-    ctx: eval_context.clone(),
-  };
-
-  // Evaluate Lua Stack
-  let mut eval_result: StackEvaluationResult =
-    TransformationEngine::evaluate_stack(&working_base, &rules, &eval_context);
-  if let Some(active_spool_ref) = filaments
-    .iter()
-    .find(|s| s.material_type.eq_ignore_ascii_case(&active_filament_type))
-    .or_else(|| filaments.first())
-  {
-    let spool_eval = crate::threemf::evaluate_spool_filament_provenance(
-      active_spool_ref,
-      &active_rig,
-      Some(&eval_result.resulting_profile.values),
-    );
-    TransformationEngine::merge_active_spool_provenance(&mut eval_result, &spool_eval);
-  }
-
-  // Evaluate Safety & Weird Value Warnings across imported files, conflicts, flushing matrix, and derived profile
-  let safety_warnings: Vec<SafetyWarning> = TransformationEngine::evaluate_safety_warnings(
-    &active_rig,
-    &filaments,
-    &eval_result.resulting_profile,
-    &conflicts,
-    &disk_flush_matrix,
   );
+  let eval_result = &memo_eval.0;
+  let safety_warnings = &memo_eval.1;
   let pending_confirmed_action = use_state(|| None::<PendingConfirmedAction>);
 
-  // Compute JSON diff preview
-  let base_json_str = working_base.to_json_pretty();
-  let derived_json_str = eval_result.resulting_profile.to_json_pretty();
-
-  let mut diff_lines = Vec::new();
-  let base_lines: Vec<&str> = base_json_str.lines().collect();
-  let derived_lines: Vec<&str> = derived_json_str.lines().collect();
-
-  for (b_line, d_line) in base_lines.iter().zip(derived_lines.iter()) {
-    if b_line == d_line {
-      diff_lines.push(format!("  {}", b_line));
-    } else {
-      diff_lines.push(format!("- {}", b_line));
-      diff_lines.push(format!("+ {}", d_line));
-    }
-  }
-  let json_diff_text = diff_lines.join("\n");
-
-  // Build Our Internal Config Data Structure JSON vs User Disk Config JSON
-  let our_internal_config_json = serde_json::to_string_pretty(&serde_json::json!({
-    "architecture": "Transformation-Based Config State (Not Absolute Values)",
-    "schema_version": crate::models::WEBCONFIG_APP_VERSION,
-    "config_version": *config_version,
-    "orca_slicer_version": "2.2",
-    "webconfig_app_version": crate::models::WEBCONFIG_APP_VERSION,
-    "active_rig": {
-      "id": active_rig.id,
-      "name": active_rig.name,
-      "concise_title": active_rig.format_concise_title(),
-      "machine_type": active_rig.printer_model,
-      "nozzle": {
-        "type": active_rig.nozzle_type,
-        "material": active_rig.nozzle_material,
-        "diameter_mm": active_rig.nozzle_diameter,
-      },
-      "addons": active_rig.addons,
-      "printer_notes": active_rig.notes,
-      "source_disk_profile": active_rig.source_disk_profile,
-    },
-    "active_process": {
-      "id": active_proc.id,
-      "name": active_proc.name,
-      "concise_title": active_proc.format_concise_title(&active_rig.short_model_tag()),
-      "quality_tier": active_proc.quality_tier(),
-      "notes": active_proc.notes,
-    },
-    "active_lua_transformations": rules
-      .iter()
-      .filter(|r| r.enabled)
-      .map(|r| serde_json::json!({
-        "id": r.id,
-        "name": r.name,
-        "category": r.category,
-        "priority": r.priority,
+  // Memoize Internal Config JSON & User Disk Config JSON so switching tabs never re-serializes them
+  let memo_internal_config_json = use_memo(
+    (
+      *config_version,
+      active_rig.clone(),
+      active_proc.clone(),
+      rules.clone(),
+      pending_updates.clone(),
+      filaments.clone(),
+    ),
+    |(cfg_ver, rig, proc_p, r_list, pend, fils)| {
+      serde_json::to_string_pretty(&serde_json::json!({
+        "architecture": "Transformation-Based Config State (Not Absolute Values)",
+        "schema_version": crate::models::WEBCONFIG_APP_VERSION,
+        "config_version": *cfg_ver,
+        "orca_slicer_version": "2.5.1",
+        "webconfig_app_version": crate::models::WEBCONFIG_APP_VERSION,
+        "active_rig": {
+          "id": rig.id,
+          "name": rig.name,
+          "concise_title": rig.format_concise_title(),
+          "machine_type": rig.printer_model,
+          "nozzle": {
+            "type": rig.nozzle_type,
+            "material": rig.nozzle_material,
+            "diameter_mm": rig.nozzle_diameter,
+          },
+          "addons": rig.addons,
+          "printer_notes": rig.notes,
+          "source_disk_profile": rig.source_disk_profile,
+        },
+        "active_process": {
+          "id": proc_p.id,
+          "name": proc_p.name,
+          "concise_title": proc_p.format_concise_title(&rig.short_model_tag()),
+          "quality_tier": proc_p.quality_tier(),
+          "notes": proc_p.notes,
+        },
+        "active_lua_transformations": r_list
+          .iter()
+          .filter(|r| r.enabled)
+          .map(|r| serde_json::json!({
+            "id": r.id,
+            "name": r.name,
+            "category": r.category,
+            "priority": r.priority,
+          }))
+          .collect::<Vec<_>>(),
+        "staged_pending_disk_saves": &**pend,
+        "imported_filament_deltas": fils
+          .iter()
+          .take(4)
+          .map(|f| serde_json::json!({
+            "name": f.name,
+            "inherits_system_base": f.inherits,
+            "deltas_from_base": f.deltas_from_base,
+          }))
+          .collect::<Vec<_>>(),
       }))
-      .collect::<Vec<_>>(),
-    "staged_pending_disk_saves": (*pending_updates).clone(),
-    "imported_filament_deltas": filaments
-      .iter()
-      .take(4)
-      .map(|f| serde_json::json!({
-        "name": f.name,
-        "inherits_system_base": f.inherits,
-        "deltas_from_base": f.deltas_from_base,
-      }))
-      .collect::<Vec<_>>(),
-  }))
-  .unwrap_or_default();
+      .unwrap_or_default()
+    },
+  );
 
-  // User Disk Config JSON reflects the ACTUAL files on disk (does NOT mirror our derived state until saved!)
-  let user_disk_config_json = build_user_disk_config_summary_json(&scanned_entries);
+  // User Disk Config JSON reflects the ACTUAL files on disk (memoized via Rc::ptr_eq across tab switches!)
+  let memo_user_disk_config_json = use_memo(scanned_entries.clone(), |entries| {
+    build_user_disk_config_summary_json(entries)
+  });
 
   // Handlers
   let on_select_tab = {
@@ -1898,7 +1955,7 @@ pub fn App() -> Html {
   // Export Standalone OrcaSlicer Filament/Machine .json Preset (Artifact #1)
   let on_export_standalone_json = {
     let active_rig = active_rig.clone();
-    let active_slots = active_slots.clone();
+    let active_slots = filaments.clone();
     let derived_overrides = eval_result.resulting_profile.values.clone();
     let export_progress = export_progress.clone();
     let toast = toast_message.clone();
@@ -1997,7 +2054,7 @@ pub fn App() -> Html {
   let on_export_3mf = {
     let active_rig = active_rig.clone();
     let active_proc = active_proc.clone();
-    let active_slots = active_slots.clone();
+    let active_slots = filaments.clone();
     let flush_matrix = eval_result.flush_matrix.clone();
     let flush_multiplier = *flush_multiplier;
     let derived_overrides = eval_result.resulting_profile.values.clone();
@@ -2024,7 +2081,7 @@ pub fn App() -> Html {
           .take(4)
           .collect()
       } else {
-        active_slots.clone()
+        (*active_slots).clone()
       };
       let active_rig_val = active_rig.clone();
       let fallback_proc = active_proc.clone();
@@ -3451,11 +3508,11 @@ pub fn App() -> Html {
               active_process_id={(*active_process_id).clone()}
               on_select_process={on_select_process.clone()}
               safe_speed_ceiling={eval_result.safe_speed_ceiling}
-              json_diff_text={json_diff_text}
-              base_profile_json={base_json_str}
-              derived_profile_json={derived_json_str}
-              our_internal_config_json={our_internal_config_json}
-              user_disk_config_json={user_disk_config_json}
+              json_diff_text={memo_eval.4.clone()}
+              base_profile_json={memo_eval.2.clone()}
+              derived_profile_json={memo_eval.3.clone()}
+              our_internal_config_json={(*memo_internal_config_json).clone()}
+              user_disk_config_json={(*memo_user_disk_config_json).clone()}
             />
           },
           ActiveTab::Machine => html! {

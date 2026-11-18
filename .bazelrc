@@ -4,6 +4,14 @@ startup --host_jvm_args=-Xms1g
 
 build --incompatible_enable_cc_toolchain_resolution=1
 common --enable_bzlmod
+common --enable_platform_specific_config
+
+# Bazel's unix_cc_configure auto-selects `/usr/bin/ld.gold` (`-fuse-ld=gold`) when `lld` is not
+# installed on the host, triggering rustc's deprecated gold linker warning. Override `BAZEL_LINKOPTS`
+# on Linux so `local_config_cc` links native/exec binaries with GNU binutils `ld.bfd` without
+# affecting `wasm32-unknown-unknown` (`rust-lld`), macOS, or Windows builds.
+common:linux --repo_env=BAZEL_LINKOPTS=-fuse-ld=bfd
+build:linux --nostart_end_lib
 
 common:windows --enable_runfiles
 

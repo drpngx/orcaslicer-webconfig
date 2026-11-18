@@ -1233,7 +1233,17 @@ impl OrcaProfile {
 
   /// Rich, searchable catalog of OrcaSlicer settings for the Simple Visual Rule Wizard,
   /// grouped by section and typed by operation (Add/Offset, Multiply, Set Choice, Toggle Flag, Set Percentage).
+  pub fn get_wizard_setting_catalog_ref() -> &'static [WizardSettingDef] {
+    static SETTING_CATALOG: std::sync::OnceLock<Vec<WizardSettingDef>> =
+      std::sync::OnceLock::new();
+    SETTING_CATALOG.get_or_init(Self::build_wizard_setting_catalog)
+  }
+
   pub fn get_wizard_setting_catalog() -> Vec<WizardSettingDef> {
+    Self::get_wizard_setting_catalog_ref().to_vec()
+  }
+
+  fn build_wizard_setting_catalog() -> Vec<WizardSettingDef> {
     vec![
       // --- Section: Thermal ---
       WizardSettingDef {

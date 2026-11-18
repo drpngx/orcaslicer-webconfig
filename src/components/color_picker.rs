@@ -109,10 +109,7 @@ pub fn ColorPicker(props: &ColorPickerProps) -> Html {
   let is_open = use_state(|| false);
   let hex_draft = use_state(|| props.value_hex.clone());
 
-  let shortlist: Vec<CatalogColorSwatch> = use_memo((), |_| load_merged_catalog().standard_colors)
-    .iter()
-    .cloned()
-    .collect();
+  let shortlist: &[CatalogColorSwatch] = &load_merged_catalog().standard_colors;
 
   // Keep hex_draft synced when external props.value_hex changes
   {
@@ -138,7 +135,6 @@ pub fn ColorPicker(props: &ColorPickerProps) -> Html {
 
   let emit_rgb = {
     let on_change = props.on_change.clone();
-    let shortlist = shortlist.clone();
     move |nr: u8, ng: u8, nb: u8| {
       let new_hex = rgb_to_hex(nr, ng, nb);
       let name = shortlist

@@ -73,7 +73,7 @@ fn find_filament_entry<'a>(
 
 #[function_component]
 pub fn ScratchWizard(props: &ScratchWizardProps) -> Html {
-  let catalog = use_memo((), |_| load_merged_catalog());
+  let catalog = load_merged_catalog();
 
   // Wizard step: 1 = Machine, 2 = Nozzle, 3 = Bed, 4 = AMS, 5 = Filaments
   let step = use_state(|| 1usize);

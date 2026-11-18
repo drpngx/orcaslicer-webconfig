@@ -147,10 +147,10 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
   let on_clear_spools = props.on_clear_spools.clone();
   let on_export_spool = props.on_export_spool_json.clone();
   let active_noz = props.active_nozzle_type.clone();
-  let catalog = use_memo((), |_| load_merged_catalog());
-  let material_choices: Vec<String> = {
+  let catalog = load_merged_catalog();
+  let material_choices = use_memo((), |_| {
     let mut choices = Vec::new();
-    for f in &catalog.filaments {
+    for f in &load_merged_catalog().filaments {
       let base = f.base_material_code().to_string();
       if !choices
         .iter()
@@ -160,7 +160,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
       }
     }
     choices
-  };
+  });
 
   let editing_spool = props
     .filaments
@@ -1200,7 +1200,7 @@ pub fn FilamentTab(props: &FilamentTabProps) -> Html {
                       }
                     }
                     // Then include all global material choices so switching brands never drops a material from the dropdown
-                    for m in &material_choices {
+                    for m in material_choices.iter() {
                       if !opts.iter().any(|c: &String| c.eq_ignore_ascii_case(m)) {
                         opts.push(m.clone());
                       }
