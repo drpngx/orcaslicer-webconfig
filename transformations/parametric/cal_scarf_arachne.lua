@@ -25,10 +25,10 @@ params = {
     label = "1. Where should Scarf Joint Seams be applied (seam_slope_type)?",
     description = "'external' ('Contour') applies scarf ramps to visible outer walls; 'all' ('Contour and hole') applies to both outer walls and inner holes.",
     type = "enum",
-    default = "all",
+    default = "external",
     unit = "",
     options = {
-      { value = "external", label = "Contour (Outer Walls Only)" },
+      { value = "external", label = "Contour (Outer Walls Only — Recommended)" },
       { value = "all", label = "Contour and Hole (Outer + Inner Walls)" },
       { value = "none", label = "None (Disable Scarf Seams)" },
     },
@@ -88,7 +88,7 @@ function validate(p, ctx)
 end
 
 function describe(p, ctx)
-  local scarf_mode = p.scarf_mode or "all"
+  local scarf_mode = p.scarf_mode or "external"
   if scarf_mode == "contour" then scarf_mode = "external" end
   local scarf_len = p.scarf_len or "20"
   local seam_gap = p.seam_gap or "10%"
@@ -103,7 +103,7 @@ function describe(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local scarf_mode = (p and p.scarf_mode) or "all"
+  local scarf_mode = (p and p.scarf_mode) or "external"
   if scarf_mode == "contour" then scarf_mode = "external" end
   local scarf_len = fmt_num(tonumber(p and p.scarf_len) or 20, "%.0f")
   local seam_gap = fmt_pct((p and p.seam_gap) or 10, "%.0f")
@@ -112,7 +112,8 @@ function apply(config, ctx, p)
   config["wall_generator"] = wall_gen
   config["seam_slope_type"] = scarf_mode
   config["seam_slope_conditional"] = "1"
-  config["seam_slope_start_height"] = "10%"
+  config["seam_slope_start_height"] = "15%"
+  config["seam_slope_inner_walls"] = "0"
   config["seam_slope_min_length"] = scarf_len
   config["seam_slope_steps"] = "15"
   config["seam_gap"] = seam_gap

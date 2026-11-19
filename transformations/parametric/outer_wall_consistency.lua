@@ -248,26 +248,34 @@ function apply(config, ctx, p)
   local cur_outer_spd = scalar_num(config["outer_wall_speed"], 200)
   local actual_outer_spd = math.min(cur_outer_spd, mvs_ceiling)
 
+  local is_speed_tier = (tostring((ctx and ctx.process_tier) or "") == "speed") or (layer_h >= 0.24)
   local new_outer_spd = cur_outer_spd
   local stepped_down = false
-  if mode == "sub_resonance_gloss" or (is_silk and cur_outer_spd > (sub_spd + 5)) then
+  if mode == "sub_resonance_gloss" or (is_silk and not is_speed_tier and cur_outer_spd > (sub_spd + 5)) then
     new_outer_spd = sub_spd
     stepped_down = true
-  elseif is_corexy and actual_outer_spd > (sub_spd + 5) and actual_outer_spd < clear_spd then
+  elseif is_corexy and not is_speed_tier and actual_outer_spd > (sub_spd + 5) and actual_outer_spd < clear_spd then
     -- MVS or profile speed would trap the outer wall inside the 70 - 130 mm/s CoreXY VFA resonance band!
     new_outer_spd = sub_spd
     stepped_down = true
   end
 
-  -- Resolve dont_slow_down_outer_wall:
-  -- In "auto" mode:
-  -- - If outer wall is stepped down to <= 65 mm/s (low-MVS PETG/TPU/ABS/ASA or Silk PLA), locking is 100% safe even on spires.
-  -- - If printing 0.12mm Fine (layer_h <= 0.145) at high speed (>= 145 mm/s, e.g. High-MVS PLA miniatures & thin hollow spires),
-  --   keep dont_slow_down_outer_wall = "0" so tiny 3mm tips can slow down to cool!
-  -- - On 0.20mm / 0.28mm cosmetic & functional parts, lock dont_slow_down_outer_wall = "1" to prevent Benchy hull-line gloss banding.
+  local is_low_fan_or_elastomer = (ctx and ctx.filament_is_elastomer == true)
+    or (ctx and ctx.filament_is_warp_prone == true)
+    or string.find(ftype, "TPU", 1, true) ~= nil
+    or string.find(ftype, "PEBA", 1, true) ~= nil
+    or string.find(ftype, "ABS", 1, true) ~= nil
+    or string.find(ftype, "ASA", 1, true) ~= nil
+    or (string.find(ftype, "PC", 1, true) ~= nil and string.find(ftype, "PCTG", 1, true) == nil)
+    or string.find(ftype, "PA", 1, true) ~= nil
+    or string.find(ftype, "PHA", 1, true) ~= nil
+    or string.find(ftype, "PVA", 1, true) ~= nil
+    or string.find(ftype, "BVOH", 1, true) ~= nil
+    or string.find(ftype, "HIPS", 1, true) ~= nil
+
   local lock_ow = lock_pref
   if lock_pref == "auto" then
-    if mode == "spire_safe" then
+    if mode == "spire_safe" or is_low_fan_or_elastomer then
       lock_ow = "0"
     elseif not stepped_down and not is_silk and new_outer_spd >= clear_spd and layer_h <= 0.145 then
       lock_ow = "0"
@@ -277,7 +285,11 @@ function apply(config, ctx, p)
   end
 
   config["dont_slow_down_outer_wall"] = lock_ow
-  config["small_perimeter_speed"] = fmt_num(math.max(20, math.min(small_spd, new_outer_spd)), "%.0f")
+  if not (p and p.small_perimeter_speed) then
+    config["small_perimeter_speed"] = "50%"
+  else
+    config["small_perimeter_speed"] = fmt_num(math.max(15, math.min(small_spd, new_outer_spd * 0.75)), "%.0f")
+  end
   if stepped_down then
     config["outer_wall_speed"] = fmt_num(new_outer_spd, "%.0f")
   end

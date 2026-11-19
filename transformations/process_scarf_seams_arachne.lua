@@ -8,13 +8,13 @@ params = {
   {
     id = "scarf_mode",
     label = "Scarf Joint Seam Mode (seam_slope_type)",
-    description = "'all' ('Contour and hole') hides seams on both outer walls and inner holes; 'external' ('Contour') applies only to outer walls.",
+    description = "'external' ('Contour') applies scarf ramps only to outer walls (safe for inner screw/magnet holes & CF); 'all' ('Contour and hole') applies to both outer walls and inner holes.",
     type = "enum",
-    default = "all",
+    default = "external",
     unit = "",
     options = {
+      { value = "external", label = "Contour (Outer Walls Only — Recommended)" },
       { value = "all", label = "Contour and Hole (Outer + Inner Walls)" },
-      { value = "external", label = "Contour (Outer Walls Only)" },
       { value = "none", label = "None (Disable Scarf Seams)" },
     },
   },
@@ -74,10 +74,16 @@ end
 
 function apply(config, ctx, p)
   local wall_gen = (p and p.wall_generator) or "arachne"
-  local scarf_mode = (p and p.scarf_mode) or "all"
+  local scarf_mode = (p and p.scarf_mode) or "external"
   if scarf_mode == "contour" then scarf_mode = "external" end
   local scarf_len = fmt_num(tonumber(p and p.scarf_length) or 15, "%.0f")
   local seam_gap = fmt_pct((p and p.seam_gap) or 10, "%.0f")
+
+  local ret_len = scalar_num(config["retraction_length"], scalar_num(ctx and ctx.base_retraction_length, 0.8))
+  local lh = scalar_num(config["layer_height"], scalar_num(ctx and ctx.layer_height, 0.20))
+  if ret_len >= 2.0 and not (p and p.scarf_mode) then
+    scarf_mode = "none"
+  end
 
   config["wall_generator"] = wall_gen
   config["wall_transition_angle"] = "10"
@@ -87,12 +93,12 @@ function apply(config, ctx, p)
 
   config["seam_slope_type"] = scarf_mode
   config["seam_slope_conditional"] = "1"
-  config["seam_slope_start_height"] = "10%"
+  config["seam_slope_start_height"] = (lh <= 0.145) and "25%" or "15%"
   config["seam_slope_entire_loop"] = "0"
-  config["seam_slope_inner_walls"] = "1"
+  config["seam_slope_inner_walls"] = (scarf_mode == "all") and "1" or "0"
   config["seam_slope_min_length"] = scarf_len
   config["seam_slope_steps"] = "15"
-  config["seam_gap"] = seam_gap
+  config["seam_gap"] = (scarf_mode ~= "none" and not (p and p.seam_gap)) and "3%" or seam_gap
   config["scarf_angle_threshold"] = "155"
   config["wipe_on_loops"] = "1"
 

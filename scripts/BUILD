@@ -15,6 +15,11 @@ py_binary(
 )
 
 py_binary(
+    name = "build_slicer_ground_truth",
+    srcs = ["build_slicer_ground_truth.py"],
+)
+
+py_binary(
     name = "import_vendor_profiles",
     srcs = ["import_vendor_profiles.py"],
 )

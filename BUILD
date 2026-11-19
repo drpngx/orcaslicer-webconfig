@@ -92,15 +92,37 @@ rust_binary(
     ),
 )
 
+genrule(
+    name = "slicer_ground_truth_gen",
+    srcs = [
+        "@orcaslicer_repo//:profiles",
+        "@orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json",
+        "@orcaslicer_repo//:src/libslic3r/Preset.cpp",
+        "@orcaslicer_repo//:src/libslic3r/PrintConfig.cpp",
+        "vendor_profiles/anycubic_slicer_next/anycubic_slicer_next_profiles.zip",
+    ],
+    outs = ["slicer_ground_truth.json"],
+    cmd = """
+        $(location //scripts:build_slicer_ground_truth) $@ $(location @orcaslicer_repo//:src/libslic3r/PrintConfig.cpp) $(location @orcaslicer_repo//:src/libslic3r/Preset.cpp) $$(dirname $(location @orcaslicer_repo//:resources/profiles/OrcaFilamentLibrary.json)) $(location vendor_profiles/anycubic_slicer_next/anycubic_slicer_next_profiles.zip)
+    """,
+    tools = ["//scripts:build_slicer_ground_truth"],
+)
+
 rust_binary(
     name = "audit_random_configs",
     srcs = ["src/bin/audit_random_configs.rs"],
     aliases = aliases(),
+    data = [
+        ":slicer_ground_truth.json",
+    ],
     edition = "2021",
-    version = WEBCONFIG_VERSION,
+    env = {
+        "SLICER_GROUND_TRUTH_JSON": "$(rootpath :slicer_ground_truth.json)",
+    },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
+    version = WEBCONFIG_VERSION,
     deps = all_crate_deps(
         normal = True,
     ) + [
@@ -112,6 +134,12 @@ rust_test(
     name = "audit_random_configs_test",
     timeout = "moderate",
     crate = ":audit_random_configs",
+    data = [
+        ":slicer_ground_truth.json",
+    ],
+    env = {
+        "SLICER_GROUND_TRUTH_JSON": "$(rootpath :slicer_ground_truth.json)",
+    },
 )
 
 genrule(

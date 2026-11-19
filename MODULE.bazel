@@ -125,6 +125,8 @@ filegroup(
 
 exports_files([
     "resources/profiles/OrcaFilamentLibrary.json",
+    "src/libslic3r/Preset.cpp",
+    "src/libslic3r/PrintConfig.cpp",
 ])
 """,
     sha256 = "7f04a53c7680816d2b54063dc4b88950607e5486240f2d0292919f8b6652cdb3",

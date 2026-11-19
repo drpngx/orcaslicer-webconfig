@@ -98,20 +98,22 @@ function apply(config, ctx)
       end, "%.2f")
       constrain("filament_z_hop", z0_ref > 0 and 0.10 or 0.0, max_hop, "Orifice-scaled Z-hop envelope")
     end
-    config["filament_z_hop_types"] = { "Spiral Lift" }
+    if not (ctx and ctx.filament_is_warp_prone == true) then
+      config["filament_z_hop_types"] = { "Spiral Lift" }
+    end
   end
 
   -- 5. Asymptotic breakaway travel acceleration toward the printer-class target
   --    (ctx.travel_accel_target_mm2 / _floor_mm2 from constants.json `printer_classes`:
-  --    12000/9000 on a CoreXY, gentler on a bed-slinger). Values above the target pass
-  --    through unchanged; the floor always clears the export-side clamp.
+  --    12000/9000 on a CoreXY, gentler on a bed-slinger), never dropping below `default_acceleration`.
   local a0_base = scalar_num(base["travel_acceleration"], scalar_num(config["travel_acceleration"], 10000))
   local a_cur = scalar_num(config["travel_acceleration"], a0_base)
+  local def_acc = scalar_num(config["default_acceleration"], 0)
   local ta_target = scalar_num(ctx.travel_accel_target_mm2, 12000)
   local ta_floor = scalar_num(ctx.travel_accel_floor_mm2, 9000)
-  local a_new = a_cur + 0.35 * math.max(0, ta_target - a_cur)
+  local a_new = math.max(def_acc, a_cur + 0.35 * math.max(0, ta_target - a_cur))
   config["travel_acceleration"] = fmt_num(math.max(a_new, ta_floor), "%.0f")
-  constrain("travel_acceleration", ta_floor, math.max(15000, a0_base), "Printer kinematics travel acceleration envelope")
+  constrain("travel_acceleration", ta_floor, math.max(15000, math.max(def_acc, a0_base)), "Printer kinematics travel acceleration envelope")
 
   -- 6. Mechanical inward wipe before the travel move shears the strand off the tip.
   config["wipe_on_loops"] = "1"

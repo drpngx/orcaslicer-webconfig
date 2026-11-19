@@ -195,37 +195,48 @@ function apply(config, ctx, p)
   local pattern = (p and p.infill_pattern) or "gyroid"
   local alt_wall = (p and p.alternate_extra_wall) or "1"
 
+  local ft_raw = (ctx and ctx.filament_type) or (type(config["filament_type"]) == "table" and config["filament_type"][1] or config["filament_type"]) or ""
+  local ft_up = string.upper(tostring(ft_raw))
+  local is_elastomer = (ctx and ctx.filament_is_elastomer == true)
+    or string.find(ft_up, "TPU", 1, true) ~= nil
+    or string.find(ft_up, "PEBA", 1, true) ~= nil
+    or string.find(ft_up, "TPE", 1, true) ~= nil
+
   -- Filament-level side-channel (applied per spool & clamped per polymer on export)
   config["_structural_temp_boost_c"] = fmt_num(boost, "%.0f")
   config["_structural_fan_cut_pct"] = fmt_num(fan_cut, "%.0f")
 
-  -- Live preview of the active filament (clamped to the active polymer's safe max when known)
-  local noz_max = scalar_num(ctx and ctx.filament_nozzle_max_c, 400)
-  for _, nk in ipairs({ "nozzle_temperature", "nozzle_temperature_HS", "nozzle_temperature_BRASS" }) do
-    local cur_noz = scalar_num(config[nk], nil)
-    if cur_noz then
-      set_like(config, nk, fmt_num(math.min(noz_max, cur_noz + boost), "%.0f"))
+  -- Live preview / per-spool evaluation (skip thermal boost & fan cut on flexible elastomers,
+  -- which already have near-indestructible chemical layer bonding and boil moisture if overheated)
+  if not is_elastomer then
+    local noz_max = scalar_num(ctx and ctx.filament_nozzle_max_c, 400)
+    for _, nk in ipairs({ "nozzle_temperature", "nozzle_temperature_HS", "nozzle_temperature_BRASS" }) do
+      local cur_noz = scalar_num(config[nk], nil)
+      if cur_noz then
+        set_like(config, nk, fmt_num(math.min(noz_max, cur_noz + boost), "%.0f"))
+      end
     end
-  end
-  for _, ik in ipairs({ "nozzle_temperature_initial_layer", "nozzle_temperature_initial_layer_HS", "nozzle_temperature_initial_layer_BRASS" }) do
-    local cur_init = scalar_num(config[ik], nil)
-    if cur_init then
-      set_like(config, ik, fmt_num(math.min(noz_max, cur_init + boost), "%.0f"))
+    for _, ik in ipairs({ "nozzle_temperature_initial_layer", "nozzle_temperature_initial_layer_HS", "nozzle_temperature_initial_layer_BRASS" }) do
+      local cur_init = scalar_num(config[ik], nil)
+      if cur_init then
+        set_like(config, ik, fmt_num(math.min(noz_max, cur_init + boost), "%.0f"))
+      end
     end
-  end
-  for _, fk in ipairs({ "fan_max_speed", "fan_max_speed_HS", "fan_max_speed_BRASS" }) do
-    local cur_fan = scalar_num(config[fk], nil)
-    if cur_fan then
-      set_like(config, fk, fmt_num(cur_fan * (100.0 - fan_cut) / 100.0, "%.0f"))
+    for _, fk in ipairs({ "fan_max_speed", "fan_max_speed_HS", "fan_max_speed_BRASS", "fan_min_speed", "fan_min_speed_HS", "fan_min_speed_BRASS" }) do
+      local cur_fan = scalar_num(config[fk], nil)
+      if cur_fan then
+        set_like(config, fk, fmt_num(cur_fan * (100.0 - fan_cut) / 100.0, "%.0f"))
+      end
     end
   end
 
   -- Process-level structure
-  config["wall_loops"] = fmt_num(walls, "%.0f")
+  local lh = scalar_num(config["layer_height"], nil) or scalar_num(ctx and ctx.layer_height, 0.20)
+  local eff_walls = (lh <= 0.145 and walls > 4) and 4 or walls
+  config["wall_loops"] = fmt_num(eff_walls, "%.0f")
   config["alternate_extra_wall"] = alt_wall
   config["top_shell_layers"] = fmt_num(shells, "%.0f")
   config["bottom_shell_layers"] = fmt_num(shells, "%.0f")
-  local lh = scalar_num(config["layer_height"], nil) or scalar_num(ctx and ctx.layer_height, 0.20)
   local shell_mm = fmt_num(shells * lh, "%.2f")
   if config["top_shell_thickness"] ~= nil then
     config["top_shell_thickness"] = shell_mm
@@ -235,6 +246,11 @@ function apply(config, ctx, p)
   end
   config["infill_wall_overlap"] = fmt_pct(overlap, "%.0f")
   config["sparse_infill_pattern"] = pattern
+  local cur_dens = scalar_num(config["sparse_infill_density"], 15)
+  local min_struct_dens = (walls >= 6) and 35 or 25
+  if cur_dens < min_struct_dens then
+    config["sparse_infill_density"] = fmt_pct(min_struct_dens, "%.0f")
+  end
   sync_coupled_physics(config, ctx)
 
   local d = describe(p or {}, ctx)

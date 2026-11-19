@@ -1019,19 +1019,32 @@ fn main() {
             .iter()
             .any(|tok| !tok.is_empty() && model_lower.contains(tok.as_str()))
         };
+        let is_corexy_motion = !is_bedslinger
+          && (raw_struct == "corexy"
+            || gcode_flavor.eq_ignore_ascii_case("bambu")
+            || vendor == "Bambu Lab"
+            || model_lower.contains("voron")
+            || model_lower.contains("k1")
+            || model_lower.contains("k2")
+            || model_lower.contains("sv08")
+            || model_lower.contains("plus4")
+            || model_lower.contains("x-max")
+            || model_lower.contains("x-plus"));
         let kinematics = format!(
           "{}{}{}",
           if is_bedslinger {
             "Bed-Slinger "
-          } else if gcode_flavor.eq_ignore_ascii_case("bambu") {
+          } else if is_corexy_motion {
             "CoreXY "
           } else {
             ""
           },
-          if gcode_flavor.eq_ignore_ascii_case("marlin") {
-            "Marlin FFF"
-          } else if gcode_flavor.eq_ignore_ascii_case("bambu") {
+          if gcode_flavor.eq_ignore_ascii_case("bambu")
+            || (vendor == "Bambu Lab" && !is_bedslinger)
+          {
             "High-Speed"
+          } else if gcode_flavor.eq_ignore_ascii_case("marlin") {
+            "Marlin FFF"
           } else {
             "Klipper High-Speed"
           },
@@ -1508,6 +1521,12 @@ fn main() {
         } else if name_up.contains("95A") {
           codes.push("TPU 95A".to_string());
         }
+      } else if ft == "PA-CF" || ft == "PA6-CF" {
+        if name_up.contains("PAHT-CF") {
+          codes.push("PAHT-CF".to_string());
+        } else if name_up.contains("PPA-CF") {
+          codes.push("PPA-CF".to_string());
+        }
       }
 
       let hrc = first_str(resolved.get("required_nozzle_HRC"))
@@ -1528,7 +1547,15 @@ fn main() {
               (270, 100, 20)
             }
           }
-          "Nylon (PA / PAHT / PPA)" => (280, 90, 15),
+          "Nylon (PA / PAHT / PPA)" => {
+            if code.starts_with("PPA") {
+              (295, 100, 15)
+            } else if code.starts_with("PAHT") {
+              (285, 95, 15)
+            } else {
+              (280, 90, 15)
+            }
+          }
           "ABS / ASA" => (255, 100, 25),
           "PETG / PCTG / PET" => {
             if code.contains("PCTG") {
@@ -1540,6 +1567,15 @@ fn main() {
             }
           }
           "TPU / TPE / PEBA Flex" => (225, 50, 80),
+          "PVA / Support" => {
+            if code.contains("HIPS") {
+              (235, 95, 30)
+            } else if code.contains("PA") {
+              (275, 90, 20)
+            } else {
+              (205, 55, 80)
+            }
+          }
           _ => (215, 55, 100),
         };
 
@@ -1554,7 +1590,12 @@ fn main() {
           } else if (category == "PC / Engineering"
             && code.starts_with("PC")
             && !(260..=285).contains(&raw_nozzle_c))
-            || (category == "Nylon (PA / PAHT / PPA)" && !(260..=295).contains(&raw_nozzle_c))
+            || (category == "Nylon (PA / PAHT / PPA)"
+              && code.starts_with("PPA")
+              && !(280..=305).contains(&raw_nozzle_c))
+            || (category == "Nylon (PA / PAHT / PPA)"
+              && !code.starts_with("PPA")
+              && !(260..=295).contains(&raw_nozzle_c))
             || (category == "ABS / ASA" && !(240..=270).contains(&raw_nozzle_c))
             || (category == "PETG / PCTG / PET"
               && code.starts_with("PET-")
@@ -1564,6 +1605,9 @@ fn main() {
               && !code.contains("ESD")
               && !(225..=255).contains(&raw_nozzle_c))
             || (category == "TPU / TPE / PEBA Flex" && !(205..=228).contains(&raw_nozzle_c))
+            || (category == "PVA / Support"
+              && (code.contains("PVA") || code.contains("BVOH"))
+              && !(190..=215).contains(&raw_nozzle_c))
             || (category == "PLA Family" && !(195..=220).contains(&raw_nozzle_c))
           {
             fallback_nozzle_c
@@ -1698,10 +1742,22 @@ fn main() {
           None
         };
         if let Some(vb) = detected_brand {
-          if explicit_nozzle.is_some() {
+          let is_non_04_variant = name.contains("0.2 nozzle")
+            || name.contains("0.6 nozzle")
+            || name.contains("0.8 nozzle");
+          if explicit_nozzle.is_some() && !is_non_04_variant {
             let vkey = format!("{}::{}", vb, code);
             let mut v_entry = entry.clone();
             v_entry.brand = vb.to_string();
+            // `@BBL X1C` / `@BBL X1E` presets target a factory 0.4mm Hardened Steel nozzle,
+            // so convert their HS print temp back to the Brass reference (`base_nozzle_c = hs - 5`)
+            // so `recompute_for_nozzle("hardened_steel")` lands right back on Bambu's exact X1C target!
+            if vb == "Bambu Lab"
+              && (name.contains("@BBL X1C") || name.contains("@BBL X1E"))
+              && !(category == "PVA / Support" && (code.contains("PVA") || code.contains("BVOH")))
+            {
+              v_entry.base_nozzle_c = raw_nozzle_c.saturating_sub(5).clamp(185, 340);
+            }
             v_entry.label = if is_from_anycubic_fork && vb == "Anycubic" {
               format!("{} {} (AnycubicSlicerNext)", vb, code)
             } else {
@@ -1713,12 +1769,46 @@ fn main() {
             } else {
               format!("OrcaSlicer GitHub ({})", vb)
             };
+            let mut v_base_score = if vb == "Bambu Lab" {
+              if name.ends_with("@BBL X1C") || name.contains("@BBL X1C 0.4 nozzle") {
+                150
+              } else if name.ends_with("@BBL P1S") || name.contains("@BBL P1S 0.4 nozzle") {
+                140
+              } else if name.contains("@System") {
+                90
+              } else {
+                60
+              }
+            } else {
+              base_score
+            };
+            let code_is_plain = !code.contains(' ') && !code.contains('-') && !code.contains('+');
+            if code_is_plain {
+              if name_up.contains(" BASIC ") || name_up.contains(" BASIC@") {
+                v_base_score += 25;
+              } else if !name_up.contains("MATTE")
+                && !name_up.contains("SILK")
+                && !name_up.contains("HF")
+                && !name_up.contains("HIGH SPEED")
+                && !name_up.contains("AERO")
+                && !name_up.contains("GLOW")
+                && !name_up.contains("WOOD")
+                && !name_up.contains("METAL")
+                && !name_up.contains("MARBLE")
+                && !name_up.contains("TRANSLUCENT")
+                && !name_up.contains("SUPPORT")
+                && !name_up.contains("TOUGH")
+              {
+                v_base_score += 15;
+              }
+            }
+            let v_score = v_base_score + 200;
             let v_replace = match best_by_code.get(&vkey) {
               None => true,
-              Some((prev_s, _)) => score > *prev_s,
+              Some((prev_s, _)) => v_score > *prev_s,
             };
             if v_replace {
-              best_by_code.insert(vkey, (score, v_entry));
+              best_by_code.insert(vkey, (v_score, v_entry));
             }
           }
         }

@@ -248,7 +248,9 @@ impl PolymerConstants {
   }
 
   pub fn resolve_fan_max_pct(&self, fan_min_pct: i32) -> i32 {
-    if self.is_copolyester() && fan_min_pct >= 30 {
+    if self.canonical_key == "PETG-CF" {
+      (fan_min_pct + 20).clamp(fan_min_pct, 55)
+    } else if self.is_copolyester() && fan_min_pct >= 30 {
       90.max(fan_min_pct)
     } else {
       fan_min_pct
@@ -256,21 +258,21 @@ impl PolymerConstants {
   }
 
   /// Resolves `(fan_min_pct, fan_max_pct)` from `spool_fan_pct`:
-  /// - Copolyesters (PETG / PCTG): `spool_fan_pct` is normal-layer fan (`40%`), short-layer max is `90%`.
-  /// - Warp-prone engineering polymers (ABS / ASA / PC / PA / PP): `spool_fan_pct` is short-layer max (`15–20%`),
-  ///   while continuous perimeter cooling (`fan_min_speed`) is halved and capped at `10%` (matching AnycubicSlicerNext
-  ///   `10% min / 20% max` on ABS/ASA so long perimeters don't warp).
+  /// - Copolyesters (PETG / PCTG): `spool_fan_pct` is normal-layer fan (`40%`), short-layer max is `90%` (`50%` on `PETG-CF`).
+  /// - Warp-prone engineering polymers (ABS / ASA / PC / PA / PP): `spool_fan_pct` is short-layer max (`10–20%`),
+  ///   while continuous perimeter cooling (`fan_min_speed`) avoids the `1–9%` 24V PWM stall zone (`0%` when `fmax < 18%`, `10%` when `fmax >= 18%`).
   /// - Flexible elastomers (TPU / PEBA): continuous perimeter cooling is `75%` of `spool_fan_pct` (e.g. `60% min / 80% max`).
   /// - PLA / support families: continuous full cooling (`fan_min == fan_max`).
   pub fn resolve_fan_min_max_pct(&self, spool_fan_pct: i32) -> (i32, i32) {
     let clamped = spool_fan_pct.clamp(0, 100);
     if self.is_warp_prone() {
-      let fmin = if clamped <= 1 {
+      let fmax = if (1..=9).contains(&clamped) { 10 } else { clamped };
+      let fmin = if fmax < 18 {
         0
       } else {
-        (clamped / 2).clamp(1, 10.min(clamped - 1))
+        10.min(fmax - 1)
       };
-      (fmin, clamped)
+      (fmin, fmax)
     } else if self.is_copolyester() {
       if clamped > 55 {
         let fmin = ((clamped * 2) / 5).clamp(20, 45);
@@ -281,9 +283,49 @@ impl PolymerConstants {
       }
     } else if self.is_flexible() {
       let fmin = ((clamped * 3) / 4).clamp(0, clamped);
-      (fmin, clamped)
+      let fmin_clean = if (1..=9).contains(&fmin) { 10.min(clamped) } else { fmin };
+      (fmin_clean, clamped)
     } else {
-      (clamped, clamped)
+      let fclean = if (1..=9).contains(&clamped) { 10 } else { clamped };
+      (fclean, fclean)
+    }
+  }
+
+  pub fn default_swatch_hex_and_name(&self, finish_type: &str) -> (&'static str, &'static str) {
+    let fin = finish_type.to_lowercase();
+    if fin.contains("carbon") || self.canonical_key.ends_with("-CF") {
+      return ("#26292E", "Carbon Matte Black");
+    }
+    if fin.contains("glass") || self.canonical_key.ends_with("-GF") {
+      return ("#4B5563", "Glass Slate");
+    }
+    if fin.contains("translucent") {
+      return ("#7DD3FC", "Clear Ice");
+    }
+    if fin.contains("silk") || self.canonical_key == "PLA Silk" {
+      return ("#D97706", "Silk Gold");
+    }
+    if fin.contains("wood") {
+      return ("#A16207", "Birch Wood");
+    }
+    if fin.contains("glow") {
+      return ("#84CC16", "Phosphor Lime");
+    }
+    match self.canonical_key.as_str() {
+      "PLA" => ("#E5E7EB", "Arctic White"),
+      "PLA+" => ("#3B82F6", "Cobalt Blue"),
+      "PHA" => ("#16A34A", "Bio Emerald"),
+      "PETG" => ("#0284C7", "Ocean Cyan"),
+      "PCTG" => ("#0D9488", "Teal Clear"),
+      "TPU" | "TPU for AMS" | "TPU 95A" | "TPU 90A" | "TPU 85A" | "PEBA" => {
+        ("#EA580C", "Signal Orange")
+      }
+      "ABS" => ("#DC2626", "Crimson Red"),
+      "ASA" => ("#4F46E5", "UV Indigo"),
+      "PC" => ("#94A3B8", "Polycarbonate Silver"),
+      "PA" | "PA6" | "PA12" => ("#CA8A04", "Natural Nylon"),
+      "PVA" | "BVOH" | "HIPS" => ("#FDE047", "Support Ivory"),
+      _ => ("#8E9299", "Cool Gray"),
     }
   }
 

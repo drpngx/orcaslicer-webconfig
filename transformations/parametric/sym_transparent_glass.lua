@@ -17,7 +17,7 @@ meta = {
   },
   hardware_checklist = {
     "🔥 Dry Clear PETG/PCTG in ACE Pro at 55°C for 6+ Hours First: Even 0.1% absorbed moisture flashes into microscopic steam bubbles inside the melt zone, turning crystal-clear PETG permanently milky/cloudy regardless of slicer settings.",
-    "🧼 Clean Nozzle Exterior Before Printing: With +5% over-pack flow (`~1.01–1.02`), any stray plastic film on the nozzle cone can accumulate; brush the hot nozzle tip clean before starting and ensure `avoid_crossing_perimeters = 1` is active.",
+    "🧼 Clean Nozzle Exterior Before Printing: With +5% over-pack flow (`~1.01–1.02`), any stray plastic film on the nozzle cone can accumulate; brush the hot nozzle tip clean before starting and ensure `reduce_crossing_wall = 1` is active.",
     "❄️ Textured PEI Release Tip: Wait until the Textured PEI build plate cools below 30°C (or place the spring-steel sheet in the freezer for 3 minutes) so clear PETG pops off effortlessly without stressing the PEI coating.",
   },
 }
@@ -164,42 +164,85 @@ function apply(config, ctx, p)
     end
   end
 
-  local is_filament = (config["type"] == "filament") or (config["filament_flow_ratio"] ~= nil) or (config["nozzle_temperature"] ~= nil)
+  local is_filament = (config["type"] == "filament")
+    or ((not (ctx and ctx._process_seeded)) and ((config["filament_flow_ratio"] ~= nil) or (config["nozzle_temperature"] ~= nil)))
   local is_process = (config["type"] == "process") or (config["sparse_infill_speed"] ~= nil) or (config["wall_loops"] ~= nil)
 
   if is_filament then
-    local cur_flow = scalar_num(config["filament_flow_ratio"], 0.96)
-    set_arr("filament_flow_ratio", fmt_num(math.min(1.06, cur_flow + flow_boost), "%.3f"))
-    local fan_str = fmt_num(fan_cap, "%.0f")
-    set_arr("fan_max_speed", fan_str)
-    set_arr("fan_min_speed", fan_str)
-    if config["fan_max_speed_BRASS"] ~= nil then set_arr("fan_max_speed_BRASS", fan_str) end
-    if config["fan_max_speed_HS"] ~= nil then set_arr("fan_max_speed_HS", fan_str) end
-    if config["fan_min_speed_BRASS"] ~= nil then set_arr("fan_min_speed_BRASS", fan_str) end
-    if config["fan_min_speed_HS"] ~= nil then set_arr("fan_min_speed_HS", fan_str) end
-    set_arr("slow_down_for_layer_cooling", "0")
-    if fan_cap == 0 then
-      set_arr("overhang_fan_speed", "25")
-      if config["enable_overhang_bridge_fan"] ~= nil then
-        set_arr("enable_overhang_bridge_fan", "1")
+    local ft_raw = (ctx and ctx.filament_type) or (type(config["filament_type"]) == "table" and config["filament_type"][1] or config["filament_type"]) or ""
+    local fin_raw = (ctx and (ctx.filament_finish or ctx.finish_type)) or ""
+    local ft_up = string.upper(tostring(ft_raw))
+    local fin_up = string.upper(tostring(fin_raw))
+    local is_translucent = string.find(fin_up, "TRANSLUCENT", 1, true) ~= nil
+      or string.find(fin_up, "TRANSPARENT", 1, true) ~= nil
+      or string.find(fin_up, "CLEAR", 1, true) ~= nil
+      or string.find(ft_up, "TRANSLUCENT", 1, true) ~= nil
+      or string.find(ft_up, "TRANSPARENT", 1, true) ~= nil
+    local is_opaque_incompatible = string.find(ft_up, "ABS", 1, true) ~= nil
+      or string.find(ft_up, "ASA", 1, true) ~= nil
+      or string.find(ft_up, "PA", 1, true) ~= nil
+      or string.find(ft_up, "-CF", 1, true) ~= nil
+      or string.find(ft_up, "-GF", 1, true) ~= nil
+      or string.find(fin_up, "CARBON", 1, true) ~= nil
+      or string.find(fin_up, "GLASS", 1, true) ~= nil
+      or string.find(fin_up, "MATTE", 1, true) ~= nil
+      or string.find(fin_up, "SILK", 1, true) ~= nil
+      or string.find(fin_up, "WOOD", 1, true) ~= nil
+      or string.find(fin_up, "METAL", 1, true) ~= nil
+    local is_copolyester_or_pmma = string.find(ft_up, "PETG", 1, true) ~= nil
+      or string.find(ft_up, "PCTG", 1, true) ~= nil
+      or string.find(ft_up, "PMMA", 1, true) ~= nil
+      or ft_up == "PC"
+    local apply_glass_filament = (ft_up == "" and fin_up == "")
+      or ((not is_opaque_incompatible) and (is_translucent or is_copolyester_or_pmma))
+    if apply_glass_filament then
+      local cur_flow = scalar_num(config["filament_flow_ratio"], 0.96)
+      local target_flow = math.min(1.06, math.max(1.01, cur_flow + flow_boost))
+      set_arr("filament_flow_ratio", fmt_num(target_flow, "%.3f"))
+      -- Ensure low melt viscosity for degassing clear PETG/PCTG
+      if is_copolyester_or_pmma then
+        local cur_noz = scalar_num(config["nozzle_temperature"], 235)
+        if cur_noz < 240 then
+          set_arr("nozzle_temperature", "240")
+          set_arr("nozzle_temperature_initial_layer", "240")
+        end
       end
+      local fan_str = fmt_num(fan_cap, "%.0f")
+      set_arr("fan_max_speed", fan_str)
+      set_arr("fan_min_speed", fan_str)
+      if config["fan_max_speed_BRASS"] ~= nil then set_arr("fan_max_speed_BRASS", fan_str) end
+      if config["fan_max_speed_HS"] ~= nil then set_arr("fan_max_speed_HS", fan_str) end
+      if config["fan_min_speed_BRASS"] ~= nil then set_arr("fan_min_speed_BRASS", fan_str) end
+      if config["fan_min_speed_HS"] ~= nil then set_arr("fan_min_speed_HS", fan_str) end
+      set_arr("additional_cooling_fan_speed", "0")
+      set_arr("during_print_exhaust_fan_speed", "0")
+      set_arr("slow_down_for_layer_cooling", "0")
+      if fan_cap == 0 then
+        set_arr("overhang_fan_speed", "25")
+        if config["enable_overhang_bridge_fan"] ~= nil then
+          set_arr("enable_overhang_bridge_fan", "1")
+        end
+      end
+      set_arr("filament_max_volumetric_speed", fmt_num(mvs, "%.1f"))
+      if is_copolyester_or_pmma or (ft_up == "" and fin_up == "") then
+        local bed_str = fmt_num(bed_pei, "%.0f")
+        set_arr("textured_plate_temp", bed_str)
+        set_arr("textured_plate_temp_initial_layer", bed_str)
+        set_arr("hot_plate_temp", bed_str)
+        set_arr("hot_plate_temp_initial_layer", bed_str)
+      end
+      if scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
+        set_arr("filament_retraction_length", fmt_num(0.6, "%.1f"))
+      end
+      set_arr("filament_retraction_speed", "35")
+      set_arr("filament_deretraction_speed", "25")
+      set_arr("filament_retract_before_wipe", fmt_pct(70, "%.0f"))
+      set_arr("filament_wipe", "1")
+      set_arr("filament_wipe_distance", "2")
+      -- Zero Z-hop prevents spiral lift swirls from scarring 100%-solid molten glass surfaces
+      set_arr("filament_z_hop", "0")
+      set_arr("filament_z_hop_types", "Normal Lift")
     end
-    set_arr("filament_max_volumetric_speed", fmt_num(mvs, "%.1f"))
-    local bed_str = fmt_num(bed_pei, "%.0f")
-    set_arr("textured_plate_temp", bed_str)
-    set_arr("textured_plate_temp_initial_layer", bed_str)
-    set_arr("hot_plate_temp", bed_str)
-    set_arr("hot_plate_temp_initial_layer", bed_str)
-    if scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
-      set_arr("filament_retraction_length", fmt_num(0.8, "%.1f"))
-    end
-    set_arr("filament_retraction_speed", "35")
-    set_arr("filament_deretraction_speed", "30")
-    set_arr("filament_retract_before_wipe", fmt_pct(70, "%.0f"))
-    set_arr("filament_wipe", "1")
-    set_arr("filament_wipe_distance", "2")
-    set_arr("filament_z_hop", fmt_num(0.10, "%.2f"))
-    set_arr("filament_z_hop_types", "Spiral Lift")
   end
 
   if is_process then
@@ -217,8 +260,9 @@ function apply(config, ctx, p)
     elseif mode == "clear_shell" then
       local lw = fmt_num(nd * 1.25, "%.2f")
       config["wall_loops"] = "2"
-      config["top_surface_pattern"] = "monotonicline"
-      config["bottom_surface_pattern"] = "monotonicline"
+      config["top_surface_pattern"] = "alignedrectilinear"
+      config["bottom_surface_pattern"] = "alignedrectilinear"
+      config["internal_solid_infill_pattern"] = "alignedrectilinear"
       config["sparse_infill_pattern"] = "alignedrectilinear"
       config["infill_direction"] = "0"
       config["infill_wall_overlap"] = fmt_pct(25, "%.0f")
@@ -228,19 +272,25 @@ function apply(config, ctx, p)
       config["sparse_infill_line_width"] = lw
     else
       local lw = fmt_num(nd * 1.25, "%.2f")
-      local lh = fmt_num(math.max(0.10, nd * 0.30), "%.2f")
-      config["layer_height"] = lh
-      config["initial_layer_print_height"] = fmt_num(math.min(0.20, nd * 0.50), "%.2f")
+      if not (ctx and ctx._process_seeded) then
+        local lh = fmt_num(math.max(0.10, nd * 0.30), "%.2f")
+        config["layer_height"] = lh
+      end
+      local cur_lh = scalar_num(config["layer_height"], scalar_num(ctx and ctx.layer_height, 0.12))
+      config["initial_layer_print_height"] = fmt_num(math.max(cur_lh, math.min(0.20, nd * 0.50)), "%.2f")
       config["wall_loops"] = "1"
       config["top_shell_layers"] = "0"
       config["bottom_shell_layers"] = "0"
       config["top_shell_thickness"] = "0.00"
       config["bottom_shell_thickness"] = "0.00"
       config["sparse_infill_density"] = fmt_pct(100, "%.0f")
+      -- OrcaSlicer C++ converts 100% sparse infill into `internal_solid_infill` using
+      -- `internal_solid_infill_pattern`: MUST be `alignedrectilinear` (NOT `monotonicline`)
+      -- so all layers run parallel at 0° instead of alternating 90°!
       config["sparse_infill_pattern"] = "alignedrectilinear"
-      config["internal_solid_infill_pattern"] = "monotonicline"
-      config["top_surface_pattern"] = "monotonicline"
-      config["bottom_surface_pattern"] = "monotonicline"
+      config["internal_solid_infill_pattern"] = "alignedrectilinear"
+      config["top_surface_pattern"] = "alignedrectilinear"
+      config["bottom_surface_pattern"] = "alignedrectilinear"
       config["infill_direction"] = "0"
       config["infill_wall_overlap"] = fmt_pct(25, "%.0f")
       config["line_width"] = lw
@@ -249,6 +299,9 @@ function apply(config, ctx, p)
       config["sparse_infill_line_width"] = lw
       config["internal_solid_infill_line_width"] = lw
       config["top_surface_line_width"] = lw
+      config["brim_type"] = "no_brim"
+      config["brim_width"] = "0"
+      config["seam_slope_type"] = "none"
     end
     local spd_str = fmt_num(spd, "%.0f")
     local init_spd_str = fmt_num(init_spd, "%.0f")
@@ -258,10 +311,14 @@ function apply(config, ctx, p)
     config["internal_solid_infill_speed"] = spd_str
     config["top_surface_speed"] = spd_str
     config["gap_infill_speed"] = spd_str
+    config["bridge_speed"] = spd_str
+    config["overhang_1_4_speed"] = spd_str
+    config["overhang_2_4_speed"] = spd_str
+    config["overhang_3_4_speed"] = init_spd_str
+    config["overhang_4_4_speed"] = init_spd_str
     config["initial_layer_speed"] = init_spd_str
     config["initial_layer_infill_speed"] = init_spd_str
     config["reduce_crossing_wall"] = "1"
-    config["avoid_crossing_perimeters"] = "1"
   end
 
   local d = describe(p or {}, ctx)

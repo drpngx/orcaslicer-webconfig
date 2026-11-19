@@ -75,36 +75,32 @@ local function compute_moisture_curve(rh_raw)
     }
   end
   local excess = rh - 20.0
-  local temp_drop = -math.max(1, math.min(10, math.floor((excess / 6.0) + 0.5)))
-  local init_bed_boost = math.max(3, math.min(7, math.floor((excess / 5.0) + 0.5)))
+  local temp_drop = -math.max(1, math.min(6, math.floor((excess / 8.0) + 0.5)))
+  local init_bed_boost = math.max(2, math.min(4, math.floor((excess / 12.0) + 1.5)))
   local flow_trim = 0.0
-  if rh >= 65 then
-    flow_trim = -0.03
-  elseif rh >= 50 then
+  if rh >= 55 then
     flow_trim = -0.02
   elseif rh >= 35 then
     flow_trim = -0.01
   end
-  local bottom_flow = 1.00 + math.min(0.06, math.max(0.02, math.floor((excess * 0.2) + 0.5) / 100.0))
-  local init_width = 0.55
-  if rh >= 60 then
-    init_width = 0.60
-  elseif rh >= 45 then
-    init_width = 0.58
-  elseif rh >= 30 then
-    init_width = 0.56
+  local bottom_flow = 1.00 + math.min(0.04, math.max(0.02, math.floor((excess * 0.1) + 0.5) / 100.0))
+  local init_width = 0.52
+  if rh >= 55 then
+    init_width = 0.54
+  elseif rh >= 35 then
+    init_width = 0.53
   end
   local init_speed = 35
-  local init_infill_speed = 55
+  local init_infill_speed = 50
   if rh >= 55 then
     init_speed = 30
     init_infill_speed = 45
   elseif rh < 35 then
     init_speed = 40
-    init_infill_speed = 65
+    init_infill_speed = 55
   end
-  local retract_add = math.min(0.30, math.floor(((excess * 0.006) + 0.03) * 100.0 + 0.5) / 100.0)
-  local retract_before_wipe = math.min(60, 40 + math.floor((excess / 4.0) + 0.5))
+  local retract_add = math.min(0.18, math.floor(((excess * 0.0035) + 0.03) * 100.0 + 0.5) / 100.0)
+  local retract_before_wipe = math.min(55, 40 + math.floor((excess / 4.0) + 0.5))
 
   return {
     rh = rh,
@@ -183,46 +179,62 @@ function apply(config, ctx, p)
     end
   end
 
-  local cur_t = scalar_num(config["nozzle_temperature"], 250)
-  local cur_init_t = scalar_num(config["nozzle_temperature_initial_layer"], cur_t)
-  local new_upper_t = fmt_num(cur_t + c.temp_drop, "%.0f")
-  -- Lower upper-layer nozzle temp to stop steam boiling, but preserve full initial layer temp for PEI adhesion!
-  set_val("nozzle_temperature", new_upper_t)
-  set_val("nozzle_temperature_HS", new_upper_t)
-  set_val("nozzle_temperature_BRASS", fmt_num(scalar_num(config["nozzle_temperature_BRASS"], cur_t - 5) + c.temp_drop, "%.0f"))
-  set_val("nozzle_temperature_initial_layer", fmt_num(cur_init_t, "%.0f"))
-
-  local cur_f = scalar_num(config["filament_flow_ratio"], 0.94)
-  set_val("filament_flow_ratio", fmt_num(cur_f + c.flow_trim, "%.2f"))
-
-  local cur_ret = scalar_num(config["filament_retraction_length"], 1.00)
-  local max_wet_ret = cur_ret >= 2.0 and (cur_ret + 0.80) or 1.45
-  set_val("filament_retraction_length", fmt_num(math.min(max_wet_ret, cur_ret + c.retract_add), "%.2f"))
-  set_val("filament_retract_before_wipe", fmt_pct(c.retract_before_wipe, "%.0f"))
-  set_val("filament_wipe", "1")
-  set_val("filament_wipe_distance", "2")
   local ft_raw = (ctx and ctx.filament_type) or (type(config["filament_type"]) == "table" and config["filament_type"][1] or config["filament_type"]) or ""
   local ft_up = string.upper(tostring(ft_raw))
   local is_elastomer = (ctx and ctx.filament_is_elastomer == true)
     or string.find(ft_up, "TPU", 1, true) ~= nil
     or string.find(ft_up, "PEBA", 1, true) ~= nil
+    or string.find(ft_up, "TPE", 1, true) ~= nil
+  local is_warp_prone = (ctx and ctx.filament_is_warp_prone == true)
+    or string.find(ft_up, "ABS", 1, true) ~= nil
+    or string.find(ft_up, "ASA", 1, true) ~= nil
+    or (string.find(ft_up, "PC", 1, true) ~= nil and string.find(ft_up, "PCTG", 1, true) == nil)
+    or string.find(ft_up, "PA", 1, true) ~= nil
+
+  local cur_t = scalar_num(config["nozzle_temperature"], 250)
+  local new_upper_n = cur_t + c.temp_drop
+  local new_upper_t = fmt_num(new_upper_n, "%.0f")
+  -- Lower upper-layer nozzle temp to calm steam boiling while keeping initial-layer temp hot (capped at <= +8°C above Layer 2)!
+  set_val("nozzle_temperature", new_upper_t)
+  if config["nozzle_temperature_HS"] ~= nil then
+    set_val("nozzle_temperature_HS", new_upper_t)
+  end
+  if config["nozzle_temperature_BRASS"] ~= nil then
+    set_val("nozzle_temperature_BRASS", fmt_num(scalar_num(config["nozzle_temperature_BRASS"], cur_t - 5) + c.temp_drop, "%.0f"))
+  end
+  local cur_init_t = scalar_num(config["nozzle_temperature_initial_layer"], cur_t)
+  local capped_init_t = math.max(new_upper_n, math.min(cur_init_t, new_upper_n + 8))
+  set_val("nozzle_temperature_initial_layer", fmt_num(capped_init_t, "%.0f"))
+
   if not is_elastomer then
+    local cur_f = scalar_num(config["filament_flow_ratio"], 0.94)
+    set_val("filament_flow_ratio", fmt_num(math.max(0.91, cur_f + c.flow_trim), "%.2f"))
+  end
+
+  local cur_ret = scalar_num(config["filament_retraction_length"], 0.80)
+  if not is_elastomer then
+    local max_wet_ret = cur_ret >= 2.0 and (cur_ret + 0.50) or 0.95
+    set_val("filament_retraction_length", fmt_num(math.min(max_wet_ret, cur_ret + c.retract_add), "%.2f"))
+    set_val("filament_retract_before_wipe", fmt_pct(c.retract_before_wipe, "%.0f"))
+    set_val("filament_wipe", "1")
+    set_val("filament_wipe_distance", "2")
     local cur_zhop = scalar_num(config["filament_z_hop"], 0.0)
-    if cur_zhop < 0.10 then
-      set_val("filament_z_hop", fmt_num(0.1, "%.1f"))
+    if cur_zhop < 0.15 then
+      set_val("filament_z_hop", fmt_num(0.18, "%.2f"))
     end
-    set_val("filament_z_hop_types", "Spiral Lift")
+    local cur_ztype = type(config["filament_z_hop_types"]) == "table" and config["filament_z_hop_types"][1] or config["filament_z_hop_types"]
+    if not is_warp_prone and cur_ztype ~= "Slope Lift" then
+      set_val("filament_z_hop_types", "Spiral Lift")
+    end
   end
   config["reduce_crossing_wall"] = "1"
 
   if fl_mode ~= "off" then
-    -- Compose with earlier first-layer rules instead of discarding them: boost EACH initial-layer
-    -- plate key from its own current value (e.g. `symptom_bed_adhesion_petg` added +5°C to
-    -- `hot_plate_temp_initial_layer`; that boost now survives and stacks with ours), falling back
-    -- to the plate's continuous temp when no first-layer value is set.
     local boost_init_bed = function(init_key, cont_key)
-      local cur = scalar_num(config[init_key], scalar_num(config[cont_key], 85))
-      set_val(init_key, fmt_num(math.min(120, cur + c.init_bed_boost), "%.0f"))
+      local cont = scalar_num(config[cont_key], 65)
+      local cur = scalar_num(config[init_key], cont)
+      local max_step = is_elastomer and 3 or 5
+      set_val(init_key, fmt_num(math.min(115, math.min(cont + max_step, cur + c.init_bed_boost)), "%.0f"))
     end
     boost_init_bed("textured_plate_temp_initial_layer", "textured_plate_temp")
     boost_init_bed("hot_plate_temp_initial_layer", "hot_plate_temp")
@@ -230,13 +242,11 @@ function apply(config, ctx, p)
     local base_iw = 0.50 * (nd / 0.40)
     local cur_iw = scalar_num(config["initial_layer_line_width"], base_iw)
     local wet_iw_delta = (c.init_width - 0.50) * (nd / 0.40)
-    local eff_init_w = math.min(0.65 * (nd / 0.40), cur_iw + wet_iw_delta)
+    local eff_init_w = math.min(0.55 * (nd / 0.40), cur_iw + wet_iw_delta)
     config["bottom_solid_infill_flow_ratio"] = fmt_num(c.bottom_flow, "%.2f")
     config["initial_layer_line_width"] = fmt_num(eff_init_w, "%.2f")
-    if not (ctx and ctx._process_seeded) then
-      config["initial_layer_speed"] = fmt_num(c.init_speed, "%.0f")
-      config["initial_layer_infill_speed"] = fmt_num(c.init_infill_speed, "%.0f")
-    end
+    config["initial_layer_speed"] = fmt_num(c.init_speed, "%.0f")
+    config["initial_layer_infill_speed"] = fmt_num(c.init_infill_speed, "%.0f")
   end
 
   -- Export relative metadata markers so standalone filament exports apply the exact per-spool deltas

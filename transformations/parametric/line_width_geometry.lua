@@ -177,11 +177,17 @@ function apply(config, ctx, p)
   end
   config["outer_wall_line_width"] = fmt_num(target_outer, "%.2f")
   config["line_width"] = fmt_num(target_outer, "%.2f")
-  config["top_surface_line_width"] = fmt_num(d * c.top / 100.0, "%.2f")
-  config["inner_wall_line_width"] = fmt_num(d * c.inner / 100.0, "%.2f")
-  config["sparse_infill_line_width"] = fmt_num(d * c.infill / 100.0, "%.2f")
-  config["internal_solid_infill_line_width"] = fmt_num(d * c.outer / 100.0, "%.2f")
-  config["support_line_width"] = fmt_num(d, "%.2f")
+  -- Top surface line width must NEVER drop below physical nozzle orifice `d` (sub-bore lines
+  -- snag carbon fibers on 0.4mm nozzles and fail to iron/constrain beads on 0.6mm+ nozzles).
+  local eff_top = math.max(d, d * c.top / 100.0)
+  config["top_surface_line_width"] = fmt_num(eff_top, "%.2f")
+  config["inner_wall_line_width"] = fmt_num(math.max(target_outer, d * c.inner / 100.0), "%.2f")
+  config["sparse_infill_line_width"] = fmt_num(math.max(target_outer, d * c.infill / 100.0), "%.2f")
+  config["internal_solid_infill_line_width"] = fmt_num(math.max(target_outer, d * c.outer / 100.0), "%.2f")
+  config["support_line_width"] = fmt_num(d * 1.05, "%.2f")
+  if d >= 0.55 then
+    config["initial_layer_print_height"] = fmt_num(math.min(0.32, d * 0.50), "%.2f")
+  end
 
   local lw_keys = {
     "initial_layer_line_width",

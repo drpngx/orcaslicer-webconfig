@@ -1220,23 +1220,23 @@ impl TransformationEngine {
       },
       TransformationRule {
         id: "scarf_seams_only".to_string(),
-        name: "Scarf Joint Seams (Contour + Inner Ramp)".to_string(),
-        description: "Enables OrcaSlicer Scarf Joint Seams (all perimeters, 15 steps, 15mm min length, 10% seam gap) without changing the wall generator.".to_string(),
+        name: "Scarf Joint Seams (Outer Contour Ramp)".to_string(),
+        description: "Enables OrcaSlicer Scarf Joint Seams on outer contours (`seam_slope_type = external`, 15 steps, 15mm min length, 15% start height, 10% seam gap) without scraping small inner bore holes.".to_string(),
         category: "Process Quality Rule".to_string(),
         icon: "📐".to_string(),
         enabled: true,
         condition_expr: "all".to_string(),
-        lua_code: r#"-- Scarf Joint Seams Only (Contour + Inner Scarf Ramp)
+        lua_code: r#"-- Scarf Joint Seams Only (Outer Contour Scarf Ramp)
 params = {
   {
     id = "scarf_mode",
     label = "Scarf Joint Seam Scope",
-    description = "Contour + Inner Wall (all), Contour Only (contour), or Disabled (none).",
+    description = "Contour Only (external — Recommended), Contour + Inner Hole (all), or Disabled (none).",
     type = "enum",
-    default = "all",
+    default = "external",
     options = {
+      { value = "external", label = "Contour Only (external — Recommended)" },
       { value = "all", label = "Contour + Inner Wall (all)" },
-      { value = "contour", label = "Contour Only (contour)" },
       { value = "none", label = "Disabled (none)" },
     },
   },
@@ -1267,12 +1267,14 @@ function validate(p, ctx)
 end
 
 function apply(config, ctx, p)
-  local mode = (p and p.scarf_mode) or "all"
+  local mode = (p and p.scarf_mode) or "external"
+  if mode == "contour" then mode = "external" end
   local steps = tostring(math.floor((tonumber(p and p.scarf_steps) or 15) + 0.5))
   config["seam_slope_type"] = mode
   config["seam_slope_conditional"] = "1"
-  config["seam_slope_start_height"] = "10%"
+  config["seam_slope_start_height"] = "15%"
   config["seam_slope_entire_loop"] = "0"
+  config["seam_slope_inner_walls"] = "0"
   config["seam_slope_min_length"] = "15"
   config["seam_slope_steps"] = steps
   config["seam_gap"] = "10%"
@@ -1765,7 +1767,6 @@ end
         | "additional_cooling_fan_speed"
         | "during_print_exhaust_fan_speed"
         | "complete_print_exhaust_fan_speed"
-        | "chamber_fan_speed"
         | "close_fan_the_first_x_layers"
         | "slow_down_layer_time"
         | "fan_cooling_layer_time"
@@ -3122,6 +3123,84 @@ end
             }
           }
         }
+        let is_warp_ep = context
+          .get("filament_is_warp_prone")
+          .and_then(|v| v.as_bool())
+          .unwrap_or(false)
+          || context
+            .get("filament_type")
+            .and_then(|v| v.as_str())
+            .map(|ft| crate::constants::constants().lookup_polymer(ft).is_warp_prone())
+            .unwrap_or(false);
+        for fk_max in [
+          "fan_max_speed",
+          "fan_max_speed_BRASS",
+          "fan_max_speed_HS",
+          "overhang_fan_speed",
+          "additional_cooling_fan_speed",
+          "during_print_exhaust_fan_speed",
+        ] {
+          if let Some(cur_s) = cmap.get(fk_max).map(&extract_scalar) {
+            if let Ok(cur_n) = cur_s.trim().trim_end_matches('%').parse::<f64>() {
+              let r = cur_n.round() as i32;
+              if (1..=9).contains(&r) {
+                record_coupled_clamp(
+                  cmap,
+                  &mut rule_sources,
+                  fk_max,
+                  &cur_s,
+                  10.0,
+                  "coupled_constraint_pwm_fan_stall",
+                  "Clamped by 24V PWM Blower Stall Guard (10%)",
+                  format!("Snapped {} ({:.0}%) out of 1–9% PWM stall zone to 10%", fk_max, cur_n),
+                );
+              }
+            }
+          }
+        }
+        let final_fmax = cmap
+          .get("fan_max_speed")
+          .map(&extract_scalar)
+          .and_then(|s| s.trim().trim_end_matches('%').parse::<f64>().ok())
+          .unwrap_or(0.0);
+        for fk_min in ["fan_min_speed", "fan_min_speed_BRASS", "fan_min_speed_HS"] {
+          if let Some(cur_s) = cmap.get(fk_min).map(&extract_scalar) {
+            if let Ok(cur_n) = cur_s.trim().trim_end_matches('%').parse::<f64>() {
+              let r = cur_n.round() as i32;
+              let mut target_opt: Option<f64> = None;
+              if (1..=9).contains(&r) {
+                target_opt = Some(if is_warp_ep && final_fmax < 12.0 {
+                  0.0
+                } else {
+                  10.0_f64.min(final_fmax)
+                });
+              } else if is_warp_ep && final_fmax > 0.0 && cur_n >= final_fmax - 1e-6 {
+                target_opt = Some(if final_fmax >= 18.0 { 10.0 } else { 0.0 });
+              } else if cur_n > final_fmax + 1e-6 {
+                target_opt = Some(final_fmax);
+              }
+              if let Some(tgt) = target_opt {
+                let tgt_clean = if (1..=9).contains(&(tgt.round() as i32)) {
+                  0.0
+                } else {
+                  tgt
+                };
+                if (cur_n - tgt_clean).abs() > 1e-4 {
+                  record_coupled_clamp(
+                    cmap,
+                    &mut rule_sources,
+                    fk_min,
+                    &cur_s,
+                    tgt_clean,
+                    "coupled_constraint_pwm_fan_stall",
+                    &format!("Clamped by 24V PWM Blower Stall / Warp Fan Guard ({:.0}%)", tgt_clean),
+                    format!("Snapped {} ({:.0}%) to {:.0}%", fk_min, cur_n, tgt_clean),
+                  );
+                }
+              }
+            }
+          }
+        }
       }
 
       // (f) Process Preset Speed Policy & VFA Epilogue Projection (when seeded via `seed_process_inputs`):
@@ -3214,10 +3293,20 @@ end
                   .map(&extract_scalar)
                   .as_deref()
                   != Some("0");
+                let proc_tier_ctx = context
+                  .get("process_tier")
+                  .and_then(|v| v.as_str())
+                  .unwrap_or("");
+                let is_speed_or_draft_tier = matches!(proc_tier_ctx, "speed" | "draft")
+                  || proc_lh >= 0.24
+                  || raw_spd >= 245.0;
                 let mut stepped_down = false;
                 if vfa_mode == "sub_resonance_gloss"
                   || (is_silk && scaled_spd > sub_spd + 5.0)
-                  || (is_corexy_vfa && actual_outer_spd > sub_spd + 5.0 && actual_outer_spd < clear_spd)
+                  || (is_corexy_vfa
+                    && !is_speed_or_draft_tier
+                    && actual_outer_spd > sub_spd + 5.0
+                    && actual_outer_spd < clear_spd)
                 {
                   scaled_spd = (sub_spd * scale).round().max(15.0);
                   stepped_down = true;
@@ -3232,7 +3321,24 @@ end
                   );
                 }
                 if lock_pref == "auto" {
+                  let is_low_fan_ctx = context
+                    .get("filament_is_elastomer")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    || context
+                      .get("filament_is_warp_prone")
+                      .and_then(|v| v.as_bool())
+                      .unwrap_or(false)
+                    || context
+                      .get("filament_type")
+                      .and_then(|v| v.as_str())
+                      .map(|ft| {
+                        let p = crate::constants::constants().lookup_polymer(ft);
+                        p.is_warp_prone() || p.is_flexible() || p.canonical_key == "PHA"
+                      })
+                      .unwrap_or(false);
                   let lock_ow = if vfa_mode == "spire_safe"
+                    || is_low_fan_ctx
                     || (!stepped_down
                       && !is_silk
                       && scaled_spd >= clear_spd
@@ -3279,6 +3385,9 @@ end
 
           // Enforce overhang / bridge speed ceiling relative to this process tier's `outer_wall_speed`
           // so slow Quality / Bed-Slinger tiers (e.g. 25–40 mm/s) never accelerate on overhangs or bridges.
+          // NOTE: In OrcaSlicer C++ (`PrintConfig.cpp`), `0` on `overhang_*_speed` means
+          // "0 = disabled / use original outer_wall_speed" — NEVER treat `0` as `0 mm/s` or
+          // update `prev_ceil = 0.0`, which would wipe steeper overhang slowdowns (`50 / 30 / 10`) to `0`!
           if let Some(ow_val) = cmap
             .get("outer_wall_speed")
             .map(&extract_scalar)
@@ -3292,41 +3401,48 @@ end
               "overhang_3_4_speed",
               "overhang_4_4_speed",
             ] {
+              if !rule_sources.contains_key(ov_key) {
+                continue;
+              }
               if let Some(cur_ov_str) = cmap.get(ov_key).map(&extract_scalar) {
                 if !cur_ov_str.trim().ends_with('%') {
                   if let Ok(ov_num) = cur_ov_str.trim().parse::<f64>() {
-                    if ov_num > prev_ceil + 1e-6 {
-                      record_coupled_clamp(
-                        cmap,
-                        &mut rule_sources,
-                        ov_key,
-                        &cur_ov_str,
-                        prev_ceil,
-                        "coupled_constraint_overhang_speed_ceiling",
-                        &format!("Clamped by Coupled Overhang ≤ Outer Wall Speed (≤ {:.0} mm/s)", prev_ceil),
-                        format!("Enforced {} ≤ {:.0} mm/s so overhangs never accelerate past outer wall speed", ov_key, prev_ceil),
-                      );
-                    } else {
-                      prev_ceil = ov_num;
+                    if ov_num > 0.0 {
+                      if ov_num > prev_ceil + 1e-6 {
+                        record_coupled_clamp(
+                          cmap,
+                          &mut rule_sources,
+                          ov_key,
+                          &cur_ov_str,
+                          prev_ceil,
+                          "coupled_constraint_overhang_speed_ceiling",
+                          &format!("Clamped by Coupled Overhang ≤ Outer Wall Speed (≤ {:.0} mm/s)", prev_ceil),
+                          format!("Enforced {} ≤ {:.0} mm/s so overhangs never accelerate past outer wall speed", ov_key, prev_ceil),
+                        );
+                      } else {
+                        prev_ceil = ov_num;
+                      }
                     }
                   }
                 }
               }
             }
-            if let Some(cur_br_str) = cmap.get("bridge_speed").map(&extract_scalar) {
-              if !cur_br_str.trim().ends_with('%') {
-                if let Ok(br_num) = cur_br_str.trim().parse::<f64>() {
-                  if br_num > ow_val + 1e-6 {
-                    record_coupled_clamp(
-                      cmap,
-                      &mut rule_sources,
-                      "bridge_speed",
-                      &cur_br_str,
-                      ow_val,
-                      "coupled_constraint_bridge_speed_ceiling",
-                      &format!("Clamped by Coupled Bridge ≤ Outer Wall Speed (≤ {:.0} mm/s)", ow_val),
-                      format!("Enforced bridge_speed ≤ outer_wall_speed ({:.0} mm/s)", ow_val),
-                    );
+            if rule_sources.contains_key("bridge_speed") {
+              if let Some(cur_br_str) = cmap.get("bridge_speed").map(&extract_scalar) {
+                if !cur_br_str.trim().ends_with('%') {
+                  if let Ok(br_num) = cur_br_str.trim().parse::<f64>() {
+                    if br_num > ow_val + 1e-6 {
+                      record_coupled_clamp(
+                        cmap,
+                        &mut rule_sources,
+                        "bridge_speed",
+                        &cur_br_str,
+                        ow_val,
+                        "coupled_constraint_bridge_speed_ceiling",
+                        &format!("Clamped by Coupled Bridge ≤ Outer Wall Speed (≤ {:.0} mm/s)", ow_val),
+                        format!("Enforced bridge_speed ≤ outer_wall_speed ({:.0} mm/s)", ow_val),
+                      );
+                    }
                   }
                 }
               }
@@ -3337,7 +3453,16 @@ end
             .get("initial_layer_speed")
             .map(|&s| (s - 1.0).abs() > 1e-4)
             .unwrap_or(false);
-          if !has_wet_filament_first_layer && !has_first_layer_rule_scale {
+          let has_cold_climate_first_layer = cmap
+            .get("_climate_init_bed_extra_c")
+            .map(&extract_scalar)
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .map(|v| v > 0.0)
+            .unwrap_or(false);
+          if !has_wet_filament_first_layer
+            && !has_first_layer_rule_scale
+            && !has_cold_climate_first_layer
+          {
             if let (Some(base_il_str), Some(cur_il_str)) = (
               base_profile.get_str("initial_layer_speed"),
               cmap.get("initial_layer_speed").map(&extract_scalar),
@@ -3660,10 +3785,11 @@ end
       );
       if base_profile.profile_type != "filament" && !rules.is_empty() {
         let weather_disabled = rules.iter().any(|r| {
-          matches!(
+          (matches!(
             r.id.as_str(),
             "weather_climate_adjustment" | "rule_weather_climate"
-          ) && !r.enabled
+          ) || r.lua_code.contains("_climate_noz_delta_c"))
+            && !r.enabled
         });
         if weather_disabled {
           map.insert(
@@ -3688,17 +3814,21 @@ end
                   | "rule_volumetric_speed_ceiling"
                   | "flush_volumes_matrix"
                   | "symptom_spaghetti_pla"
+                  | "symptom_clog_ace_pro"
                   | "process_scarf_seams_arachne"
                   | "weather_climate_adjustment"
                   | "rule_weather_climate"
-                  | "sym_wet_filament"
-                  | "rule_wet_filament"
                   | "support_tuning"
                   | "ironing_tuning"
+                  | "dimensional_precision"
                   | "bridge_overhang_tuning"
                   | "outer_wall_consistency"
                   | "wizard_outer_wall_consistency"
               )
+              && !r.lua_code.contains("_climate_noz_delta_c")
+              && !r.lua_code.contains("_outer_wall_vfa_mode")
+              && !r.lua_code.contains("computed_safe_speed_ceiling")
+              && !r.lua_code.contains("flush_volumes_matrix")
           })
           .collect();
         if !extra_filament_rules.is_empty() {
@@ -5511,24 +5641,25 @@ end
       }),
     )
     .expect("tropical PETG stock nozzle executes");
-    assert_eq!(petg_trop_stock["nozzle_temperature"], "233");
+    assert_eq!(petg_trop_stock["nozzle_temperature"], "238");
     assert_eq!(petg_trop_stock["textured_plate_temp"], "77");
-    assert_eq!(petg_trop_stock["filament_retraction_length"], "1.15");
+    assert_eq!(petg_trop_stock["filament_retraction_length"], "0.92");
     assert_eq!(petg_trop_stock["filament_retraction_speed"], "40");
     assert_eq!(petg_trop_stock["filament_z_hop"], "0.20");
     assert_eq!(petg_trop_stock["filament_z_hop_types"], "Spiral Lift");
     assert_eq!(
       petg_trop_stock["filament_retract_lift_enforce"],
-      "Top Only"
+      "All Surfaces"
     );
-    assert_eq!(petg_trop_stock["additional_cooling_fan_speed"], "40");
+    assert_eq!(petg_trop_stock["during_print_exhaust_fan_speed"], "40");
+    assert_eq!(petg_trop_stock["additional_cooling_fan_speed"], "0");
     assert_eq!(petg_trop_stock["filament_max_volumetric_speed"], "13.1");
     assert_eq!(petg_trop_stock["filament_wipe"], "1");
     assert_eq!(petg_trop_stock["reduce_crossing_wall"], "1");
     assert_eq!(petg_trop_stock["outer_wall_speed"], "170");
 
     // MicroSwiss / FlowTech / Diamondback nozzle in Tropical weather is resistant to heat creep:
-    // Halves the heat-creep nozzle drop (-7°C instead of -12°C -> 238°C) and preserves 0.92x MVS (14.7 mm³/s vs 13.1 mm³/s)!
+    // Halves the heat-creep nozzle drop (-4°C instead of -7°C -> 241°C) and preserves 0.92x MVS (14.7 mm³/s vs 13.1 mm³/s)!
     let (petg_trop_ms, _, _) = execute_transformation_lua(
       &tropical_lua,
       &json!({
@@ -5547,12 +5678,12 @@ end
       }),
     )
     .expect("tropical PETG MicroSwiss nozzle executes");
-    assert_eq!(petg_trop_ms["nozzle_temperature"], "238");
+    assert_eq!(petg_trop_ms["nozzle_temperature"], "241");
     assert_eq!(petg_trop_ms["textured_plate_temp"], "78");
     assert_eq!(petg_trop_ms["filament_max_volumetric_speed"], "14.7");
-    assert_eq!(petg_trop_ms["filament_retraction_length"], "1.00");
+    assert_eq!(petg_trop_ms["filament_retraction_length"], "0.77");
 
-    // Tropical on TPU 95A: Zero Z-Hop (0.00), relative +0.35mm retract (0.80 -> 1.15mm), 0.75x retract speed (30 -> 23mm/s), 0.85x MVS (5.0 -> 4.3 mm³/s), -8°C nozzle (220 -> 212°C)
+    // Tropical on TPU 95A: Zero Z-Hop (0.00), 0.0mm retract delta (0.80 -> 0.80mm, never stretching TPU), 0.85x retract speed (30 -> 26mm/s), 0.88x MVS (5.0 -> 4.4 mm³/s), -4°C nozzle (220 -> 216°C), 0°C bed drop (50 -> 50°C)
     let (tpu_trop, _, _) = execute_transformation_lua(
       &tropical_lua,
       &json!({
@@ -5565,12 +5696,12 @@ end
       &json!({ "filament_type": "TPU 95A" }),
     )
     .expect("tropical TPU executes");
-    assert_eq!(tpu_trop["nozzle_temperature"], "212");
-    assert_eq!(tpu_trop["textured_plate_temp"], "45");
+    assert_eq!(tpu_trop["nozzle_temperature"], "216");
+    assert_eq!(tpu_trop["textured_plate_temp"], "50");
     assert_eq!(tpu_trop["filament_z_hop"], "0.00");
-    assert_eq!(tpu_trop["filament_retraction_length"], "1.15");
-    assert_eq!(tpu_trop["filament_retraction_speed"], "23");
-    assert_eq!(tpu_trop["filament_max_volumetric_speed"], "4.2");
+    assert_eq!(tpu_trop["filament_retraction_length"], "0.80");
+    assert_eq!(tpu_trop["filament_retraction_speed"], "26");
+    assert_eq!(tpu_trop["filament_max_volumetric_speed"], "4.4");
 
     // 2. Selecting "cold_dry" preset snaps Ambient Temp Dial to 14°C and Humidity Dial to 25% RH
     weather.apply_answer_change(&mut ans, "climate_preset", "cold_dry".to_string());
@@ -5596,8 +5727,8 @@ end
     assert_eq!(pla_cold["additional_cooling_fan_speed"], "0");
     assert_eq!(pla_cold["close_fan_the_first_x_layers"], "3");
     assert_eq!(pla_cold["initial_layer_speed"], "35");
-    assert_eq!(pla_cold["brim_type"], "outer_only");
-    assert_eq!(pla_cold["brim_width"], "5");
+    assert_eq!(pla_cold["brim_type"], "auto_brim");
+    assert_eq!(pla_cold["brim_width"], "8");
 
     // 3. Selecting "cold_humid" preset snaps Ambient Temp Dial to 15°C and Humidity Dial to 80% RH
     weather.apply_answer_change(&mut ans, "climate_preset", "cold_humid".to_string());
@@ -5615,14 +5746,14 @@ end
       &json!({ "filament_type": "PLA" }),
     )
     .expect("cold_humid PLA executes");
-    // Combines Cold-Weather chamber/bed/exhaust/brim with High-Humidity anti-stringing (+5°C cold -3°C humid = +2°C -> 217°C)!
+    // Combines Cold-Weather chamber/bed/exhaust/brim with High-Humidity anti-stringing (+6°C cold -4°C humid = +2°C -> 217°C)!
     assert_eq!(pla_cold_humid["nozzle_temperature"], "217");
     assert_eq!(pla_cold_humid["textured_plate_temp_initial_layer"], "65");
     assert_eq!(pla_cold_humid["additional_cooling_fan_speed"], "0");
     assert_eq!(pla_cold_humid["close_fan_the_first_x_layers"], "3");
     assert_eq!(pla_cold_humid["filament_wipe"], "1");
     assert_eq!(pla_cold_humid["reduce_crossing_wall"], "1");
-    assert_eq!(pla_cold_humid["brim_width"], "5");
+    assert_eq!(pla_cold_humid["brim_width"], "8");
 
     // 4. Selecting "hot_dry" preset snaps Ambient Temp Dial to 33°C and Humidity Dial to 20% RH
     weather.apply_answer_change(&mut ans, "climate_preset", "hot_dry".to_string());
@@ -6755,7 +6886,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     .expect("0.4mm executes");
     assert_eq!(cfg_04["initial_layer_line_width"], "0.50");
     assert_eq!(cfg_04["outer_wall_line_width"], "0.42");
-    assert_eq!(cfg_04["top_surface_line_width"], "0.38");
+    assert_eq!(cfg_04["top_surface_line_width"], "0.40");
     assert_eq!(cfg_04["inner_wall_line_width"], "0.50");
     assert_eq!(cfg_04["sparse_infill_line_width"], "0.50");
     assert_eq!(cfg_04["internal_solid_infill_line_width"], "0.42");
@@ -6768,7 +6899,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     .expect("0.6mm executes");
     assert_eq!(cfg_06["initial_layer_line_width"], "0.75");
     assert_eq!(cfg_06["outer_wall_line_width"], "0.63");
-    assert_eq!(cfg_06["top_surface_line_width"], "0.57");
+    assert_eq!(cfg_06["top_surface_line_width"], "0.60");
     assert_eq!(cfg_06["inner_wall_line_width"], "0.75");
     assert_eq!(cfg_06["sparse_infill_line_width"], "0.75");
 
@@ -6840,7 +6971,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       );
       assert_eq!(
         val["top_surface_line_width"].as_str(),
-        Some("0.38"),
+        Some("0.40"),
         "process {}",
         proc.name
       );
@@ -7318,7 +7449,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
     .expect("outer_wall_consistency executes for PETG 10 mm3/s");
     assert_eq!(cfg_petg["dont_slow_down_outer_wall"], "1");
     assert_eq!(cfg_petg["outer_wall_speed"], "55");
-    assert_eq!(cfg_petg["small_perimeter_speed"], "50");
+    assert_eq!(cfg_petg["small_perimeter_speed"], "41");
 
     // 2. High-MVS filament (High-Speed PLA @ 18 mm3/s) on 0.20mm Standard: ceiling is 214 mm/s >= 145 mm/s.
     // Keeps outer_wall_speed at 200 mm/s (clears VFA band) and locks dont_slow_down_outer_wall = "1".
@@ -7405,15 +7536,18 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       &crate::threemf::build_process_preset_json(&procs[0], &rig, &proc_ov),
     )
     .unwrap();
-    assert_eq!(p_020_std["dont_slow_down_outer_wall"].as_str(), Some("1"));
+    assert!(
+      p_020_std.get("dont_slow_down_outer_wall").is_none(),
+      "dont_slow_down_outer_wall is a Filament coBools key in OrcaSlicer/AnycubicSlicerNext and must never be emitted in Process JSON"
+    );
     assert_eq!(p_020_std["outer_wall_speed"].as_str(), Some("55"));
-    assert_eq!(p_020_std["small_perimeter_speed"].as_str(), Some("50"));
+    assert_eq!(p_020_std["small_perimeter_speed"].as_str(), Some("41"));
 
     let p_012_hq: serde_json::Value = serde_json::from_str(
       &crate::threemf::build_process_preset_json(&procs[3], &rig, &proc_ov),
     )
     .unwrap();
-    assert_eq!(p_012_hq["dont_slow_down_outer_wall"].as_str(), Some("1"));
+    assert!(p_012_hq.get("dont_slow_down_outer_wall").is_none());
     assert_eq!(p_012_hq["outer_wall_speed"].as_str(), Some("60"));
   }
 
@@ -7864,13 +7998,13 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       Some(300.0)
     );
 
-    // Retraction length: 0.80 -> 0.70 (P12) -> 1.45 (P35) -> Clamped to 1.15 (Priority ∞)
+    // Retraction length: 0.80 -> 0.70 (P12) -> 1.45 (P35) -> Clamped to 0.95 (Priority ∞)
     assert_eq!(
       eval
         .resulting_profile
         .get_str("filament_retraction_length")
         .as_deref(),
-      Some("1.15")
+      Some("0.95")
     );
     let ret_prov = eval
       .provenance_items
@@ -8483,7 +8617,7 @@ print("Scaled nozzle_temperature by 1.02x for high-flow extrusion")
       &json!({ "filament_type": "PETG", "nozzle_diameter": 0.6 }),
     )
     .unwrap();
-    assert_eq!(wet_06["initial_layer_line_width"], "0.84");
+    assert_eq!(wet_06["initial_layer_line_width"], "0.79");
   }
 
   #[test]

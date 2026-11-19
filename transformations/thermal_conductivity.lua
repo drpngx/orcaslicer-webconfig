@@ -110,9 +110,15 @@ function apply(config, ctx)
     config["nozzle_temperature_HS"] = { fmt_num(new_temp, "%.0f") }
     config["nozzle_temperature_initial_layer_HS"] = { fmt_num(new_init, "%.0f") }
     print("[ThermalConductivity] " .. mat .. ": nozzle_type=hardened_steel + nozzle_hrc=55, Added +5C thermal compensation -> " .. string.format("%.0f", new_temp) .. "C")
-  elseif mat == "Bi-Metal CHT" or mat == "MicroSwiss FlowTech CHT" or mat == "E3D ObXidian High-Flow" or ntype == "cht" or ntype == "microswiss_cht" or ntype == "bondtech_cht_bimetal" or ntype == "e3d_obxidian" then
+  elseif mat == "Bi-Metal CHT" or mat == "MicroSwiss CHT CM2 Hardened" or mat == "E3D ObXidian High-Flow" or ntype == "bondtech_cht_bimetal" or ntype == "microswiss_cht_cm2" or ntype == "e3d_obxidian" then
+    config["nozzle_type"] = (ntype == "e3d_obxidian") and "brass" or "hardened_steel"
+    config["nozzle_hrc"] = (ntype == "e3d_obxidian") and "60" or "55"
+    if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] and scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
+      config["filament_retraction_length"] = { "0.60" }
+    end
+  elseif mat == "MicroSwiss FlowTech CHT" or ntype == "cht" or ntype == "microswiss_cht" then
     config["nozzle_type"] = "brass"
-    config["nozzle_hrc"] = "55"
+    config["nozzle_hrc"] = "3"
     if config["filament_max_volumetric_speed"] and config["filament_max_volumetric_speed"][1] and scalar_num(config["filament_retraction_length"], 0.8) < 2.0 then
       config["filament_retraction_length"] = { "0.60" }
     end

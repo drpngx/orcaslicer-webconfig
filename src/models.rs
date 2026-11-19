@@ -338,6 +338,11 @@ impl MachineRig {
   /// Travel-acceleration breakaway policy for this rig's motion-system class
   /// (`printer_classes.policies`): stock/target/floor in mm/s². Printer-class physics —
   /// a CoreXY gantry and a bed-slinger need different numbers for the same rule.
+  /// Returns true when the machine rig uses bed-slinger / Cartesian Y-bed kinematics.
+  pub fn is_bedslinger(&self) -> bool {
+    self.kinematics_class() == "bedslinger"
+  }
+
   pub fn travel_accel_policy(&self) -> crate::constants::PrinterClassPolicy {
     crate::constants::constants().printer_class_policy(&self.kinematics_class())
   }
@@ -501,19 +506,20 @@ impl MachineRig {
       ("brass", 68)
     } else if nt.contains("ruby") || nm.contains("ruby") {
       ("brass", 60)
+    } else if nt.contains("obxidian") || nm.contains("obxidian") {
+      ("hardened_steel", 60)
     } else if nt.contains("hardened")
       || nm.contains("hardened")
       || nt.contains("cm2")
       || nm.contains("cm2")
-      || nt.contains("obxidian")
+      || nt.contains("bimetal")
+      || nm.contains("bi-metal")
     {
       ("hardened_steel", 55)
     } else if nt.contains("stainless") || nm.contains("stainless") {
       ("stainless_steel", 50)
     } else if nt.contains("microswiss_brass") || nm.contains("twinclad") {
       ("brass", 35)
-    } else if nt.contains("cht") || nm.contains("cht") {
-      ("brass", 55)
     } else {
       ("brass", 3)
     }
@@ -998,6 +1004,36 @@ impl FilamentSpool {
     format!("OC - {}", safe_base)
   }
 
+  /// Concise `OC -` display name synchronized with `rig`'s nozzle diameter (`0.4`, `0.6`, `0.8`)
+  /// and nozzle tag so a `0.6mm` rig never exports filament titles labeled `• 0.4 ...`.
+  pub fn format_concise_title_for_rig(&self, rig: &MachineRig) -> String {
+    let base = self.format_concise_title();
+    let is_external_disk_spool = self.id.starts_with("disk_")
+      && !self.name.starts_with("OC:")
+      && !self.name.starts_with("OC -");
+    if is_external_disk_spool || !base.starts_with("OC - ") {
+      return base;
+    }
+    let rig_diam = rig.formatted_nozzle_diameter();
+    let rig_tag = rig.short_nozzle_tag();
+    if let Some((title_base, _old_diam, _old_tag)) = split_oc_nozzle_title(&base) {
+      format!("OC - {} • {} {}", title_base, rig_diam, rig_tag)
+    } else {
+      base
+    }
+  }
+
+  /// Recomputes `base_print_temp`, `print_temp`, and the `• <diam> <Nozzle>` preset suffix for `rig`.
+  pub fn recompute_for_rig(&mut self, rig: &MachineRig) {
+    self.recompute_for_nozzle(&rig.nozzle_type);
+    let is_external_disk_spool = self.id.starts_with("disk_")
+      && !self.name.starts_with("OC -")
+      && !self.name.starts_with("OC:");
+    if !is_external_disk_spool && (self.name.starts_with("OC -") || self.name.starts_with("OC:")) {
+      self.name = self.format_concise_title_for_rig(rig);
+    }
+  }
+
   /// Recomputes `base_print_temp` and `print_temp` when switching the Machine Rig to `new_nozzle_type`,
   /// ensuring that values tuned specifically for a Hardened Steel nozzle (`_HS`) are NEVER used on
   /// a Brass, Ruby-Brass, or Diamondback PCD nozzle!
@@ -1185,28 +1221,43 @@ impl FilamentSpool {
         hw.pcl_temp_range_high_c.min(max_ceiling),
       );
     }
+    if matches!(p.canonical_key.as_str(), "PVA" | "BVOH") {
+      // Water-soluble PVA/BVOH thermally pyrolyzes into insoluble black tar above ~230°C!
+      // Keep multi-material AMS window compatible with PLA / PHA / TPU (185..230°C) while
+      // strictly blocking high-temp PETG/ABS/PC purges from charring the hotend.
+      let max_t = effective_temp.max(initial_temp).min(max_ceiling);
+      let min_t = effective_temp.min(initial_temp).min(max_t);
+      let low = 185
+        .min(min_t - 5)
+        .max(hw.min_extrusion_temp_c)
+        .min(max_ceiling);
+      let high = 230
+        .max(max_t + 5)
+        .min(235)
+        .min(max_ceiling)
+        .max(low);
+      return (low.min(high), high);
+    }
     let max_t = effective_temp.max(initial_temp).min(max_ceiling);
     let min_t = effective_temp.min(initial_temp).min(max_t);
     if max_t > 265 || !p.standard_ams_compatible {
-      let low = hw
-        .high_temp_range_low_c
+      let low = (p.safe_nozzle_min_c - 10)
         .min(min_t)
-        .max(hw.standard_ams_range_low_c)
+        .max(220)
         .min(max_ceiling);
-      let high = hw
-        .high_temp_range_high_c
+      let high = (p.safe_nozzle_max_c + 5)
         .max(max_t)
         .min(max_ceiling)
-        .max(low);
-      (low, high)
+        .max(low + 5)
+        .min(max_ceiling);
+      (low.min(high), high)
     } else {
-      let low = hw
-        .standard_ams_range_low_c
-        .min(min_t - 10)
+      let ams_high_target = 265.min(max_ceiling);
+      let low = 185
+        .min(min_t - 5)
         .max(hw.min_extrusion_temp_c)
         .min(max_ceiling);
-      let high = hw
-        .standard_ams_range_high_c
+      let high = ams_high_target
         .max(max_t)
         .min(max_ceiling)
         .max(low);
@@ -1594,14 +1645,22 @@ impl FilamentSpool {
       && poly_cfg.translucent_z_hop_mm.is_some()
       && variant_entry.is_none()
     {
-      self.base_bed_temp = poly_cfg.default_bed_c;
-      self.bed_temp = poly_cfg.default_bed_c;
-      self.max_volumetric_speed = poly_cfg.default_max_volumetric_speed;
-      self.fan_speed_percent = poly_cfg.default_fan_pct;
+      self.base_bed_temp = resolved_entry
+        .map(|m| m.base_bed_c as i32)
+        .unwrap_or(poly_cfg.default_bed_c);
+      self.bed_temp = self.base_bed_temp;
+      self.max_volumetric_speed = resolved_entry
+        .map(|m| m.max_vol_mm3s)
+        .unwrap_or(poly_cfg.default_max_volumetric_speed);
+      self.fan_speed_percent = resolved_entry
+        .map(|m| m.fan_pct as i32)
+        .unwrap_or(poly_cfg.default_fan_pct);
       self.drying_temp_c = resolved_entry
         .map(|m| m.dry_temp_c as i32)
         .unwrap_or(poly_cfg.default_dry_temp_c);
-      self.drying_time_hr = poly_cfg.default_dry_time_hr;
+      self.drying_time_hr = resolved_entry
+        .map(|m| m.dry_hr as i32)
+        .unwrap_or(poly_cfg.default_dry_time_hr);
     }
 
     // Flow ratio & MVS adjustments for Foaming finishes
@@ -1941,7 +2000,9 @@ impl FilamentSpool {
     };
     let fan_pct = mat.fan_pct as i32;
     let max_vol = mat.max_vol_mm3s;
-    let color_hex = "#8E9299".to_string();
+    let (def_hex, def_cname) = poly_cfg.default_swatch_hex_and_name(&finish_type);
+    let color_hex = def_hex.to_string();
+    let color_name = def_cname.to_string();
 
     let mut spool = FilamentSpool {
       id: format!(
@@ -1958,7 +2019,7 @@ impl FilamentSpool {
       tuned_for_nozzle_type: active_nozzle_type.to_string(),
       required_nozzle_hrc: req_hrc,
       color_hex,
-      color_name: "Cool Gray".to_string(),
+      color_name,
       brass_base_temp: base_nozzle,
       hs_base_temp: hs_nozzle,
       base_print_temp: base_nozzle,
@@ -3659,8 +3720,20 @@ impl ProcessProfile {
     } else {
       (1.0, 1.0)
     };
+    let noz_d = rig
+      .formatted_nozzle_diameter()
+      .parse::<f64>()
+      .unwrap_or(0.4)
+      .clamp(0.2, 1.2);
+    let max_bedslinger_acc = cat
+      .find_machine(&rig.printer_model)
+      .filter(|cm| rig.is_bedslinger() && cm.default_acceleration > 0.0 && cm.default_acceleration <= 1500.0)
+      .map(|cm| cm.default_acceleration as f64);
     let mut procs = Self::get_default_processes();
     for p in &mut procs {
+      if (noz_d - 0.4).abs() > 0.02 {
+        p.line_width = ((noz_d * 1.04) * 100.0).round() / 100.0;
+      }
       if spd_scale < 0.999 {
         p.outer_wall_speed = (p.outer_wall_speed * spd_scale).round().max(25.0);
         p.inner_wall_speed = (p.inner_wall_speed * spd_scale).round().max(35.0);
@@ -3669,6 +3742,9 @@ impl ProcessProfile {
       }
       if acc_scale < 0.999 {
         p.default_acceleration = (p.default_acceleration * acc_scale).round().max(500.0);
+      }
+      if let Some(acc_cap) = max_bedslinger_acc {
+        p.default_acceleration = p.default_acceleration.min(acc_cap);
       }
       p.inherits = p.resolve_inherits_for_rig(rig);
       p.name = p.format_concise_title(&short_tag);

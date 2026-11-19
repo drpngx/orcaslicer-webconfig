@@ -2224,7 +2224,7 @@ pub fn sync_live_state_to_entries_with_precomputed_filaments(
   // matching `canonical_by_id` in `build_project_settings_config_json` so
   // `profile_print_params_same(it->config, cfg)` in OrcaSlicer/AnycubicSlicerNext is guaranteed true.
   for spool in filaments {
-    let export_title = spool.format_concise_title();
+    let export_title = spool.format_concise_title_for_rig(&active_rig);
     let fname = crate::models::sanitize_profile_filename(&export_title);
     let default_rel_path = format!("user/{}/filament/{}", user_folder_id, fname);
     let fil_json = precomputed_filament_jsons
@@ -2271,8 +2271,35 @@ pub fn sync_live_state_to_entries_with_precomputed_filaments(
   } else {
     conf_relative_path.to_string()
   };
-  let ams_slots = filaments.len().max(1);
-  let active_slots: Vec<&FilamentSpool> = filaments.iter().take(ams_slots).collect();
+  let selected_slot_indices: Vec<usize> = if filaments.len() <= 9 {
+    (0..filaments.len()).collect()
+  } else {
+    let cap = (active_rig.ace_pro_units.max(1) * 4).clamp(1, 8);
+    let is_soft_flex = |s: &FilamentSpool| -> bool {
+      let mu = s.material_type.to_uppercase();
+      (mu.contains("TPU") || mu.contains("PEBA") || mu.contains("TPE"))
+        && !mu.contains("FOR AMS")
+    };
+    let mut idxs: Vec<usize> = (0..filaments.len())
+      .filter(|&i| !is_soft_flex(&filaments[i]))
+      .take(cap)
+      .collect();
+    if idxs.len() < cap {
+      for i in 0..filaments.len() {
+        if idxs.len() >= cap {
+          break;
+        }
+        if !idxs.contains(&i) {
+          idxs.push(i);
+        }
+      }
+    }
+    idxs
+  };
+  let active_slots: Vec<&FilamentSpool> = selected_slot_indices
+    .iter()
+    .map(|&i| &filaments[i])
+    .collect();
   let active_proc_name = processes
     .iter()
     .find(|p| (p.layer_height - 0.20).abs() < 0.01 && p.quality_tier() == "standard")
@@ -2280,7 +2307,21 @@ pub fn sync_live_state_to_entries_with_precomputed_filaments(
     .or_else(|| processes.first())
     .map(|p| p.name.clone())
     .unwrap_or_else(|| "0.20mm Standard @Anycubic Kobra S1 0.4 nozzle".to_string());
-  let matrix_pipe = flush_matrix
+  let full_n = filaments.len();
+  let sliced_matrix: Vec<&String> = if selected_slot_indices.len() < full_n
+    && flush_matrix.len() == full_n * full_n
+  {
+    let mut sub = Vec::with_capacity(selected_slot_indices.len() * selected_slot_indices.len());
+    for &r in &selected_slot_indices {
+      for &c in &selected_slot_indices {
+        sub.push(&flush_matrix[r * full_n + c]);
+      }
+    }
+    sub
+  } else {
+    flush_matrix.iter().collect()
+  };
+  let matrix_pipe = sliced_matrix
     .iter()
     .map(|v| {
       v.parse::<f64>()
@@ -2311,7 +2352,10 @@ pub fn sync_live_state_to_entries_with_precomputed_filaments(
       } else {
         format!("filament_{:02}", idx)
       };
-      preset_obj.insert(key, serde_json::Value::String(sp.format_concise_title()));
+      preset_obj.insert(
+        key,
+        serde_json::Value::String(sp.format_concise_title_for_rig(&active_rig)),
+      );
     }
     preset_obj.insert(
       "filament_colors".to_string(),
@@ -2404,7 +2448,10 @@ pub fn sync_live_state_to_entries_with_precomputed_filaments(
               } else {
                 format!("filament_{:02}", idx)
               };
-              pmap.insert(key, serde_json::Value::String(sp.format_concise_title()));
+              pmap.insert(
+                key,
+                serde_json::Value::String(sp.format_concise_title_for_rig(&active_rig)),
+              );
             }
             for idx in active_slots.len()..16 {
               let key = if idx == 0 {

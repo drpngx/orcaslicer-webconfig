@@ -126,10 +126,11 @@ params = {
   {
     id = "cold_brim_mode",
     label = "5. Cold-Weather Corner Anti-Warp Adhesion",
-    description = "When Ambient Temp ≤ 18°C (65°F), sharp 90° corners concentrate shrinkage forces. Select Outer Brim (+5–10mm) or Mouse Ears.",
+    description = "When Ambient Temp ≤ 18°C (65°F), sharp 90° corners concentrate shrinkage forces. Select Auto Brim, Outer Brim, or Mouse Ears.",
     type = "enum",
-    default = "outer_only",
+    default = "auto_brim",
     options = {
+      { value = "auto_brim", label = "Auto Brim (Slicer Geometry-Aware Brim — Safe for Gears & TPU)" },
       { value = "outer_only", label = "Outer Brim Only (+5mm PLA/PETG, +8mm ABS/ASA, +10mm PA/PC)" },
       { value = "brim_ears", label = "Mouse Ears (Corner Anti-Warp Discs)" },
       { value = "keep", label = "Keep Existing Brim Setting" },
@@ -206,10 +207,15 @@ function detect_material_family(p, config, ctx)
   if config and config["name"] then
     raw_name = tostring(config["name"])
   end
-  local finish = (ctx and ctx.finish_type and tostring(ctx.finish_type)) or ""
+  local finish = ""
+  if ctx and (ctx.finish_type or ctx.filament_finish) then
+    finish = tostring(ctx.finish_type or ctx.filament_finish)
+  end
   local combined = string.upper(raw_mat .. " " .. raw_name .. " " .. finish)
 
-  if string.find(combined, "PETG") or string.find(combined, "PCTG") then
+  if string.find(combined, "PETG-CF") or string.find(combined, "PETG-GF") then
+    return "PETG_CF"
+  elseif string.find(combined, "PETG") or string.find(combined, "PCTG") then
     return "PETG"
   elseif string.find(combined, "TPU") or string.find(combined, "FLEX") or string.find(combined, "PEBA") then
     return "TPU"
@@ -217,8 +223,16 @@ function detect_material_family(p, config, ctx)
     return "ABS_ASA"
   elseif string.find(combined, "PA") or string.find(combined, "NYLON") or string.find(combined, "PC") or string.find(combined, "PPA") or string.find(combined, "PET") then
     return "PA_PC"
+  elseif string.find(combined, "PLA-CF")
+    or string.find(combined, "PLA-GF")
+    or string.find(combined, "PLA CARBON")
+    or (string.find(combined, "PLA") and (string.find(combined, "CARBON") or string.find(combined, "GLASS") or string.find(combined, "-CF") or string.find(combined, "-GF")))
+  then
+    return "PLA_CF"
   elseif string.find(combined, "SILK") or string.find(combined, "MATTE") then
     return "PLA_SILK"
+  elseif string.find(combined, "PHA") then
+    return "PHA"
   else
     return "PLA"
   end
@@ -249,6 +263,7 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
     fan_max_delta = 0,
     fan_scale = 1.00,
     exhaust_target = -1,
+    aux_fan_target = -1,
     no_fan_layers_delta = 0,
     mvs_scale = 1.00,
     print_speed_scale = 1.00,
@@ -266,16 +281,16 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
   -- 1. Humidity Axis (Applies in Tropical, Warm & Humid, AND Cold & Humid)
   if is_humid then
     local extra_r = (humid_extra >= 10) and 0.05 or 0.0
-    if fam == "PLA" then
-      d.retract_delta_mm = 0.15 + extra_r
+    if fam == "PLA" or fam == "PLA_CF" or fam == "PHA" then
+      d.retract_delta_mm = 0.08 + extra_r
     elseif fam == "PLA_SILK" then
-      d.retract_delta_mm = 0.20 + extra_r
-    elseif fam == "PETG" then
-      d.retract_delta_mm = 0.35 + extra_r
-      d.zhop_enforce = "Top Only"
+      d.retract_delta_mm = 0.10 + extra_r
+    elseif fam == "PETG" or fam == "PETG_CF" then
+      d.retract_delta_mm = 0.12 + extra_r
+      d.zhop_enforce = "All Surfaces"
     elseif fam == "TPU" then
-      d.retract_delta_mm = 0.35 + extra_r
-      d.retract_speed_scale = 0.75
+      d.retract_delta_mm = 0.0
+      d.retract_speed_scale = 0.85
       d.zhop_mm = 0.0
       d.zhop_type = "Normal Lift"
     elseif fam == "ABS_ASA" then
@@ -300,49 +315,83 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
 
     if fam == "PLA" then
       d.enclosure = "Open (Prop top lid & crack door)"
-      d.nozzle_delta_c = -math.floor((12 * hc_factor) + extra_drop + (is_humid and 2 or 0) + 0.5)
-      d.bed_delta_c = is_ms_nozzle and -3 or -5
+      d.nozzle_delta_c = -math.floor((8 * hc_factor) + extra_drop + (is_humid and 1 or 0) + 0.5)
+      d.bed_delta_c = is_ms_nozzle and -2 or -4
       d.fan_min_delta = 20
       d.fan_max_delta = 10
       d.exhaust_target = 90
+      d.aux_fan_target = 60
       d.mvs_scale = is_ms_nozzle and 0.94 or 0.85
+    elseif fam == "PHA" then
+      d.enclosure = "Wide Open (PHA requires rapid cold crystal freeze)"
+      d.nozzle_delta_c = -math.floor((4 * hc_factor) + extra_drop + 0.5)
+      d.bed_delta_c = 0
+      d.exhaust_target = 100
+      d.aux_fan_target = 60
+      d.mvs_scale = is_ms_nozzle and 0.92 or 0.85
+    elseif fam == "PLA_CF" then
+      -- Fiber-reinforced PLA (PLA-CF / PLA-GF): chopped fibers stiffen the melt and require full
+      -- 65°C Textured PEI bed temperature (zero bed drop), gentle nozzle trim (-2..-4°C),
+      -- 0% auxiliary side blower (M106 P2) so crosswinds never chill the 65°C PEI sheet,
+      -- and 90% chamber exhaust (M106 P3) to prevent extruder heat creep.
+      d.enclosure = "Open (Prop top lid & crack door; 0% Aux Side Blower)"
+      d.nozzle_delta_c = -math.floor((4 * hc_factor) + extra_drop + (is_humid and 1 or 0) + 0.5)
+      d.bed_delta_c = 0
+      d.no_fan_layers_delta = 1
+      d.exhaust_target = 90
+      d.aux_fan_target = 0
+      d.mvs_scale = is_ms_nozzle and 0.94 or 0.88
     elseif fam == "PLA_SILK" then
       d.enclosure = "Wide Open (Softens easily)"
-      d.nozzle_delta_c = -math.floor((10 * hc_factor) + extra_drop + (is_humid and 2 or 0) + 0.5)
-      d.bed_delta_c = is_ms_nozzle and -3 or -5
-      d.fan_min_delta = 25
-      d.fan_max_delta = 15
+      d.nozzle_delta_c = -math.floor((6 * hc_factor) + extra_drop + (is_humid and 1 or 0) + 0.5)
+      d.bed_delta_c = is_ms_nozzle and -2 or -4
+      d.fan_min_delta = 15
+      d.fan_max_delta = 10
       d.exhaust_target = 100
-      d.mvs_scale = is_ms_nozzle and 0.88 or 0.76
+      d.aux_fan_target = 60
+      d.mvs_scale = is_ms_nozzle and 0.90 or 0.80
+    elseif fam == "PETG_CF" then
+      d.enclosure = "Vented (Top lid propped, door closed; 0% Aux Blower)"
+      d.nozzle_delta_c = -math.floor((6 * hc_factor) + extra_drop + (is_humid and 1 or 0) + 0.5)
+      d.bed_delta_c = 0
+      d.fan_min_delta = 5
+      d.fan_max_delta = 5
+      d.exhaust_target = 40
+      d.aux_fan_target = 0
+      d.mvs_scale = is_ms_nozzle and 0.94 or 0.85
     elseif fam == "PETG" then
       d.enclosure = "Vented (Top lid propped, door closed)"
-      d.nozzle_delta_c = -math.floor((10 * hc_factor) + extra_drop + (is_humid and 2 or 0) + 0.5)
+      d.nozzle_delta_c = -math.floor((6 * hc_factor) + extra_drop + (is_humid and 1 or 0) + 0.5)
       d.bed_delta_c = is_ms_nozzle and -2 or -3
-      d.fan_min_delta = 15
-      d.fan_max_delta = 20
+      d.fan_min_delta = 10
+      d.fan_max_delta = 15
       d.exhaust_target = 40
+      d.aux_fan_target = 0
       d.mvs_scale = is_ms_nozzle and 0.92 or 0.82
       d.print_speed_scale = is_ms_nozzle and 0.92 or 0.85
     elseif fam == "TPU" then
       d.enclosure = "Open (External Spool Drybox)"
-      d.nozzle_delta_c = -math.floor((6 * hc_factor) + extra_drop + (is_humid and 2 or 0) + 0.5)
-      d.bed_delta_c = is_ms_nozzle and -3 or -5
-      d.fan_min_delta = 20
-      d.fan_max_delta = 20
+      d.nozzle_delta_c = -math.floor((4 * hc_factor) + extra_drop + 0.5)
+      d.bed_delta_c = 0
+      d.fan_min_delta = 10
+      d.fan_max_delta = 10
       d.exhaust_target = 80
-      d.mvs_scale = is_ms_nozzle and 0.93 or 0.85
+      d.aux_fan_target = 40
+      d.mvs_scale = is_ms_nozzle and 0.95 or 0.88
       d.print_speed_scale = is_ms_nozzle and 0.92 or 0.85
     elseif fam == "ABS_ASA" then
       d.enclosure = "Fully Closed (Tropical heat helps)"
       d.nozzle_delta_c = 0
       d.bed_delta_c = 0
       d.exhaust_target = 0
+      d.aux_fan_target = 0
       d.mvs_scale = is_ms_nozzle and 0.97 or 0.92
     elseif fam == "PA_PC" then
       d.enclosure = "Fully Closed"
       d.nozzle_delta_c = 0
       d.bed_delta_c = 0
       d.exhaust_target = 0
+      d.aux_fan_target = 0
       d.mvs_scale = is_ms_nozzle and 0.97 or 0.92
     end
   elseif is_cold then
@@ -351,11 +400,12 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
     local noz_cond_scale = is_ms_nozzle and 0.70 or 1.00
 
     d.exhaust_target = 0
+    d.aux_fan_target = 0
     d.first_layer_bed_extra_c = 5
     d.first_layer_speed_scale = 0.70
     d.mvs_scale = is_ms_nozzle and 1.00 or 0.95
 
-    if fam == "PLA" then
+    if fam == "PLA" or fam == "PLA_CF" then
       d.enclosure = "Fully Closed (Traps 28–32°C bed heat)"
       d.nozzle_delta_c = math.floor((6 * noz_cond_scale) + cold_boost + 0.5) - humid_steam_trim
       d.bed_delta_c = 5
@@ -371,14 +421,22 @@ function compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms_nozzle, cold
       d.no_fan_layers_delta = 2
       d.brim_type = cold_brim_mode
       d.brim_width_add = 5
-    elseif fam == "PETG" then
+    elseif fam == "PETG" or fam == "PETG_CF" then
       d.enclosure = "Fully Closed + 15min Bed Heat-Soak"
       d.nozzle_delta_c = math.floor((6 * noz_cond_scale) + cold_boost + 0.5) - humid_steam_trim
       d.bed_delta_c = 5
       d.fan_scale = 0.50
       d.no_fan_layers_delta = 2
       d.brim_type = cold_brim_mode
-      d.brim_width_add = 5
+      d.brim_width_add = 3
+    elseif fam == "PHA" then
+      d.enclosure = "Closed Draft-Free (Cold Bed)"
+      d.nozzle_delta_c = math.floor((3 * noz_cond_scale) + cold_boost + 0.5) - humid_steam_trim
+      d.bed_delta_c = 0
+      d.fan_scale = 0.85
+      d.no_fan_layers_delta = 1
+      d.brim_type = cold_brim_mode
+      d.brim_width_add = 3
     elseif fam == "TPU" then
       d.enclosure = "Fully Closed (Cold stiffens TPU feed)"
       d.nozzle_delta_c = math.floor((5 * noz_cond_scale) + cold_boost + 0.5) - humid_steam_trim
@@ -494,7 +552,7 @@ function apply(config, ctx, p)
   local rh_pct = tonumber(p.humidity_pct) or (ctx and tonumber(ctx.humidity_pct)) or 80
   local fam = detect_material_family(p, config, ctx)
   local is_ms = is_heat_creep_resistant_nozzle(ctx)
-  local brim_mode = p.cold_brim_mode or "outer_only"
+  local brim_mode = p.cold_brim_mode or "auto_brim"
   local d = compute_relative_climate_deltas(temp_c, rh_pct, fam, is_ms, brim_mode)
 
   -- Default polymer baselines only used if `config` does not yet have the key populated
@@ -595,8 +653,13 @@ function apply(config, ctx, p)
   end
 
   if d.exhaust_target >= 0 then
-    set_orca_val(config, "additional_cooling_fan_speed", fmt_num(d.exhaust_target, "%.0f"))
-    set_orca_val(config, "chamber_fan_speed", fmt_num(d.exhaust_target, "%.0f"))
+    set_orca_val(config, "during_print_exhaust_fan_speed", fmt_num(d.exhaust_target, "%.0f"))
+  end
+  if d.aux_fan_target == 0 then
+    set_orca_val(config, "additional_cooling_fan_speed", "0")
+  elseif d.aux_fan_target > 0 then
+    local cur_aux = get_orca_num(config, "additional_cooling_fan_speed", d.aux_fan_target)
+    set_orca_val(config, "additional_cooling_fan_speed", fmt_num(math.min(cur_aux, d.aux_fan_target), "%.0f"))
   end
 
   -- 6. Relative Max Volumetric Speed Multiplier (×mvs_scale, stacked on CHT/nozzle flow)
@@ -608,9 +671,10 @@ function apply(config, ctx, p)
   local next_mvs = math.max(2.5, cur_mvs * d.mvs_scale)
   set_orca_val(config, "filament_max_volumetric_speed", fmt_num(next_mvs, "%.1f"))
 
-  -- 7. Relative Print Speed & First-Layer Speed Multipliers (standalone profile evaluation) + Cold Corner Brim
-  -- On `_process_seeded` evaluations, Process presets retain their nominal speeds while
-  -- `filament_max_volumetric_speed` (×mvs_scale) caps volumetric flow uniformly across all layer heights.
+  -- 7. Relative Print Speed & First-Layer Speed Multipliers + Cold Corner Brim
+  -- On `_process_seeded` evaluations, upper-layer Process presets retain their nominal speeds while
+  -- `filament_max_volumetric_speed` (×mvs_scale) caps volumetric flow uniformly across all layer heights,
+  -- whereas first-layer speed STILL scales down in Cold rooms (`<= 18°C`) so polymer wets chilled PEI!
   if not (ctx and ctx._process_seeded) then
     if math.abs(d.print_speed_scale - 1.0) > 0.001 then
       for _, sk in ipairs({ "outer_wall_speed", "inner_wall_speed", "sparse_infill_speed", "internal_solid_infill_speed" }) do
@@ -620,19 +684,19 @@ function apply(config, ctx, p)
         end
       end
     end
-
-    if math.abs(d.first_layer_speed_scale - 1.0) > 0.001 then
-      local cur_fls = get_orca_num(config, "initial_layer_speed", 50)
-      local cur_flis = get_orca_num(config, "initial_layer_infill_speed", 60)
-      config["initial_layer_speed"] = fmt_num(math.max(20, cur_fls * d.first_layer_speed_scale), "%.0f")
-      config["initial_layer_infill_speed"] = fmt_num(math.max(25, cur_flis * d.first_layer_speed_scale), "%.0f")
-    end
+  end
+  if math.abs(d.first_layer_speed_scale - 1.0) > 0.001 then
+    local cur_fls = get_orca_num(config, "initial_layer_speed", 50)
+    local cur_flis = get_orca_num(config, "initial_layer_infill_speed", 60)
+    config["initial_layer_speed"] = fmt_num(math.max(20, math.min(35, cur_fls * d.first_layer_speed_scale)), "%.0f")
+    config["initial_layer_infill_speed"] = fmt_num(math.max(25, math.min(50, cur_flis * d.first_layer_speed_scale)), "%.0f")
   end
 
   if d.brim_type ~= "keep" and d.brim_width_add > 0 then
     config["brim_type"] = d.brim_type
-    local cur_bw = get_orca_num(config, "brim_width", 0)
-    config["brim_width"] = fmt_num(math.max(d.brim_width_add, cur_bw + d.brim_width_add), "%.0f")
+    local cur_bw = get_orca_num(config, "brim_width", 5)
+    local max_bw = (d.brim_type == "auto_brim") and 8 or 12
+    config["brim_width"] = fmt_num(math.min(max_bw, math.max(d.brim_width_add, cur_bw + d.brim_width_add)), "%.0f")
   end
 
   -- 8. Per-spool relative climate metadata computed 100% in Lua (zero climate math in Rust)
@@ -641,32 +705,36 @@ function apply(config, ctx, p)
   local is_cold_c = (temp_c <= 18) or (preset_id == "cold_dry") or (preset_id == "cold_humid")
   local is_humid_c = (rh_pct >= 60) or (preset_id == "tropical") or (preset_id == "cold_humid")
   local spool_retract_delta = is_humid_c
-    and ((fam == "PETG" or fam == "TPU") and 0.20 or ((fam == "ABS_ASA" or fam == "PA_PC") and 0.05 or 0.15))
+    and (fam == "TPU" and 0.0 or ((fam == "PETG" or fam == "PETG_CF") and 0.12 or ((fam == "ABS_ASA" or fam == "PA_PC") and 0.05 or 0.08)))
     or 0.0
   local spool_noz_delta = 0
   local spool_bed_delta = 0
   local spool_init_bed_extra = d.first_layer_bed_extra_c
   if is_hot_c then
-    if fam == "PETG" or fam == "PLA" or fam == "PLA_SILK" then
-      spool_noz_delta = is_ms and -5 or -10
-    elseif fam == "TPU" then
+    if fam == "PETG" or fam == "PLA" then
+      spool_noz_delta = is_ms and -4 or -8
+    elseif fam == "PLA_SILK" or fam == "PETG_CF" then
       spool_noz_delta = is_ms and -3 or -6
+    elseif fam == "TPU" or fam == "PHA" then
+      spool_noz_delta = is_ms and -2 or -4
     elseif fam == "PA_PC" or fam == "ABS_ASA" then
       spool_noz_delta = 0
     else
       spool_noz_delta = is_ms and -2 or -4
     end
     if fam == "PETG" then
-      spool_bed_delta = -3
-    elseif fam == "PLA" or fam == "PLA_SILK" or fam == "TPU" then
-      spool_bed_delta = -5
+      spool_bed_delta = is_ms and -2 or -3
+    elseif fam == "PLA" or fam == "PLA_SILK" then
+      spool_bed_delta = is_ms and -2 or -4
+    elseif fam == "PLA_CF" or fam == "PETG_CF" or fam == "TPU" or fam == "PHA" then
+      spool_bed_delta = 0
     end
   elseif is_cold_c then
-    spool_noz_delta = (is_ms and 4 or 6) - ((is_humid_c and fam ~= "PA_PC") and 3 or 0)
-    spool_bed_delta = 5
-    spool_init_bed_extra = 5
-  elseif is_humid_c and fam ~= "PA_PC" then
-    spool_noz_delta = -3
+    spool_noz_delta = (fam == "TPU" and 2 or (is_ms and 4 or 5)) - ((is_humid_c and fam ~= "PA_PC") and 2 or 0)
+    spool_bed_delta = (fam == "PHA" or fam == "TPU" or fam == "PLA_CF") and 0 or 5
+    spool_init_bed_extra = (fam == "PHA" or fam == "TPU") and 2 or 4
+  elseif is_humid_c and fam ~= "PA_PC" and fam ~= "TPU" then
+    spool_noz_delta = (fam == "PLA_CF") and -2 or -3
   end
   config["_climate_noz_delta_c"] = tostring(spool_noz_delta)
   config["_climate_bed_delta_c"] = tostring(spool_bed_delta)
@@ -675,6 +743,7 @@ function apply(config, ctx, p)
   config["_climate_min_bed_c"] = tostring(math.floor(min_bed_floor + 0.5))
   config["_climate_zhop_enforce"] = tostring(d.zhop_enforce)
   config["_climate_exhaust_target"] = tostring(d.exhaust_target)
+  config["_climate_aux_fan_target"] = tostring(d.aux_fan_target)
 
   print(string.format(
     "[WeatherClimate:%s] Ambient=%dC, RH=%d%%, MicroSwiss=%s -> dNozzle=%+dC, dBed=%+dC (1st=%+dC), dRetract=%+.2fmm, MVS*%.2f (%.1f->%.1f), Exhaust=%d%%, Enclosure=%s",

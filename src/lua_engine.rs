@@ -2775,9 +2775,15 @@ impl Interpreter {
     }
 
     // 2. Coupled Max Volumetric Speed: MVS = MVS_0 * c_bore * (d / 0.40)^beta_Q * c_T(dt_net)
-    let c_bore = if props.is_cht { 1.25 } else { 1.00 };
+    let c_bore = if props.is_cht && !props.is_elastomer {
+      1.25
+    } else {
+      1.00
+    };
     let beta_q = if props.nozzle_diameter < 0.40 {
       0.85
+    } else if props.is_elastomer {
+      0.15
     } else if props.is_diamond {
       0.42
     } else if props.is_cht || props.is_cm2 {
@@ -2789,6 +2795,8 @@ impl Interpreter {
     };
     let c_t = if props.dt_net < 0.0 {
       1.0 + 0.012 * props.dt_net
+    } else if props.is_elastomer || (props.is_hardened && !props.is_cht) {
+      1.0
     } else {
       1.0 + 0.008 * props.dt_net
     };

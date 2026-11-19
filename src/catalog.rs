@@ -186,15 +186,29 @@ impl CombinedCatalog {
     };
     let poly = c.lookup_polymer(material_type);
     let base_code = c.resolve_base_preset_code(material_type, finish_type, &mc.vendor_prefix);
+    let is_anycubic = mc.vendor_prefix.eq_ignore_ascii_case("Anycubic")
+      || model.to_ascii_lowercase().contains("anycubic");
     if let Some(cm) = self.find_machine(model) {
-      let lookup_keys = [
-        base_code,
-        material_type,
-        poly.canonical_key.as_str(),
-        poly.slicer_filament_type.as_str(),
-        poly.family.as_str(),
-        "PLA",
-      ];
+      let finish_upgraded = base_code != poly.base_preset_code.as_str();
+      let lookup_keys = if is_anycubic || finish_upgraded {
+        [
+          base_code,
+          material_type,
+          poly.canonical_key.as_str(),
+          poly.slicer_filament_type.as_str(),
+          poly.family.as_str(),
+          "PLA",
+        ]
+      } else {
+        [
+          material_type,
+          poly.canonical_key.as_str(),
+          poly.slicer_filament_type.as_str(),
+          base_code,
+          poly.family.as_str(),
+          "PLA",
+        ]
+      };
       for lk in lookup_keys {
         if let Some(found) = cm.filament_presets.get(lk) {
           if noz != "0.4" && found.contains("0.4 nozzle") {

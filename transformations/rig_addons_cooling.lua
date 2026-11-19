@@ -35,7 +35,7 @@ function apply(config, ctx)
     config["fan_min_speed"] = { fmt_num(new_min, "%.0f") }
     if ctx.filament_is_warp_prone == true then
       config["during_print_exhaust_fan_speed"] = { "0" }
-    else
+    elseif scalar_num(ctx.ambient_temp_c, 22) < 26 then
       config["during_print_exhaust_fan_speed"] = { "40" }
     end
     config["complete_print_exhaust_fan_speed"] = { "50" }
@@ -93,7 +93,7 @@ function apply(config, ctx)
     -- single source; nil (standalone rule testing without a rig ctx) means rigid.
     local is_elastomer = ctx.filament_is_elastomer == true
     local is_elastomer_retract = is_elastomer or r0_base >= 1.15
-    local max_retract = is_bowden and (r0_base + 1.5) or (is_elastomer_retract and 1.45 or (1.15 * math.sqrt(d / 0.4)))
+    local max_retract = is_bowden and (r0_base + 0.5) or (is_elastomer_retract and 1.00 or (0.95 * math.sqrt(d / 0.4)))
     constrain("filament_retraction_length", is_bowden and 2.0 or 0.35, max_retract, "FlowTech all-metal heat-creep ceiling")
     constrain("filament_retraction_speed", is_elastomer and 15 or 20, 46, "Direct-drive + all-metal meniscus speed limit")
     local flowtech_speed_pwl = {

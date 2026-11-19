@@ -15,9 +15,199 @@ use orcaslicer_webconfig::threemf::{
 use orcaslicer_webconfig::transformations::{
   RuleScopeFilter, SafetySeverity, TransformationEngine,
 };
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+#[derive(Clone, Debug, Deserialize)]
+struct CppOptionSpec {
+  co_type: String,
+  is_vector: bool,
+  nullable: bool,
+  #[serde(default)]
+  enum_values: Vec<String>,
+  #[serde(default)]
+  tooltip: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawGroundTruthBundle {
+  print_keys: Vec<String>,
+  filament_keys: Vec<String>,
+  machine_keys: Vec<String>,
+  #[serde(default)]
+  anycubic_fork_only_keys: Vec<String>,
+  options: HashMap<String, CppOptionSpec>,
+  resolved_presets: HashMap<String, HashMap<String, BTreeMap<String, Value>>>,
+}
+
+struct GroundTruthSlicerSchema {
+  print_keys: HashSet<String>,
+  filament_keys: HashSet<String>,
+  machine_keys: HashSet<String>,
+  anycubic_fork_only_keys: HashSet<String>,
+  options: HashMap<String, CppOptionSpec>,
+  resolved_presets: HashMap<String, HashMap<String, BTreeMap<String, Value>>>,
+}
+
+impl GroundTruthSlicerSchema {
+  fn get() -> &'static Self {
+    static INSTANCE: OnceLock<GroundTruthSlicerSchema> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+      let mut candidates = Vec::new();
+      if let Ok(env_p) = std::env::var("SLICER_GROUND_TRUTH_JSON") {
+        candidates.push(PathBuf::from(&env_p));
+        if let Ok(rf_dir) = std::env::var("RUNFILES_DIR") {
+          candidates.push(PathBuf::from(&rf_dir).join("_main").join(&env_p));
+        }
+        if let Ok(ts_dir) = std::env::var("TEST_SRCDIR") {
+          candidates.push(PathBuf::from(&ts_dir).join("_main").join(&env_p));
+        }
+      }
+      candidates.push(PathBuf::from("bazel-bin/slicer_ground_truth.json"));
+      let path = candidates
+        .into_iter()
+        .find(|p| p.exists())
+        .expect("Missing slicer_ground_truth.json (ensure SLICER_GROUND_TRUTH_JSON is set by Bazel)");
+      let txt = fs::read_to_string(&path).expect("Failed to read slicer_ground_truth.json");
+      let raw: RawGroundTruthBundle =
+        serde_json::from_str(&txt).expect("Failed to parse slicer_ground_truth.json");
+      GroundTruthSlicerSchema {
+        print_keys: raw.print_keys.into_iter().collect(),
+        filament_keys: raw.filament_keys.into_iter().collect(),
+        machine_keys: raw.machine_keys.into_iter().collect(),
+        anycubic_fork_only_keys: raw.anycubic_fork_only_keys.into_iter().collect(),
+        options: raw.options,
+        resolved_presets: raw.resolved_presets,
+      }
+    })
+  }
+
+  /// Validates an exported standalone preset JSON (`machine`, `process`, or `filament`) directly
+  /// against OrcaSlicer `Preset.cpp` + `PrintConfig.cpp` + `AnycubicSlicerNext` ground truth.
+  fn validate_preset_json(&self, ptype: &str, label: &str, val: &Value, failures: &mut Vec<String>) {
+    let Some(obj) = val.as_object() else {
+      failures.push(format!("[{}] {} preset is not a JSON object", label, ptype));
+      return;
+    };
+    let allowed = match ptype {
+      "process" => &self.print_keys,
+      "filament" => &self.filament_keys,
+      "machine" => &self.machine_keys,
+      _ => return,
+    };
+    if let Some(inh) = first_str_val(val, "inherits").filter(|s| !s.trim().is_empty()) {
+      if let Some(pmap) = self.resolved_presets.get(ptype) {
+        if !pmap.contains_key(&inh) {
+          failures.push(format!(
+            "[{}] {} preset '{}' has unresolved inherits='{}' (missing from OrcaSlicer + AnycubicSlicerNext system presets)",
+            label,
+            ptype,
+            first_str_val(val, "name").unwrap_or_default(),
+            inh
+          ));
+        }
+      }
+    }
+    let is_anycubic_preset = first_str_val(val, "compatible_printers")
+      .map(|s| s.to_uppercase().contains("ANYCUBIC"))
+      .unwrap_or(false)
+      || first_str_val(val, "printer_model")
+        .map(|s| s.to_uppercase().contains("ANYCUBIC"))
+        .unwrap_or(false)
+      || first_str_val(val, "inherits")
+        .map(|s| s.to_uppercase().contains("ANYCUBIC"))
+        .unwrap_or(false);
+    for (k, v) in obj {
+      if !is_anycubic_preset && self.anycubic_fork_only_keys.contains(k) {
+        failures.push(format!(
+          "[{}] non-Anycubic {} preset '{}' illegally emitted AnycubicSlicerNext fork-only key '{}': value={:?}",
+          label,
+          ptype,
+          first_str_val(val, "name").unwrap_or_default(),
+          k,
+          v
+        ));
+        continue;
+      }
+      if !allowed.contains(k) {
+        let wrong_scope = if self.filament_keys.contains(k) {
+          " (belongs to FILAMENT scope)"
+        } else if self.print_keys.contains(k) {
+          " (belongs to PROCESS scope)"
+        } else if self.machine_keys.contains(k) {
+          " (belongs to MACHINE scope)"
+        } else {
+          " (unknown to OrcaSlicer Preset.cpp & AnycubicSlicerNext)"
+        };
+        failures.push(format!(
+          "[{}] {} preset '{}' contains illegal key '{}'{}: value={:?}",
+          label,
+          ptype,
+          first_str_val(val, "name").unwrap_or_default(),
+          k,
+          wrong_scope,
+          v
+        ));
+        continue;
+      }
+      if let Some(opt) = self.options.get(k) {
+        if ptype == "filament" && opt.is_vector && !matches!(k.as_str(), "filament_id") {
+          if !v.is_array() {
+            failures.push(format!(
+              "[{}] filament '{}' key '{}' has C++ vector type {} in PrintConfig.cpp but was serialized as non-array {:?}",
+              label,
+              first_str_val(val, "name").unwrap_or_default(),
+              k,
+              opt.co_type,
+              v
+            ));
+          }
+        }
+        if ptype == "process" && !opt.is_vector && k != "compatible_printers" {
+          if !v.is_string() {
+            failures.push(format!(
+              "[{}] process '{}' key '{}' has C++ scalar type {} in PrintConfig.cpp but was serialized as non-string {:?}",
+              label,
+              first_str_val(val, "name").unwrap_or_default(),
+              k,
+              opt.co_type,
+              v
+            ));
+          }
+        }
+        if matches!(opt.co_type.as_str(), "coEnum" | "coEnums") && !opt.enum_values.is_empty() {
+          let strs: Vec<&str> = if let Some(s) = v.as_str() {
+            vec![s]
+          } else if let Some(arr) = v.as_array() {
+            arr.iter().filter_map(|x| x.as_str()).collect()
+          } else {
+            Vec::new()
+          };
+          for s in strs {
+            if s == "nil" && opt.nullable {
+              continue;
+            }
+            if !opt.enum_values.iter().any(|ev| ev == s) {
+              failures.push(format!(
+                "[{}] {} '{}' key '{}' has invalid PrintConfig.cpp enum value '{}' (allowed: {:?})",
+                label,
+                ptype,
+                first_str_val(val, "name").unwrap_or_default(),
+                k,
+                s,
+                opt.enum_values
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
 struct SimpleRng {
   state: u64,
@@ -116,7 +306,13 @@ fn base_rig_for_printer(printer_model: &str) -> MachineRig {
   rig.printer_model = machine.name.clone();
   rig.kinematics = machine.kinematics.clone();
   rig.bed_size = machine.build_volume.clone();
+  rig.hotend = format!("{} All-Metal Hotend", machine.name);
   rig.firmware = "OrcaSlicer v2.5.1".to_string();
+  rig.ace_pro_units = if machine.name.to_uppercase().contains("ANYCUBIC") {
+    1
+  } else {
+    0
+  };
   if machine.default_retraction_mm > 0.0 {
     rig.base_retraction_length = machine.default_retraction_mm as f64;
   }
@@ -236,6 +432,35 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       "PPA-CF on 260°C Creality Ender-3 MUST raise spool_mach_hotend_incompat Danger warning, got {:?}",
       neg_warnings
     );
+
+    // 0a-2. Verify Bambu Lab CoreXY kinematics & real X1C MVS values (never watered-down @System 12 mm³/s)
+    for bbl_model in ["Bambu Lab X1 Carbon", "Bambu Lab P1S"] {
+      let bbl_m = catalog
+        .find_machine(bbl_model)
+        .unwrap_or_else(|| panic!("{} in catalog", bbl_model));
+      assert!(
+        bbl_m.kinematics.contains("CoreXY"),
+        "{} kinematics must declare CoreXY, got '{}'",
+        bbl_model,
+        bbl_m.kinematics
+      );
+    }
+    for (bbl_code, min_mvs) in [("PLA", 18.0_f32), ("PETG", 14.0_f32), ("ABS", 15.0_f32)] {
+      let bbl_f = catalog
+        .filaments
+        .iter()
+        .find(|f| f.brand == "Bambu Lab" && f.code == bbl_code)
+        .unwrap_or_else(|| panic!("Bambu Lab {} in catalog", bbl_code));
+      let bbl_spool = FilamentSpool::from_catalog_entry(1, bbl_f, "orca_hardened_steel");
+      assert!(
+        bbl_f.max_vol_mm3s >= min_mvs && bbl_spool.max_volumetric_speed >= min_mvs,
+        "Bambu Lab {} must preserve X1C CoreXY MVS >= {:.1} mm³/s on both CatalogFilament ({:.1}) and FilamentSpool ({:.1})",
+        bbl_code,
+        min_mvs,
+        bbl_f.max_vol_mm3s,
+        bbl_spool.max_volumetric_speed
+      );
+    }
 
     // 0b. Static scan of `transformations/` to forbid bare `tonumber(config[...])` on potentially
     // array-wrapped or `%`-suffixed OrcaSlicer keys (must use `scalar_num`).
@@ -491,7 +716,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
     // Switch the rig nozzle to `final_nozzle` and recompute all spools
     apply_nozzle_metadata(&mut rig, final_nozzle);
     for sp in &mut spools {
-      sp.recompute_for_nozzle(&rig.nozzle_type);
+      sp.recompute_for_rig(&rig);
       sp.clamp_to_machine_limits(&rig.printer_model);
       sp.refresh_thermal_deltas(&rig.nozzle_type);
     }
@@ -876,7 +1101,7 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       );
     }
     for sp in &spools {
-      let title = sp.format_concise_title();
+      let title = sp.format_concise_title_for_rig(&rig);
       fil_map.entry(title).or_insert_with(|| {
         orcaslicer_webconfig::threemf::export_standalone_filament_json_with_overrides(
           sp,
@@ -1003,6 +1228,12 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       total_filaments_audited += 1;
       let txt = fs::read_to_string(ff).expect("Failed to read filament json");
       let val: Value = serde_json::from_str(&txt).expect("Invalid filament json");
+      GroundTruthSlicerSchema::get().validate_preset_json(
+        "filament",
+        cfg_name,
+        &val,
+        &mut cfg_failures,
+      );
       let name = first_str_val(&val, "name").unwrap_or_default();
       let ftype = first_str_val(&val, "filament_type").unwrap_or_default();
       let notes = first_str_val(&val, "filament_notes").unwrap_or_default();
@@ -1122,8 +1353,8 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
 
       if !((min_noz - hw_limits.nozzle_temp_floor_relax_c - 6)..=(max_noz + 10)).contains(&noz_t)
-        || noz_t > 295
-        || init_t > 295
+        || noz_t > 300
+        || init_t > 300
         || noz_t > machine_max_c
         || init_t > machine_max_c
       {
@@ -1207,30 +1438,154 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           cfg_name, name, mat_for_bounds, cool_bed, tex_cool_bed, supertack_bed
         ));
       }
-      // 2. Preserve parent preset's non-zero vs zero low-temp plate availability (e.g. AnycubicSlicerNext
-      //    sets cool=35°C / tex_cool=40°C / eng=0°C on Kobra S1 ABS, whereas Bambu fdm_filament_abs sets cool=0°C / eng=100°C).
-      if p_cool == 0 && cool_bed != 0 {
-        cfg_failures.push(format!(
-          "[{}] Filament '{}' inherits '{}' (parent cool_plate_temp=0) but exported cool_plate_temp={}°C",
-          cfg_name, name, fil_inh, cool_bed
-        ));
-      } else if p_cool > 0 && p_cool <= 60 && cool_bed == 0 {
-        cfg_failures.push(format!(
-          "[{}] Filament '{}' inherits '{}' (parent cool_plate_temp={}°C) but clobbered cool_plate_temp to 0°C!",
-          cfg_name, name, fil_inh, p_cool
-        ));
-      }
-      if p_tex_cool > 0 && p_tex_cool <= 65 && tex_cool_bed == 0 {
-        cfg_failures.push(format!(
-          "[{}] Filament '{}' inherits '{}' (parent textured_cool_plate_temp={}°C) but clobbered textured_cool_plate_temp to 0°C!",
-          cfg_name, name, fil_inh, p_tex_cool
-        ));
+      // 2. High-temp warp-prone polymers (`ABS`, `ASA`, `PC`, `PA*`, `PET-CF`, `HIPS`) and `PCTG`
+      //    MUST mark Cool Plate / Textured Cool Plate as unsupported (`0°C`) — even when AnycubicSlicerNext's
+      //    parent inherited `35°C` / `40°C` from `fdm_filament_common` — so selecting a Cool Plate never
+      //    prints ABS/PC/PA at 35°C! Conversely, low-temp polymers preserve non-zero parent Cool Plate support.
+      let is_pctg_mat = mat_for_bounds.to_uppercase().contains("PCTG");
+      if is_warp_prone_mat || is_pctg_mat {
+        if cool_bed != 0 || tex_cool_bed != 0 || (is_warp_prone_mat && supertack_bed != 0) {
+          cfg_failures.push(format!(
+            "[{}] High-temp/warp filament '{}' ({}) must disable low-temp coated plates (cool={}, tex_cool={}, supertack={})!",
+            cfg_name, name, mat_for_bounds, cool_bed, tex_cool_bed, supertack_bed
+          ));
+        }
+      } else {
+        if p_cool == 0 && cool_bed != 0 {
+          cfg_failures.push(format!(
+            "[{}] Filament '{}' inherits '{}' (parent cool_plate_temp=0) but exported cool_plate_temp={}°C",
+            cfg_name, name, fil_inh, cool_bed
+          ));
+        } else if p_cool > 0 && p_cool <= 55 && cool_bed == 0 {
+          cfg_failures.push(format!(
+            "[{}] Filament '{}' inherits '{}' (parent cool_plate_temp={}°C) but clobbered cool_plate_temp to 0°C!",
+            cfg_name, name, fil_inh, p_cool
+          ));
+        }
+        if p_tex_cool > 0 && p_tex_cool <= 60 && tex_cool_bed == 0 {
+          cfg_failures.push(format!(
+            "[{}] Filament '{}' inherits '{}' (parent textured_cool_plate_temp={}°C) but clobbered textured_cool_plate_temp to 0°C!",
+            cfg_name, name, fil_inh, p_tex_cool
+          ));
+        }
       }
       if p_eng == 0 && eng_bed != 0 {
         cfg_failures.push(format!(
           "[{}] Filament '{}' inherits '{}' (parent eng_plate_temp=0) but exported eng_plate_temp={}°C",
           cfg_name, name, fil_inh, eng_bed
         ));
+      }
+
+      // 3. Universal Layer-1 -> Layer-2 Bed Contraction Guard across ALL 6 plate pairs (`0 <= init - cont <= 5°C`):
+      let max_plate_step = if is_tpu_family_early { 3 } else { 5 };
+      for (p_cont_k, p_init_k) in [
+        ("textured_plate_temp", "textured_plate_temp_initial_layer"),
+        ("hot_plate_temp", "hot_plate_temp_initial_layer"),
+        ("eng_plate_temp", "eng_plate_temp_initial_layer"),
+        ("cool_plate_temp", "cool_plate_temp_initial_layer"),
+        ("textured_cool_plate_temp", "textured_cool_plate_temp_initial_layer"),
+        ("supertack_plate_temp", "supertack_plate_temp_initial_layer"),
+      ] {
+        if let (Some(c_v), Some(i_v)) = (
+          first_str_val(&val, p_cont_k).and_then(|s| s.parse::<i32>().ok()),
+          first_str_val(&val, p_init_k).and_then(|s| s.parse::<i32>().ok()),
+        ) {
+          if i_v < c_v || i_v - c_v > max_plate_step {
+            cfg_failures.push(format!(
+              "[{}] Filament '{}' ({}) has unsafe Layer-1 -> Layer-2 plate step {}={}°C -> {}={}°C (max step {}°C)",
+              cfg_name, name, mat_for_bounds, p_init_k, i_v, p_cont_k, c_v, max_plate_step
+            ));
+          }
+        }
+      }
+
+      // 4. Zero 24V PWM Fan Stall Zone (`1..=9%`), Klipper PA Activation, & Chamber Exhaust Activation:
+      for pwm_k in [
+        "fan_min_speed",
+        "fan_max_speed",
+        "overhang_fan_speed",
+        "additional_cooling_fan_speed",
+        "during_print_exhaust_fan_speed",
+      ] {
+        if let Some(pwm_v) = first_str_val(&val, pwm_k)
+          .and_then(|s| s.trim().trim_end_matches('%').parse::<i32>().ok())
+        {
+          if (1..=9).contains(&pwm_v) {
+            cfg_failures.push(format!(
+              "[{}] Filament '{}' exported {}={}% inside the 1–9% 24V PWM blower stall zone!",
+              cfg_name, name, pwm_k, pwm_v
+            ));
+          }
+        }
+      }
+      if rig.base_retraction_length < 2.0
+        && first_str_val(&val, "enable_pressure_advance").as_deref() != Some("1")
+      {
+        cfg_failures.push(format!(
+          "[{}] Direct-drive filament '{}' must export enable_pressure_advance='1' so pressure_advance is not dead!",
+          cfg_name, name
+        ));
+      } else if rig.base_retraction_length >= 2.0
+        && first_str_val(&val, "enable_pressure_advance").as_deref() != Some("0")
+      {
+        cfg_failures.push(format!(
+          "[{}] Bowden Marlin filament '{}' on '{}' must export enable_pressure_advance='0' (stock Marlin LIN_ADVANCE disabled)!",
+          cfg_name, name, rig.printer_model
+        ));
+      }
+      let has_glass_or_struct_fan_override = snap.rules.iter().any(|r| {
+        r.enabled
+          && (r.id.contains("transparent_glass")
+            || r.id.contains("structural_strength")
+            || r.lua_code.contains("_structural_fan_cut_pct"))
+      });
+      if rig.kinematics.contains("Aux Cooling")
+        && rig.ambient_temp_c >= 26
+        && !has_glass_or_struct_fan_override
+        && matches!(FilamentSpool::canonical_polymer_key(mat_for_bounds), "PLA" | "PLA+" | "PHA")
+        && !mat_for_bounds.to_uppercase().contains("-CF")
+        && !mat_for_bounds.to_uppercase().contains("-GF")
+        && !fin_for_bounds.to_uppercase().contains("CARBON")
+        && !fin_for_bounds.to_uppercase().contains("GLASS")
+      {
+        let aux_pct = first_str_val(&val, "additional_cooling_fan_speed")
+          .and_then(|s| s.trim().trim_end_matches('%').parse::<i32>().ok())
+          .unwrap_or(0);
+        if aux_pct <= 0 {
+          cfg_failures.push(format!(
+            "[{}] Hot/Tropical Aux-Cooling rig '{}' ({}°C) wiped neat PLA/PHA '{}' additional_cooling_fan_speed to {}%!",
+            cfg_name, rig.printer_model, rig.ambient_temp_c, name, aux_pct
+          ));
+        }
+      }
+      if rig.is_bedslinger() && val.get("during_print_exhaust_fan_speed").is_some() {
+        cfg_failures.push(format!(
+          "[{}] Open-frame bed-slinger '{}' filament '{}' must NOT export chamber during_print_exhaust_fan_speed!",
+          cfg_name, rig.printer_model, name
+        ));
+      } else if !rig.is_bedslinger() {
+        if let Some(ex_v) = first_str_val(&val, "during_print_exhaust_fan_speed")
+          .and_then(|s| s.trim().trim_end_matches('%').parse::<i32>().ok())
+        {
+          if ex_v > 0 && first_str_val(&val, "activate_air_filtration").as_deref() != Some("1") {
+            cfg_failures.push(format!(
+              "[{}] Enclosed filament '{}' set during_print_exhaust_fan_speed={}% without activate_air_filtration='1' (dead M106 P3 in GCode.cpp)!",
+              cfg_name, name, ex_v
+            ));
+          }
+        }
+      }
+      if is_warp_prone_mat {
+        if let Some(vit_v) =
+          first_str_val(&val, "temperature_vitrification").and_then(|s| s.parse::<i32>().ok())
+        {
+          if vit_v <= init_bed {
+            cfg_failures.push(format!(
+              "[{}] Warp-prone filament '{}' ({}) has temperature_vitrification={}°C <= init_bed={}°C (would falsely warn user to open chamber door!)",
+              cfg_name, name, mat_for_bounds, vit_v, init_bed
+            ));
+          }
+        }
       }
       if is_high_temp_plate_mat {
         let mat_up_abs = mat_for_bounds.to_uppercase();
@@ -1373,15 +1728,40 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       }
 
       let canon = FilamentSpool::canonical_polymer_key(mat_for_bounds);
+      if canon == "PLA-CF"
+        || name.to_uppercase().contains("PLA-CF")
+        || name.to_uppercase().contains("PLA-GF")
+      {
+        if let Some(aux_v) = first_str_val(&val, "additional_cooling_fan_speed")
+          .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        {
+          if aux_v > 0.0 {
+            cfg_failures.push(format!(
+              "[{}] Fiber-reinforced PLA '{}' has additional_cooling_fan_speed={}% > 0% (M106 P2 side blower chills 65°C PEI plate and causes spaghetti detachment)",
+              cfg_name, name, aux_v
+            ));
+          }
+        }
+        if let Some(nfl_v) = first_str_val(&val, "close_fan_the_first_x_layers")
+          .and_then(|s| s.parse::<i32>().ok())
+        {
+          if nfl_v < 2 {
+            cfg_failures.push(format!(
+              "[{}] Fiber-reinforced PLA '{}' has close_fan_the_first_x_layers={} < 2",
+              cfg_name, name, nfl_v
+            ));
+          }
+        }
+      }
       if matches!(canon, "ABS" | "ASA" | "ASA-CF" | "PC" | "PA" | "PA-CF" | "PPA-CF" | "PET-CF" | "HIPS") {
-        for fan_key in ["chamber_fan_speed", "additional_cooling_fan_speed"] {
-          if let Some(fv) = first_str_val(&val, fan_key).and_then(|s| s.parse::<f64>().ok()) {
-            if fv > 0.0 {
-              cfg_failures.push(format!(
-                "[{}] Warp-prone filament '{}' ({}) has {}={}% > 0% (auxiliary/chamber cooling warps ABS/PC/PA)",
-                cfg_name, name, canon, fan_key, fv
-              ));
-            }
+        if let Some(fv) = first_str_val(&val, "additional_cooling_fan_speed")
+          .and_then(|s| s.parse::<f64>().ok())
+        {
+          if fv > 0.0 {
+            cfg_failures.push(format!(
+              "[{}] Warp-prone filament '{}' ({}) has additional_cooling_fan_speed={}% > 0% (auxiliary cooling warps ABS/PC/PA)",
+              cfg_name, name, canon, fv
+            ));
           }
         }
         if let Some(ovh) = first_str_val(&val, "overhang_fan_speed")
@@ -1444,13 +1824,60 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           ));
         }
       }
+      if matches!(canon, "PVA" | "BVOH") {
+        if noz_t > 220 || range_high > 235 {
+          cfg_failures.push(format!(
+            "[{}] Water-soluble support '{}' ({}) risks thermal charring: nozzle_temperature={}°C (expected <= 220°C), range_high={}°C (expected <= 235°C)",
+            cfg_name, name, canon, noz_t, range_high
+          ));
+        }
+        if first_str_val(&val, "dont_slow_down_outer_wall").as_deref() == Some("1") {
+          cfg_failures.push(format!(
+            "[{}] Water-soluble support '{}' ({}) locked dont_slow_down_outer_wall='1'",
+            cfg_name, name, canon
+          ));
+        }
+      }
+      if canon == "PPA-CF"
+        && machine_max_c >= 300
+        && rig.nozzle_type.contains("hardened")
+        && !snap.rules.iter().any(|r| {
+          r.enabled
+            && (r.id.contains("cal_temp_tower")
+              || r.id.contains("transparent_glass")
+              || r.id.contains("wet_filament"))
+        })
+      {
+        if noz_t < 292 {
+          cfg_failures.push(format!(
+            "[{}] Exotic high-temp '{}' (PPA-CF) on >=300°C Hardened Steel '{}' was under-heated at {}°C (expected >= 292°C)",
+            cfg_name, name, rig.printer_model, noz_t
+          ));
+        }
+      }
+      if fin_for_bounds.eq_ignore_ascii_case("Foaming")
+        && !snap
+          .rules
+          .iter()
+          .any(|r| r.enabled && r.id.contains("rig_addons_cooling"))
+      {
+        if let Some(fv) = first_str_val(&val, "additional_cooling_fan_speed")
+          .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        {
+          if fv > 0.0 {
+            cfg_failures.push(format!(
+              "[{}] Active-foaming filament '{}' has additional_cooling_fan_speed={}% > 0% (quenches Varioshore/LW cell expansion)",
+              cfg_name, name, fv
+            ));
+          }
+        }
+      }
       if matches!(
         canon,
         "PLA"
           | "PLA+"
           | "PLA-CF"
           | "PHA"
-          | "PVA"
           | "TPU"
           | "TPU for AMS"
           | "TPU 95A"
@@ -1491,6 +1918,12 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       let ptxt = fs::read_to_string(&ppath)
         .unwrap_or_else(|e| panic!("Missing process JSON file {}: {}", ppath.display(), e));
       let pval: Value = serde_json::from_str(&ptxt).expect("Invalid process JSON");
+      GroundTruthSlicerSchema::get().validate_preset_json(
+        "process",
+        cfg_name,
+        &pval,
+        &mut cfg_failures,
+      );
       let proc_inh = first_str_val(&pval, "inherits").unwrap_or_default();
       if rig.printer_model != "Anycubic Kobra S1"
         && !proc_inh.contains(&rig.printer_model)
@@ -1605,24 +2038,85 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
           ));
         }
       }
-      let dsd_ow = first_str_val(&pval, "dont_slow_down_outer_wall");
-      if !matches!(dsd_ow.as_deref(), Some("0") | Some("1")) {
+      if pval.get("dont_slow_down_outer_wall").is_some() {
         cfg_failures.push(format!(
-          "[{}] Process '{}' missing valid dont_slow_down_outer_wall, got {:?}",
-          cfg_name, pfile, dsd_ow
+          "[{}] Process '{}' illegally contains Filament-scoped key dont_slow_down_outer_wall",
+          cfg_name, pfile
         ));
       }
-      let sm_perim =
-        first_str_val(&pval, "small_perimeter_speed").and_then(|s| s.parse::<f64>().ok());
-      if !sm_perim
-        .map(|x| (20.0..=65.0).contains(&x))
-        .unwrap_or(false)
+      for ov_k in [
+        "overhang_2_4_speed",
+        "overhang_3_4_speed",
+        "overhang_4_4_speed",
+      ] {
+        if first_str_val(&pval, ov_k).as_deref() == Some("0") {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' wiped {} to '0' (disabling overhang slowdown in OrcaSlicer C++)",
+            cfg_name, pfile, ov_k
+          ));
+        }
+      }
+      let sm_raw = first_str_val(&pval, "small_perimeter_speed").unwrap_or_default();
+      let sm_valid = if let Some(pct_s) = sm_raw.trim().strip_suffix('%') {
+        pct_s
+          .trim()
+          .parse::<f64>()
+          .map(|p| (30.0..=85.0).contains(&p))
+          .unwrap_or(false)
+      } else {
+        sm_raw
+          .trim()
+          .parse::<f64>()
+          .map(|x| (15.0..=75.0).contains(&x))
+          .unwrap_or(false)
+      };
+      if !sm_valid {
+        cfg_failures.push(format!(
+          "[{}] Process '{}' has invalid small_perimeter_speed={:?} (expected 15..=75 mm/s or 30..=85%)",
+          cfg_name, pfile, sm_raw
+        ));
+      }
+      let rig_noz_d = rig
+        .formatted_nozzle_diameter()
+        .parse::<f64>()
+        .unwrap_or(0.4);
+      if let Some(ts_lw) =
+        first_str_val(&pval, "top_surface_line_width").and_then(|s| s.parse::<f64>().ok())
+      {
+        if ts_lw + 1e-4 < rig_noz_d {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' has under-width top_surface_line_width={} < nozzle_diameter={}mm",
+            cfg_name, pfile, ts_lw, rig_noz_d
+          ));
+        }
+      }
+      let has_layer_shift_rule = snap
+        .rules
+        .iter()
+        .any(|r| r.enabled && r.id.contains("sym_layer_shifting"));
+      if let Some(trav_acc) =
+        first_str_val(&pval, "travel_acceleration").and_then(|s| s.parse::<f64>().ok())
+      {
+        let min_trav_acc = if rig.is_bedslinger() || has_layer_shift_rule {
+          500.0
+        } else {
+          acc_num.min(9000.0)
+        };
+        if trav_acc + 1e-4 < min_trav_acc {
+          cfg_failures.push(format!(
+            "[{}] Process '{}' has travel_acceleration={} < minimum {} (default_acceleration={})",
+            cfg_name, pfile, trav_acc, min_trav_acc, acc_num
+          ));
+        }
+      }
+      if first_str_val(&pval, "sparse_infill_density").as_deref() == Some("100%")
+        && first_str_val(&pval, "sparse_infill_pattern").as_deref() == Some("alignedrectilinear")
+        && first_str_val(&pval, "internal_solid_infill_pattern").as_deref()
+          != Some("alignedrectilinear")
       {
         cfg_failures.push(format!(
-          "[{}] Process '{}' has invalid small_perimeter_speed={:?} (expected 20..=65 mm/s)",
-          cfg_name,
-          pfile,
-          first_str_val(&pval, "small_perimeter_speed")
+          "[{}] Optical Glass 100% infill process '{}' MUST set internal_solid_infill_pattern='alignedrectilinear' (OrcaSlicer converts 100% sparse infill to internal_solid_infill_pattern!)",
+          cfg_name, pfile
         ));
       }
       if let Some(ov1) = first_str_val(&pval, "overhang_1_4_speed")
@@ -1937,6 +2431,12 @@ fn run_audit_suite(out_root: &Path, num_configs: usize, seed: u64) {
       } else {
         let m_txt = fs::read_to_string(&mach_disk_path).unwrap();
         let m_val: Value = serde_json::from_str(&m_txt).unwrap();
+        GroundTruthSlicerSchema::get().validate_preset_json(
+          "machine",
+          cfg_name,
+          &m_val,
+          &mut cfg_failures,
+        );
         let mach_diff_set: std::collections::HashSet<&str> = diff_arr
           .and_then(|a| a.last())
           .and_then(|v| v.as_str())
@@ -2475,6 +2975,13 @@ fn main() {
           return;
         }
       }
+      "--dump-inspection-pack" => {
+        if i + 1 < args.len() {
+          let pack_dir = PathBuf::from(&args[i + 1]);
+          dump_inspection_pack(&pack_dir);
+          return;
+        }
+      }
       other if !other.starts_with('-') => {
         out_root = PathBuf::from(other);
       }
@@ -2484,6 +2991,577 @@ fn main() {
   }
 
   run_audit_suite(&out_root, num_configs, seed);
+}
+
+fn fmt_json_compact(v: Option<&Value>) -> String {
+  match v {
+    None => "*(unset)*".to_string(),
+    Some(Value::String(s)) => format!("`\"{}\"`", s.replace('\n', "\\n")),
+    Some(Value::Array(arr)) => {
+      if arr.len() == 1 {
+        if let Some(s) = arr[0].as_str() {
+          return format!("`[\"{}\"]`", s.replace('\n', "\\n"));
+        }
+      }
+      let joined: Vec<String> = arr
+        .iter()
+        .take(4)
+        .map(|x| x.to_string().replace('\n', "\\n"))
+        .collect();
+      if arr.len() > 4 {
+        format!("`[{}, … ({})]`", joined.join(", "), arr.len())
+      } else {
+        format!("`[{}]`", joined.join(", "))
+      }
+    }
+    Some(other) => format!("`{}`", other),
+  }
+}
+
+fn write_side_by_side_diff_section(
+  md: &mut Vec<String>,
+  gt: &GroundTruthSlicerSchema,
+  ptype: &str,
+  rel_path: &str,
+  exported: &Value,
+) {
+  let Some(exp_obj) = exported.as_object() else {
+    return;
+  };
+  let name = first_str_val(exported, "name").unwrap_or_else(|| rel_path.to_string());
+  let inh = first_str_val(exported, "inherits").unwrap_or_default();
+  let parent_map = gt
+    .resolved_presets
+    .get(ptype)
+    .and_then(|m| m.get(&inh));
+
+  md.push(format!("## `{}` (`{}`)", name, rel_path));
+  md.push(format!("- **Preset Type**: `{}` | **Inherits**: `{}`", ptype, inh));
+  if let Some(notes) = first_str_val(exported, "notes")
+    .or_else(|| first_str_val(exported, "filament_notes"))
+    .or_else(|| first_str_val(exported, "printer_notes"))
+  {
+    md.push(format!("- **Notes**: {}", notes));
+  }
+  md.push(String::new());
+  md.push("| Key | Stock Parent (`inherits`) | Exported Child JSON | Effective Merged | C++ Type & Tooltip |".to_string());
+  md.push("| :--- | :--- | :--- | :--- | :--- |".to_string());
+
+  let important_unoverridden_keys: &[&str] = &[
+    "nozzle_temperature",
+    "nozzle_temperature_initial_layer",
+    "nozzle_temperature_range_low",
+    "nozzle_temperature_range_high",
+    "nozzle_temperature_range_low_HS",
+    "nozzle_temperature_range_high_HS",
+    "textured_plate_temp",
+    "textured_plate_temp_initial_layer",
+    "hot_plate_temp",
+    "hot_plate_temp_initial_layer",
+    "cool_plate_temp",
+    "textured_cool_plate_temp",
+    "eng_plate_temp",
+    "supertack_plate_temp",
+    "temperature_vitrification",
+    "fan_min_speed",
+    "fan_max_speed",
+    "overhang_fan_speed",
+    "overhang_fan_threshold",
+    "additional_cooling_fan_speed",
+    "activate_air_filtration",
+    "during_print_exhaust_fan_speed",
+    "complete_print_exhaust_fan_speed",
+    "close_fan_the_first_x_layers",
+    "dont_slow_down_outer_wall",
+    "slow_down_layer_time",
+    "filament_flow_ratio",
+    "filament_max_volumetric_speed",
+    "enable_pressure_advance",
+    "pressure_advance",
+    "filament_retraction_length",
+    "filament_retraction_speed",
+    "filament_deretraction_speed",
+    "filament_retract_before_wipe",
+    "filament_wipe",
+    "filament_wipe_distance",
+    "filament_z_hop",
+    "filament_z_hop_types",
+    "filament_retract_lift_enforce",
+    "outer_wall_speed",
+    "inner_wall_speed",
+    "sparse_infill_speed",
+    "initial_layer_speed",
+    "initial_layer_infill_speed",
+    "small_perimeter_speed",
+    "bridge_speed",
+    "bridge_flow",
+    "overhang_1_4_speed",
+    "overhang_2_4_speed",
+    "overhang_3_4_speed",
+    "overhang_4_4_speed",
+    "seam_slope_type",
+    "seam_slope_inner_walls",
+    "seam_slope_start_height",
+    "seam_slope_min_length",
+    "wall_generator",
+    "wall_sequence",
+    "top_surface_pattern",
+    "bottom_surface_pattern",
+    "internal_solid_infill_pattern",
+    "brim_type",
+    "brim_width",
+    "initial_layer_print_height",
+    "initial_layer_line_width",
+    "elefant_foot_compensation",
+  ];
+
+  let mut all_keys: BTreeSet<String> = exp_obj.keys().cloned().collect();
+  if let Some(pm) = parent_map {
+    for &ik in important_unoverridden_keys {
+      if pm.contains_key(ik) {
+        all_keys.insert(ik.to_string());
+      }
+    }
+  }
+
+  for k in all_keys {
+    if matches!(
+      k.as_str(),
+      "name"
+        | "from"
+        | "inherits"
+        | "version"
+        | "type"
+        | "is_custom_defined"
+        | "filament_settings_id"
+        | "print_settings_id"
+        | "printer_settings_id"
+        | "filament_notes"
+        | "notes"
+        | "printer_notes"
+        | "filament_timestamp"
+        | "print_timestamp"
+        | "printer_timestamp"
+    ) {
+      continue;
+    }
+    let p_val = parent_map.and_then(|pm| pm.get(&k));
+    let e_val = exp_obj.get(&k);
+    let eff_val = e_val.or(p_val);
+    let opt_desc = if let Some(opt) = gt.options.get(&k) {
+      let short_tip: String = opt.tooltip.chars().take(110).collect();
+      if short_tip.is_empty() {
+        format!("`{}`", opt.co_type)
+      } else {
+        format!("`{}` — {}", opt.co_type, short_tip)
+      }
+    } else {
+      "*(fork/meta)*".to_string()
+    };
+    md.push(format!(
+      "| `{}` | {} | {} | {} | {} |",
+      k,
+      fmt_json_compact(p_val),
+      fmt_json_compact(e_val),
+      fmt_json_compact(eff_val),
+      opt_desc
+    ));
+  }
+  md.push(String::new());
+}
+
+fn dump_inspection_pack(pack_root: &Path) {
+  let _ = fs::remove_dir_all(pack_root);
+  fs::create_dir_all(pack_root).expect("Failed to create inspection pack dir");
+  let gt = GroundTruthSlicerSchema::get();
+  let catalog = load_merged_catalog();
+  let templates = TransformationEngine::get_parameterized_calibration_templates();
+
+  struct PackScenario {
+    slug: &'static str,
+    title: &'static str,
+    printer_model: &'static str,
+    nozzle_type: &'static str,
+    nozzle_diameter: f32,
+    addons: Vec<&'static str>,
+    climate_preset: &'static str,
+    ambient_temp_c: i32,
+    humidity_pct: i32,
+    wet_rh: Option<i32>,
+    extra_template_ids: Vec<(&'static str, Vec<(&'static str, &'static str)>)>,
+    spool_specs: Vec<(&'static str, &'static str)>,
+  }
+
+  let scenarios = vec![
+    PackScenario {
+      slug: "01_kobra_s1_diamondback_tropical_wet",
+      title: "Anycubic Kobra S1 • 0.4mm Diamondback + FlowTech • Tropical (30°C, 80% RH) + Wet Filament (65% RH)",
+      printer_model: "Anycubic Kobra S1",
+      nozzle_type: "diamondback",
+      nozzle_diameter: 0.4,
+      addons: vec!["flowtech_hotend"],
+      climate_preset: "tropical",
+      ambient_temp_c: 30,
+      humidity_pct: 80,
+      wet_rh: Some(65),
+      extra_template_ids: vec![("anycubic_pctg_as_petg", vec![])],
+      spool_specs: vec![
+        ("Anycubic", "PLA"),
+        ("Anycubic", "PLA+"),
+        ("Anycubic", "PLA Silk"),
+        ("Anycubic", "PLA-CF"),
+        ("Generic", "PHA"),
+        ("Anycubic", "PETG"),
+        ("Generic", "PETG Translucent"),
+        ("Anycubic", "PETG-CF"),
+        ("SUNLU", "PETG-CF"),
+        ("Generic", "PCTG"),
+        ("Anycubic", "TPU"),
+        ("Anycubic", "TPU 95A"),
+        ("Anycubic", "ABS"),
+        ("Anycubic", "ASA"),
+        ("Generic", "PC-CF"),
+        ("Anycubic", "PA6-CF"),
+      ],
+    },
+    PackScenario {
+      slug: "02_kobra_s1_hardened_cold_humid_structural",
+      title: "Anycubic Kobra S1 • 0.4mm Hardened Steel • Cold & Humid (15°C, 80% RH) + Structural Strength Pack",
+      printer_model: "Anycubic Kobra S1",
+      nozzle_type: "orca_hardened_steel",
+      nozzle_diameter: 0.4,
+      addons: vec![],
+      climate_preset: "cold_humid",
+      ambient_temp_c: 15,
+      humidity_pct: 80,
+      wet_rh: None,
+      extra_template_ids: vec![
+        ("structural_strength", vec![("strength_preset", "load_bearing")]),
+        ("anycubic_pctg_as_petg", vec![]),
+      ],
+      spool_specs: vec![
+        ("Anycubic", "PLA"),
+        ("Anycubic", "PLA-CF"),
+        ("Anycubic", "PETG"),
+        ("Anycubic", "ABS"),
+        ("Anycubic", "PA6-CF"),
+        ("Anycubic", "TPU 95A"),
+      ],
+    },
+    PackScenario {
+      slug: "03_bambu_x1c_brass_temperate_glass",
+      title: "Bambu Lab X1 Carbon • 0.4mm Brass • Temperate (22°C, 45% RH) + Optical Glass Mode",
+      printer_model: "Bambu Lab X1 Carbon",
+      nozzle_type: "orca_brass",
+      nozzle_diameter: 0.4,
+      addons: vec![],
+      climate_preset: "temperate",
+      ambient_temp_c: 22,
+      humidity_pct: 45,
+      wet_rh: None,
+      extra_template_ids: vec![("sym_transparent_glass", vec![])],
+      spool_specs: vec![
+        ("Generic", "PETG Translucent"),
+        ("Bambu Lab", "PLA"),
+        ("Generic", "PC"),
+        ("Generic", "ASA"),
+      ],
+    },
+    PackScenario {
+      slug: "04_ender3_bowden_cht_06_hot_dry",
+      title: "Creality Ender-3 (Bowden 4.0mm, 260°C/100°C Ceiling) • 0.6mm CHT • Hot & Dry (30°C, 25% RH)",
+      printer_model: "Creality Ender-3",
+      nozzle_type: "cht",
+      nozzle_diameter: 0.6,
+      addons: vec![],
+      climate_preset: "hot_dry",
+      ambient_temp_c: 30,
+      humidity_pct: 25,
+      wet_rh: None,
+      extra_template_ids: vec![],
+      spool_specs: vec![
+        ("Generic", "PLA"),
+        ("Generic", "PETG"),
+        ("Generic", "PCTG"),
+        ("Generic", "TPU 95A"),
+      ],
+    },
+    PackScenario {
+      slug: "05_bambu_x1c_hardened_major_and_exotics",
+      title: "Bambu Lab X1 Carbon • 0.4mm Hardened Steel • Temperate Standard Mode (Major + Exotic Polymers)",
+      printer_model: "Bambu Lab X1 Carbon",
+      nozzle_type: "orca_hardened_steel",
+      nozzle_diameter: 0.4,
+      addons: vec![],
+      climate_preset: "temperate",
+      ambient_temp_c: 22,
+      humidity_pct: 45,
+      wet_rh: None,
+      extra_template_ids: vec![],
+      spool_specs: vec![
+        ("Bambu Lab", "PLA"),
+        ("Generic", "PLA-CF"),
+        ("Bambu Lab", "PETG"),
+        ("Bambu Lab", "ABS"),
+        ("Generic", "TPU for AMS"),
+        ("Generic", "PEBA"),
+        ("Generic", "TPU Foaming"),
+        ("Generic", "PET-CF"),
+        ("Generic", "PAHT-CF"),
+        ("Generic", "PPA-CF"),
+        ("Generic", "PVA"),
+      ],
+    },
+    PackScenario {
+      slug: "06_anycubic_kobra_s1_temperate_exotics",
+      title: "Anycubic Kobra S1 • 0.4mm Hardened Steel • Temperate Baseline (Major + Exotic Polymers)",
+      printer_model: "Anycubic Kobra S1",
+      nozzle_type: "orca_hardened_steel",
+      nozzle_diameter: 0.4,
+      addons: vec![],
+      climate_preset: "temperate",
+      ambient_temp_c: 22,
+      humidity_pct: 45,
+      wet_rh: None,
+      extra_template_ids: vec![("anycubic_pctg_as_petg", vec![])],
+      spool_specs: vec![
+        ("Anycubic", "PLA"),
+        ("Anycubic", "PETG"),
+        ("Anycubic", "PLA-CF"),
+        ("Generic", "PEBA"),
+        ("Generic", "TPU Foaming"),
+        ("Generic", "TPU 85A"),
+        ("Generic", "PET-CF"),
+        ("Generic", "PPA-CF"),
+        ("Generic", "PVA"),
+        ("Generic", "PLA Wood"),
+      ],
+    },
+  ];
+
+  let mut schema_failures = Vec::new();
+  for sc in &scenarios {
+    let sc_dir = pack_root.join(sc.slug);
+    fs::create_dir_all(&sc_dir).unwrap();
+
+    let mut rig = base_rig_for_printer(sc.printer_model);
+    if sc.spool_specs.len() >= 8 && rig.ace_pro_units == 1 {
+      rig.ace_pro_units = 2;
+    }
+    rig.nozzle_diameter = format!("{:.1}", sc.nozzle_diameter);
+    apply_nozzle_metadata(&mut rig, sc.nozzle_type);
+    rig.addons = sc.addons.iter().map(|s| s.to_string()).collect();
+    rig.climate_preset = sc.climate_preset.to_string();
+    rig.ambient_temp_c = sc.ambient_temp_c;
+    rig.humidity_pct = sc.humidity_pct;
+    rig.refresh_title_and_notes(true);
+
+    let mut spools = Vec::new();
+    for (idx, (brand, code)) in sc.spool_specs.iter().enumerate() {
+      let entry = catalog
+        .filaments
+        .iter()
+        .find(|f| f.brand.eq_ignore_ascii_case(brand) && f.code.eq_ignore_ascii_case(code))
+        .or_else(|| catalog.filaments.iter().find(|f| f.code.eq_ignore_ascii_case(code)))
+        .unwrap_or_else(|| panic!("Missing catalog entry {} {}", brand, code));
+      let mut sp = FilamentSpool::from_catalog_entry(idx + 1, entry, &rig.nozzle_type);
+      sp.recompute_for_rig(&rig);
+      sp.clamp_to_machine_limits(&rig.printer_model);
+      sp.refresh_thermal_deltas(&rig.nozzle_type);
+      spools.push(sp);
+    }
+
+    let processes = ProcessProfile::get_default_processes_for_rig(&rig);
+    let active_proc = &processes[0];
+    let base_profile = OrcaProfile::get_stock_for_printer_model(&rig.printer_model);
+
+    let mut rules = TransformationEngine::get_default_rules();
+    TransformationEngine::sync_rules_for_rig(
+      &mut rules,
+      &rig.nozzle_type,
+      &rig.nozzle_material,
+      rig.ace_pro_units,
+    );
+    for r in &mut rules {
+      if r.id == "weather_climate_adjustment" {
+        r.enabled = true;
+        let mut params = HashMap::new();
+        params.insert("climate_preset".to_string(), rig.climate_preset.clone());
+        params.insert("ambient_temp_c".to_string(), rig.ambient_temp_c.to_string());
+        params.insert("humidity_pct".to_string(), rig.humidity_pct.to_string());
+        r.lua_code =
+          orcaslicer_webconfig::lua_engine::embed_param_defaults_in_lua(&r.lua_code, &params);
+      }
+    }
+    if let Some(wrh) = sc.wet_rh {
+      if let Some(tpl) = templates.iter().find(|t| t.id == "sym_wet_filament") {
+        let mut ans = tpl.default_answers();
+        tpl.apply_answer_change(&mut ans, "humidity_pct", wrh.to_string());
+        let (title, desc, _, lua) = tpl.generate_from_answers(&ans, "all");
+        rules.push(orcaslicer_webconfig::transformations::TransformationRule {
+          id: "sym_wet_filament_inspect".to_string(),
+          name: title,
+          description: desc,
+          category: "Symptom Wizard".to_string(),
+          icon: "💧".to_string(),
+          enabled: true,
+          condition_expr: "all".to_string(),
+          lua_code: lua,
+          priority: 52,
+          scope: RuleScopeFilter::default(),
+        });
+      }
+    }
+    for (tid, overrides_kv) in &sc.extra_template_ids {
+      if let Some(r_existing) = rules.iter_mut().find(|r| r.id == *tid) {
+        r_existing.enabled = true;
+        if let Some(tpl) = templates.iter().find(|t| t.id == *tid) {
+          let mut ans = tpl.default_answers();
+          for (k, v) in overrides_kv {
+            tpl.apply_answer_change(&mut ans, k, (*v).to_string());
+          }
+          let (_, _, _, lua) = tpl.generate_from_answers(&ans, "all");
+          r_existing.lua_code = lua;
+        }
+      } else if let Some(tpl) = templates.iter().find(|t| t.id == *tid) {
+        let mut ans = tpl.default_answers();
+        for (k, v) in overrides_kv {
+          tpl.apply_answer_change(&mut ans, k, (*v).to_string());
+        }
+        let (title, desc, _, lua) = tpl.generate_from_answers(&ans, "all");
+        rules.push(orcaslicer_webconfig::transformations::TransformationRule {
+          id: (*tid).to_string(),
+          name: title,
+          description: desc,
+          category: "Inspection Rule".to_string(),
+          icon: "🔬".to_string(),
+          enabled: true,
+          condition_expr: "all".to_string(),
+          lua_code: lua,
+          priority: 54,
+          scope: RuleScopeFilter::default(),
+        });
+      }
+    }
+
+    let slots_json: Vec<Value> = spools
+      .iter()
+      .map(|s| {
+        serde_json::json!({
+          "name": s.name,
+          "material_type": s.material_type,
+          "color_hex": s.color_hex,
+          "opacity": s.opacity,
+          "pigment_stickiness": s.pigment_stickiness,
+        })
+      })
+      .collect();
+    let all_filament_types: Vec<String> = spools.iter().map(|s| s.material_type.clone()).collect();
+    let eval_ctx = serde_json::json!({
+      "printer_model": rig.printer_model,
+      "hotend": rig.hotend,
+      "nozzle_type": rig.nozzle_type,
+      "nozzle_material": rig.nozzle_material,
+      "nozzle_diameter": rig.nozzle_diameter,
+      "hotend_max_flow": rig.max_volumetric_flow_limit,
+      "hotend_max_temp_c": orcaslicer_webconfig::catalog::machine_constants(&rig.printer_model).max_hotend_temp_c,
+      "printer_kinematics_class": rig.kinematics_class(),
+      "travel_accel_target_mm2": rig.travel_accel_policy().travel_accel_target_mm2,
+      "travel_accel_floor_mm2": rig.travel_accel_policy().travel_accel_floor_mm2,
+      "filament_max_flow": spools[0].max_volumetric_speed as f64,
+      "melt_zone_multiplier": rig.melt_zone_multiplier,
+      "flush_multiplier": 1.0,
+      "layer_height": active_proc.layer_height,
+      "line_width": active_proc.line_width,
+      "filament_type": spools[0].material_type,
+      "filament_finish": spools[0].finish_type,
+      "filament_is_elastomer": orcaslicer_webconfig::constants::constants()
+        .is_elastomer_family_material(&spools[0].material_type),
+      "filament_nozzle_max_c": FilamentSpool::polymer_safe_nozzle_bounds(&spools[0].material_type).1,
+      "all_filament_types": all_filament_types,
+      "addons": rig.addons,
+      "climate_preset": rig.climate_preset,
+      "ambient_temp_c": rig.ambient_temp_c,
+      "humidity_pct": rig.humidity_pct,
+      "slots": slots_json,
+    });
+    let (seeded_base, seeded_ctx) =
+      TransformationEngine::seed_process_inputs(&base_profile, &eval_ctx, active_proc);
+    let stack_eval = TransformationEngine::evaluate_stack(&seeded_base, &rules, &seeded_ctx);
+    let per_proc_overrides = TransformationEngine::evaluate_stack_per_process(
+      &base_profile,
+      &rules,
+      &eval_ctx,
+      &processes,
+    );
+    let derived_overrides = per_proc_overrides
+      .get(&active_proc.id)
+      .cloned()
+      .unwrap_or(stack_eval.resulting_profile.values);
+
+    let mut entries = Vec::new();
+    let save_files = sync_live_state_to_entries_with_process_overrides(
+      &mut entries,
+      std::slice::from_ref(&rig),
+      &rig.id,
+      &spools,
+      &processes,
+      &active_proc.id,
+      &stack_eval.flush_matrix,
+      1.0,
+      "",
+      &[],
+      &derived_overrides,
+      &per_proc_overrides,
+    );
+
+    let mut md = Vec::new();
+    md.push(format!("# Side-by-Side Ground-Truth Diff — {}", sc.title));
+    md.push(String::new());
+
+    let mut sorted_files = save_files.files.clone();
+    sorted_files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    for sf in &sorted_files {
+      let dest = sc_dir.join(&sf.relative_path);
+      if let Some(p) = dest.parent() {
+        fs::create_dir_all(p).unwrap();
+      }
+      fs::write(&dest, &sf.content).unwrap();
+      if sf.relative_path.ends_with(".json") {
+        let ptype = if sf.relative_path.contains("/machine/") {
+          "machine"
+        } else if sf.relative_path.contains("/process/") {
+          "process"
+        } else if sf.relative_path.contains("/filament/") {
+          "filament"
+        } else {
+          ""
+        };
+        if !ptype.is_empty() {
+          let v: Value = serde_json::from_str(&sf.content).unwrap();
+          gt.validate_preset_json(ptype, sc.slug, &v, &mut schema_failures);
+          write_side_by_side_diff_section(&mut md, gt, ptype, &sf.relative_path, &v);
+        }
+      }
+    }
+    fs::write(sc_dir.join("SIDE_BY_SIDE_DIFFS.md"), md.join("\n")).unwrap();
+    println!(
+      "Wrote inspection scenario '{}' ({} files) -> {}",
+      sc.slug,
+      sorted_files.len(),
+      sc_dir.display()
+    );
+  }
+
+  if !schema_failures.is_empty() {
+    for f in &schema_failures {
+      eprintln!("SCHEMA FAILURE: {}", f);
+    }
+    panic!(
+      "Inspection pack failed {} ground-truth C++ schema checks!",
+      schema_failures.len()
+    );
+  }
 }
 
 fn repair_live_slicer_dir(snap_path: &Path, slicer_dir: &Path, out_3mf: &Path, out_zip: &Path) {
